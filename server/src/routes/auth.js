@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
 const { authenticate, JWT_SECRET } = require('../middleware/auth');
-const { sendBrevoOTP, verifyOTP } = require('../services/otpService');
+const { validateEmailAddress, sendBrevoOTP, sendExplicitOTP, verifyOTP } = require('../services/otpService');
 
 // POST /api/auth/login (Supports Multi-Organization Admin, Driver, and Passenger Login)
 router.post('/login', async (req, res) => {
@@ -454,13 +454,22 @@ router.post('/verify-id-card', async (req, res) => {
   }
 });
 
-// POST /api/auth/send-otp (Send Brevo OTP for Passenger Sign Up)
+// POST /api/auth/send-otp (Send OTP for Passenger Sign Up)
 router.post('/send-otp', async (req, res) => {
   try {
     const { email, role, organization_name } = req.body;
 
-    if (!email) {
-      return res.status(400).json({ success: false, message: 'Email address is required.' });
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({ success: false, message: 'Enter a valid email address.' });
+    }
+
+    // 1. Validate email syntax, domain typos, Gmail rules, and DNS MX records FIRST
+    const emailValidation = await validateEmailAddress(email);
+    if (!emailValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        message: emailValidation.message || 'Enter a valid email address.'
+      });
     }
 
     // Strictly enforce: Only Passenger ('user') can self sign up via passenger registration!
@@ -490,7 +499,7 @@ router.post('/send-otp', async (req, res) => {
     }
 
     // Check if account already exists
-    const existing = await db.findUserByEmail(email.trim());
+    const existing = await db.findUserByEmail(emailValidation.normalizedEmail);
     if (existing) {
       return res.status(400).json({
         success: false,
@@ -498,10 +507,17 @@ router.post('/send-otp', async (req, res) => {
       });
     }
 
-    const result = await sendBrevoOTP(email, 'signup');
+    const result = await sendBrevoOTP(emailValidation.normalizedEmail, 'signup');
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.message || 'Enter a valid email address.'
+      });
+    }
+
     return res.status(200).json({
       success: true,
-      message: 'Verification OTP sent to your email.',
+      message: `Verification OTP sent to ${emailValidation.normalizedEmail}.`,
       deliveredVia: result.deliveredVia,
       devOtp: result.otp
     });
@@ -528,6 +544,23 @@ router.post('/verify-otp', (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: 'OTP verification failed.' });
+  }
+});
+
+// POST /api/auth/relay-otp-email (Relay cloud-generated OTP via local Gmail SMTP when Render Free Tier blocks port 465/587)
+router.post('/relay-otp-email', async (req, res) => {
+  try {
+    const { email, otp, purpose } = req.body;
+    if (!email || !otp) {
+      return res.status(400).json({ success: false, message: 'Enter a valid email address.' });
+    }
+    const result = await sendExplicitOTP(email, otp, purpose || 'signup');
+    if (!result.success) {
+      return res.status(400).json({ success: false, message: result.message || 'Enter a valid email address.' });
+    }
+    return res.status(200).json({ success: true, deliveredVia: result.deliveredVia });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'Failed to relay OTP email.' });
   }
 });
 
@@ -687,23 +720,46 @@ router.get('/passengers', authenticate, async (req, res) => {
 // POST /api/auth/forgot-password/send-otp (For Admin, Passenger, and Driver)
 router.post('/forgot-password/send-otp', async (req, res) => {
   try {
-    const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ success: false, message: 'Please enter your account email address.' });
+    const { email, role } = req.body;
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({ success: false, message: 'Enter a valid email address.' });
     }
 
-    const user = await db.findUserByEmail(email.trim());
-    if (!user) {
-      return res.status(404).json({
+    // 1. Strictly validate email format, provider rules, and DNS MX records
+    const emailValidation = await validateEmailAddress(email);
+    if (!emailValidation.valid) {
+      return res.status(400).json({
         success: false,
-        message: 'No registered account found with this email address.'
+        message: emailValidation.message || 'Enter a valid email address.'
       });
     }
 
-    const result = await sendBrevoOTP(email, 'reset');
+    const user = await db.findUserByEmail(emailValidation.normalizedEmail);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'Enter a valid email address. No registered account found with this email.'
+      });
+    }
+
+    if (role && ['admin', 'user', 'driver'].includes(role) && user.role !== role) {
+      return res.status(400).json({
+        success: false,
+        message: `Enter a valid email address. This email is not registered as a ${role === 'user' ? 'Passenger' : role}.`
+      });
+    }
+
+    const result = await sendBrevoOTP(emailValidation.normalizedEmail, 'reset');
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: result.message || 'Enter a valid email address.'
+      });
+    }
+
     return res.status(200).json({
       success: true,
-      message: 'Password reset OTP sent to your email address.',
+      message: `Password reset OTP sent to ${emailValidation.normalizedEmail}.`,
       role: user.role,
       deliveredVia: result.deliveredVia,
       devOtp: result.otp

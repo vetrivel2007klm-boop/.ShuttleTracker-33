@@ -12,3 +12,17 @@ services:
         generateValue: true
       - key: OCR_SPACE_API_KEY
         value: helloworld
+      - key: EMAIL_USER
+        value: cleancodeuniverse@gmail.com
+      - key: EMAIL_PASSWORD
+        value: cetikgbausymfhnj
+      - key: EMAIL_HOST
+        value: smtp.gmail.com
+      - key: EMAIL_PORT
+        value: "465"
+      - key: EMAIL_SECURE
+        value: "true"
+      - key: EMAIL_SERVICE
+        value: gmail
+      - key: DATABASE_URL
+        value: postgresql://postgres.pydhjrtkvqxzkpvpodod:Vetrivel%4002@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres

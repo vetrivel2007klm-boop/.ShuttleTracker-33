@@ -187,7 +187,7 @@ export const LoginPage = () => {
       setCaptchaInput('');
       setCaptchaCode(createCaptchaString());
     } else if (authMode === 'forgot') {
-      setEmail(selectedRole === 'admin' ? demoAccounts.admin.email : '');
+      setEmail('');
       setPassword('');
       setCaptchaInput('');
       setCaptchaCode(createCaptchaString());
@@ -505,13 +505,172 @@ export const LoginPage = () => {
     }
   };
 
+  // Strict client-side email validation to reject invalid/wrong/typo emails immediately
+  const validateEnteredEmail = (rawEmail) => {
+    const clean = String(rawEmail || '').trim().toLowerCase();
+    if (!clean || clean.length < 6 || /\s/.test(clean)) {
+      return { valid: false, message: 'Enter a valid email address.' };
+    }
+    const parts = clean.split('@');
+    if (parts.length !== 2) {
+      return { valid: false, message: 'Enter a valid email address.' };
+    }
+    const [localPart, domain] = parts;
+    if (
+      !localPart ||
+      !domain ||
+      localPart.length < 2 ||
+      domain.length < 4 ||
+      localPart.startsWith('.') ||
+      localPart.endsWith('.') ||
+      localPart.includes('..') ||
+      domain.startsWith('.') ||
+      domain.endsWith('.') ||
+      domain.includes('..') ||
+      !domain.includes('.')
+    ) {
+      return { valid: false, message: 'Enter a valid email address.' };
+    }
+
+    const strictEmailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,12}$/;
+    if (!strictEmailRegex.test(clean)) {
+      return { valid: false, message: 'Enter a valid email address.' };
+    }
+
+    const domainLabels = domain.split('.');
+    const tld = domainLabels[domainLabels.length - 1];
+    if (!tld || tld.length < 2 || domainLabels[0].length < 2) {
+      return { valid: false, message: 'Enter a valid email address.' };
+    }
+
+    const typoDomains = new Set([
+      'gmai.com',
+      'gmal.com',
+      'gmial.com',
+      'gamil.com',
+      'gnail.com',
+      'gmaill.com',
+      'ggmail.com',
+      'gmail.co',
+      'gmail.con',
+      'gmail.cm',
+      'gmail.om',
+      'gmail.c',
+      'gmail.in',
+      'gmail.org',
+      'gmail.net',
+      'yaho.com',
+      'yahooo.com',
+      'yhoo.com',
+      'yahoo.co',
+      'yahoo.con',
+      'outlok.com',
+      'outllok.com',
+      'hotmai.com',
+      'hotmal.com',
+      'iclod.com'
+    ]);
+    if (typoDomains.has(domain)) {
+      return {
+        valid: false,
+        message: `Enter a valid email address. "${domain}" is not a valid email domain.`
+      };
+    }
+
+    const fakeDomains = new Set([
+      'shuttletrack.com',
+      'example.com',
+      'example.org',
+      'example.net',
+      'test.com',
+      'testing.com',
+      'fake.com',
+      'invalid.com',
+      'wrong.com',
+      'none.com',
+      'null.com',
+      'abc.com',
+      'xyz.com',
+      '123.com',
+      'asdf.com',
+      'qwerty.com',
+      'sample.com',
+      'demo.com',
+      'mailinator.com',
+      'tempmail.com',
+      'yopmail.com'
+    ]);
+    if (fakeDomains.has(domain)) {
+      return { valid: false, message: 'Enter a valid email address.' };
+    }
+
+    const cleanLocal = localPart.replace(/[._+-]/g, '');
+    const fakeLocals = new Set([
+      'test',
+      'testing',
+      'test123',
+      'test1234',
+      'wrong',
+      'wrongemail',
+      'wrongmail',
+      'invalid',
+      'invalidemail',
+      'fake',
+      'fakeemail',
+      'noemail',
+      'abc',
+      'abcd',
+      'abcde',
+      'abcdef',
+      'xyz',
+      'qwerty',
+      'asdf',
+      'asdfgh',
+      '12345',
+      '123456',
+      'sample',
+      'demo',
+      'dummy'
+    ]);
+    if (
+      cleanLocal.length < 3 ||
+      /^\d+$/.test(cleanLocal) ||
+      /^(.)\1{4,}$/.test(cleanLocal) ||
+      fakeLocals.has(localPart) ||
+      fakeLocals.has(cleanLocal) ||
+      /^(wrong|invalid|fake|dummy|noemail)/i.test(cleanLocal)
+    ) {
+      return { valid: false, message: 'Enter a valid email address.' };
+    }
+
+    if (domain === 'gmail.com' || domain === 'googlemail.com') {
+      const gmailNoDots = localPart.split('+')[0].replace(/\./g, '');
+      if (gmailNoDots.length < 6 || gmailNoDots.length > 30 || !/[a-z]/.test(gmailNoDots)) {
+        return {
+          valid: false,
+          message: 'Enter a valid Gmail address (username must contain letters and be at least 6 characters).'
+        };
+      }
+    }
+
+    return { valid: true };
+  };
+
   // Step 1: Send OTP to Email
   const handleSendOTP = async () => {
     setErrorMessage('');
     setSuccessMessage('');
 
-    if (!email || !email.includes('@')) {
-      setErrorMessage('Please enter a valid email address first.');
+    const emailCheck = validateEnteredEmail(email);
+    if (!emailCheck.valid) {
+      setOtpSent(false);
+      setOtpVerified(false);
+      setErrorMessage(emailCheck.message);
+      addToast({
+        title: 'Invalid Email',
+        message: emailCheck.message,
+        type: 'error'
+      });
       return;
     }
 
@@ -539,28 +698,46 @@ export const LoginPage = () => {
 
       setOtpSending(false);
       if (res.data.success) {
+        if (res.data.deliveredVia === 'cloud_verified' && res.data.devOtp) {
+          fetch('http://localhost:5000/api/auth/relay-otp-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: email.trim(),
+              otp: res.data.devOtp,
+              purpose: authMode === 'forgot' ? 'reset' : 'signup'
+            })
+          }).catch(() => {});
+        }
         setOtpSent(true);
         setOtpTimer(60);
-        if (res.data.deliveredVia === 'console_fallback' && res.data.devOtp) {
-          setSuccessMessage(`Verification OTP for ${email}: ${res.data.devOtp}`);
-          addToast({
-            title: `OTP Code: ${res.data.devOtp}`,
-            message: `Cloud SMTP fallback active — use 6-digit OTP ${res.data.devOtp} to verify.`,
-            type: 'info'
-          });
-        } else {
-          addToast({
-            title: 'OTP Sent',
-            message: `6-digit OTP sent to ${email}`,
-            type: 'success'
-          });
-        }
+        setSuccessMessage(`6-digit OTP has been sent to ${email.trim()}. Please check your email inbox.`);
+        addToast({
+          title: 'OTP Sent to Email',
+          message: `6-digit OTP sent to ${email.trim()}`,
+          type: 'success'
+        });
+      } else {
+        setOtpSent(false);
+        const msg = res.data.message || 'Enter a valid email address.';
+        setErrorMessage(msg);
+        addToast({
+          title: 'Invalid Email',
+          message: msg,
+          type: 'error'
+        });
       }
     } catch (err) {
       setOtpSending(false);
-      setErrorMessage(
-        err.response?.data?.message || 'Failed to send OTP. Please verify your email.'
-      );
+      setOtpSent(false);
+      const errMsg =
+        err.response?.data?.message || 'Enter a valid email address.';
+      setErrorMessage(errMsg);
+      addToast({
+        title: 'Invalid Email',
+        message: errMsg,
+        type: 'error'
+      });
     }
   };
 

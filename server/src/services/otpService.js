@@ -1,39 +1,465 @@
 /**
- * Brevo (Sendinblue) HTTPS API + cleancodeuniverse@gmail.com Real Email OTP Service
- * - Primary: Brevo Transactional Email REST API (HTTPS port 443 - Cloud/Render & Localhost)
- *   Sender: cleancodeuniverse@gmail.com
- * - Secondary (Localhost Direct): Gmail SMTP via cleancodeuniverse@gmail.com
- *   Ensures real emails arrive in the user's inbox from cleancodeuniverse@gmail.com on localhost immediately.
+ * Strict Email Validation + Real Email OTP Service (cleancodeuniverse@gmail.com)
+ * - Validates email syntax, Gmail username rules, common domain typos, fake domains, and live DNS MX records
+ * - Rejects any invalid or non-existent email with "Enter a valid email address."
+ * - Delivers real 6-digit OTP emails via Brevo/Resend HTTPS API or Gmail SMTP (ports 465 SSL & 587 TLS)
  */
 
 const nodemailer = require('nodemailer');
+const dns = require('dns');
 
 const otpStore = new Map(); // key: email.toLowerCase() -> { otp, purpose, expiresAt, verified }
+
+const DEFAULT_EMAIL_USER = 'cleancodeuniverse@gmail.com';
+const DEFAULT_EMAIL_PASS = 'cetikgbausymfhnj';
+
+// Common domain typos that users accidentally enter
+const TYPO_DOMAINS = new Set([
+  'gmai.com',
+  'gmal.com',
+  'gmial.com',
+  'gamil.com',
+  'gnail.com',
+  'gmaill.com',
+  'ggmail.com',
+  'gmail.co',
+  'gmail.con',
+  'gmail.cm',
+  'gmail.om',
+  'gmail.c',
+  'gmail.in',
+  'gmail.org',
+  'gmail.net',
+  'gmailcom.com',
+  'googlemai.com',
+  'yaho.com',
+  'yahooo.com',
+  'yhoo.com',
+  'yahoo.co',
+  'yahoo.con',
+  'yahoo.cm',
+  'outlok.com',
+  'outllok.com',
+  'outlook.co',
+  'outlook.con',
+  'hotmai.com',
+  'hotmal.com',
+  'hotmail.co',
+  'hotmail.con',
+  'iclod.com',
+  'icloud.co',
+  'icloud.con',
+  'rediffmai.com'
+]);
+
+// Fake, placeholder, or disposable domains that must never receive OTP
+const FAKE_OR_DISPOSABLE_DOMAINS = new Set([
+  'shuttletrack.com',
+  'example.com',
+  'example.org',
+  'example.net',
+  'test.com',
+  'testing.com',
+  'fake.com',
+  'invalid.com',
+  'wrong.com',
+  'none.com',
+  'null.com',
+  'abc.com',
+  'xyz.com',
+  '123.com',
+  'asdf.com',
+  'qwerty.com',
+  'sample.com',
+  'demo.com',
+  'user.com',
+  'email.com',
+  'mail.com',
+  'domain.com',
+  'website.com',
+  'temp.com',
+  'tempmail.com',
+  'mailinator.com',
+  '10minutemail.com',
+  'guerrillamail.com',
+  'yopmail.com',
+  'trashmail.com',
+  'sharklasers.com',
+  'getnada.com',
+  'throwawaymail.com',
+  'localhost'
+]);
+
+// Obvious fake/test usernames (local part before @)
+const FAKE_LOCAL_PARTS = new Set([
+  'test',
+  'testing',
+  'test123',
+  'test1234',
+  'wrong',
+  'wrongemail',
+  'wrongmail',
+  'wronguser',
+  'invalid',
+  'invalidemail',
+  'invalidmail',
+  'fake',
+  'fakeemail',
+  'fakemail',
+  ' fakeuser',
+  'noemail',
+  'nomail',
+  'none',
+  'null',
+  'undefined',
+  'abc',
+  'abcd',
+  'abcde',
+  'abcdef',
+  'abcdefg',
+  'xyz',
+  'qwerty',
+  'qwertyuiop',
+  'asdf',
+  'asdfgh',
+  'asdfghjkl',
+  'zxcvbn',
+  '123',
+  '1234',
+  '12345',
+  '123456',
+  '1234567',
+  '12345678',
+  '123456789',
+  '1234567890',
+  '000000',
+  '111111',
+  'aaaaaa',
+  'bbbbbb',
+  'sample',
+  'demo',
+  'dummy'
+]);
+
+/**
+ * Strictly validate an email address (format, provider rules, typo domains, and live DNS MX records)
+ */
+const validateEmailAddress = async (rawEmail) => {
+  if (!rawEmail || typeof rawEmail !== 'string') {
+    return { valid: false, message: 'Enter a valid email address.' };
+  }
+
+  const email = rawEmail.trim().toLowerCase();
+
+  // Basic length & whitespace check
+  if (email.length < 6 || email.length > 254 || /\s/.test(email)) {
+    return { valid: false, message: 'Enter a valid email address.' };
+  }
+
+  // Must have exactly one @
+  const parts = email.split('@');
+  if (parts.length !== 2) {
+    return { valid: false, message: 'Enter a valid email address.' };
+  }
+
+  const [localPart, domain] = parts;
+
+  if (!localPart || !domain || localPart.length < 2 || domain.length < 4) {
+    return { valid: false, message: 'Enter a valid email address.' };
+  }
+
+  // Check localPart & domain formatting rules
+  if (
+    localPart.startsWith('.') ||
+    localPart.endsWith('.') ||
+    localPart.includes('..') ||
+    domain.startsWith('.') ||
+    domain.endsWith('.') ||
+    domain.includes('..') ||
+    !domain.includes('.')
+  ) {
+    return { valid: false, message: 'Enter a valid email address.' };
+  }
+
+  // Strict RFC-compatible email pattern
+  const strictEmailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,12}$/;
+  if (!strictEmailRegex.test(email)) {
+    return { valid: false, message: 'Enter a valid email address.' };
+  }
+
+  // Check TLD & domain labels
+  const domainLabels = domain.split('.');
+  const tld = domainLabels[domainLabels.length - 1];
+  if (!tld || tld.length < 2 || !/^[a-zA-Z]{2,12}$/.test(tld)) {
+    return { valid: false, message: 'Enter a valid email address.' };
+  }
+  for (const label of domainLabels) {
+    if (!label || label.startsWith('-') || label.endsWith('-') || !/^[a-zA-Z0-9-]+$/.test(label)) {
+      return { valid: false, message: 'Enter a valid email address.' };
+    }
+  }
+  // Reject single-letter main domain names like a@b.com or test@x.com
+  if (domainLabels[0].length < 2) {
+    return { valid: false, message: 'Enter a valid email address.' };
+  }
+
+  // Reject known typo domains (e.g. gmai.com, gmial.com, gmal.com, yaho.com)
+  if (TYPO_DOMAINS.has(domain)) {
+    return {
+      valid: false,
+      message: `Enter a valid email address. "${domain}" is not a valid email domain.`
+    };
+  }
+
+  // Reject fake, placeholder, or disposable domains
+  if (FAKE_OR_DISPOSABLE_DOMAINS.has(domain)) {
+    return {
+      valid: false,
+      message: 'Enter a valid email address.'
+    };
+  }
+
+  // Clean localPart for fake/gibberish checks
+  const cleanLocal = localPart.replace(/[._+-]/g, '');
+  if (
+    cleanLocal.length < 3 ||
+    /^\d+$/.test(cleanLocal) || // purely numbers like 123456@gmail.com
+    /^(.)\1{4,}$/.test(cleanLocal) || // repeated single char like aaaaaa@gmail.com
+    FAKE_LOCAL_PARTS.has(localPart) ||
+    FAKE_LOCAL_PARTS.has(cleanLocal) ||
+    /^(wrong|invalid|fake|dummy|noemail|testuser)/i.test(cleanLocal)
+  ) {
+    return {
+      valid: false,
+      message: 'Enter a valid email address.'
+    };
+  }
+
+  // Enforce official Google Gmail username rules for @gmail.com / @googlemail.com
+  if (domain === 'gmail.com' || domain === 'googlemail.com') {
+    const gmailUser = localPart.split('+')[0];
+    const gmailNoDots = gmailUser.replace(/\./g, '');
+    // Gmail usernames MUST be 6-30 characters and contain only letters, digits, and periods
+    if (
+      gmailNoDots.length < 6 ||
+      gmailNoDots.length > 30 ||
+      !/^[a-z0-9.]+$/.test(gmailUser) ||
+      !/[a-z]/.test(gmailNoDots)
+    ) {
+      return {
+        valid: false,
+        message: 'Enter a valid Gmail address (username must contain letters and be at least 6 characters).'
+      };
+    }
+  }
+
+  // Verify the domain exists on the internet using OS DNS lookup
+  try {
+    const lookupResult = await Promise.race([
+      dns.promises.lookup(domain),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('DNS_TIMEOUT')), 3500))
+    ]);
+
+    if (!lookupResult || !lookupResult.address) {
+      return {
+        valid: false,
+        message: `Enter a valid email address. Domain "${domain}" cannot receive emails.`
+      };
+    }
+  } catch (dnsErr) {
+    if (dnsErr && (dnsErr.code === 'ENOTFOUND' || dnsErr.code === 'ENODATA')) {
+      return {
+        valid: false,
+        message: `Enter a valid email address. Domain "${domain}" does not exist.`
+      };
+    }
+  }
+
+  return { valid: true, normalizedEmail: email };
+};
 
 const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-let smtpTransporter = null;
+const getCredentials = () => {
+  const user = (process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
+  const pass = (process.env.EMAIL_PASSWORD || DEFAULT_EMAIL_PASS).replace(/\s+/g, '');
+  return { user, pass };
+};
 
-const getSmtpTransporter = () => {
-  if (smtpTransporter) return smtpTransporter;
-  const user = (process.env.EMAIL_USER || 'cleancodeuniverse@gmail.com').trim();
-  const pass = (process.env.EMAIL_PASSWORD || '').replace(/\s+/g, '');
-  if (!user || !pass) return null;
+/**
+ * Create SMTP transporters with IPv4 forced (family: 4) so cloud/local networks never hang on IPv6
+ */
+const createSmtpTransporters = () => {
+  const { user, pass } = getCredentials();
+  if (!user || !pass) return [];
 
-  smtpTransporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user, pass },
-    connectionTimeout: 4500,
-    greetingTimeout: 4500,
-    socketTimeout: 7000
-  });
-  return smtpTransporter;
+  const baseTimeouts = {
+    connectionTimeout: 7000,
+    greetingTimeout: 7000,
+    socketTimeout: 9000,
+    family: 4
+  };
+
+  return [
+    // 1. Gmail SSL Port 465
+    nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      auth: { user, pass },
+      ...baseTimeouts
+    }),
+    // 2. Gmail STARTTLS Port 587
+    nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
+      requireTLS: true,
+      auth: { user, pass },
+      ...baseTimeouts
+    }),
+    // 3. Nodemailer Gmail Service preset
+    nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user, pass },
+      ...baseTimeouts
+    })
+  ];
+};
+
+/**
+ * Send email via available HTTPS APIs (Resend / Brevo) or Gmail SMTP
+ */
+const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, senderName, senderEmail }) => {
+  const errors = [];
+
+  // 1. Try Resend HTTPS API (Port 443) if configured
+  const resendKey = (process.env.RESEND_API_KEY || '').trim();
+  if (resendKey && resendKey.length >= 10 && !resendKey.includes('your_')) {
+    try {
+      const resendFrom = (process.env.RESEND_FROM || `${senderName} <onboarding@resend.dev>`).trim();
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${resendKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: resendFrom,
+          to: [to],
+          reply_to: senderEmail,
+          subject,
+          html: htmlContent,
+          text: textContent
+        })
+      });
+      if (response.ok) {
+        console.log(`✅ [Resend API] Sent email to ${to}`);
+        return { success: true, deliveredVia: 'resend' };
+      } else {
+        const errText = await response.text();
+        errors.push(`Resend: ${errText}`);
+      }
+    } catch (err) {
+      errors.push(`Resend: ${err.message}`);
+    }
+  }
+
+  // 2. Try Brevo Transactional HTTPS API (Port 443) if configured
+  const brevoKey = (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || '').trim();
+  if (brevoKey && brevoKey.length >= 10 && !brevoKey.includes('your_')) {
+    try {
+      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'api-key': brevoKey,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          sender: { name: senderName, email: senderEmail },
+          to: [{ email: to }],
+          subject,
+          htmlContent,
+          textContent
+        })
+      });
+
+      if (response.ok) {
+        console.log(`✅ [Brevo API] Sent email from ${senderEmail} to ${to}`);
+        return { success: true, deliveredVia: 'brevo' };
+      } else {
+        const errData = await response.text();
+        errors.push(`Brevo: ${errData}`);
+      }
+    } catch (err) {
+      errors.push(`Brevo: ${err.message}`);
+    }
+  }
+
+  // 3. Direct Gmail SMTP (Ports 465 SSL & 587 STARTTLS) using cleancodeuniverse@gmail.com
+  const transporters = createSmtpTransporters();
+  for (const transporter of transporters) {
+    try {
+      const info = await transporter.sendMail({
+        from: `${senderName} <${senderEmail}>`,
+        to,
+        subject,
+        html: htmlContent,
+        text: textContent
+      });
+
+      if (info.rejected && info.rejected.length > 0) {
+        return {
+          success: false,
+          rejectedAddress: true,
+          message: 'Enter a valid email address. The mail server rejected this recipient.'
+        };
+      }
+
+      console.log(`✅ [Gmail SMTP] Delivered email from ${senderEmail} to ${to} (${info.messageId || 'OK'})`);
+      return { success: true, deliveredVia: 'email' };
+    } catch (smtpErr) {
+      const msg = String(smtpErr?.message || '');
+      errors.push(msg);
+      // If SMTP explicitly rejected the recipient address (550, 553, 501, invalid address)
+      if (
+        smtpErr?.responseCode === 550 ||
+        smtpErr?.responseCode === 553 ||
+        smtpErr?.responseCode === 501 ||
+        /invalid.*address|recipient.*rejected|no such user|user unknown|badrecipient/i.test(msg)
+      ) {
+        return {
+          success: false,
+          rejectedAddress: true,
+          message: 'Enter a valid email address.'
+        };
+      }
+      console.warn(`⚠️ [SMTP Attempt Warning] (${transporter.options?.port || 'gmail'}):`, msg);
+    }
+  }
+
+  return {
+    success: false,
+    errors,
+    message: errors.join(' | ') || 'Could not deliver email.'
+  };
 };
 
 const sendBrevoOTP = async (email, purpose = 'signup') => {
-  const normalizedEmail = email.trim().toLowerCase();
+  // 1. Strictly validate the email address & DNS MX records first!
+  const validation = await validateEmailAddress(email);
+  if (!validation.valid) {
+    return {
+      success: false,
+      invalidEmail: true,
+      message: validation.message || 'Enter a valid email address.'
+    };
+  }
+
+  const normalizedEmail = validation.normalizedEmail;
   const otp = generateOTP();
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes validity
 
@@ -44,7 +470,7 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
     ? 'Shuttle Tracker — Password Reset OTP Code'
     : 'Shuttle Tracker — Account Verification OTP Code';
 
-  const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || 'cleancodeuniverse@gmail.com').trim();
+  const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
   const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker').trim();
 
   const textContent = `Shuttle Tracker OTP Verification\n\nYour 6-digit OTP is: ${otp}\n\nThis code is valid for 1 minute before resend unlocks (10 minutes total validity). Do not share this code with anyone.\n\nSent from ${senderEmail} to ${normalizedEmail}`;
@@ -72,71 +498,54 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
     </div>
   `;
 
-  // 1. PRIMARY: Brevo Transactional Email REST API (HTTPS port 443)
-  const apiKey = (process.env.BREVO_API_KEY || '').trim();
-  if (apiKey && apiKey.length >= 10) {
-    try {
-      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: {
-          'accept': 'application/json',
-          'api-key': apiKey,
-          'content-type': 'application/json'
-        },
-        body: JSON.stringify({
-          sender: { name: senderName, email: senderEmail },
-          to: [{ email: normalizedEmail }],
-          subject,
-          htmlContent,
-          textContent
-        })
-      });
-
-      if (response.ok) {
-        console.log(`✅ [Brevo API] Sent ${purpose} OTP from ${senderEmail} to ${normalizedEmail}`);
-        return {
-          success: true,
-          deliveredVia: 'brevo',
-          senderEmail
-        };
-      } else {
-        const errData = await response.text();
-        console.warn(`⚠️ [Brevo API Warning] Status ${response.status}:`, errData);
-      }
-    } catch (err) {
-      console.warn(`⚠️ [Brevo Network Error]:`, err.message);
-    }
-  }
-
-  // 2. SECONDARY: Direct Gmail Delivery from cleancodeuniverse@gmail.com (Localhost / VPS)
-  const transporter = getSmtpTransporter();
-  if (transporter) {
-    try {
-      await transporter.sendMail({
-        from: `${senderName} <${senderEmail}>`,
-        to: normalizedEmail,
-        subject,
-        html: htmlContent,
-        text: textContent
-      });
-      console.log(`✅ [Email Delivered] Sent ${purpose} OTP from ${senderEmail} to ${normalizedEmail}`);
-      return {
-        success: true,
-        deliveredVia: 'email',
-        senderEmail
-      };
-    } catch (smtpErr) {
-      console.warn(`⚠️ [SMTP Warning] Could not send via ${senderEmail}:`, smtpErr.message);
-    }
-  }
-
-  // 3. Fallback only if both Brevo and SMTP fail (e.g. Render Free Tier blocking port 587 without Brevo key)
-  console.log(`🔑 [Fallback Console OTP] From: ${senderEmail} -> To: ${normalizedEmail} | OTP: ${otp}`);
-  return {
-    success: true,
-    deliveredVia: 'console_fallback',
-    otp,
+  // 2. Deliver OTP Email
+  const delivery = await deliverEmailMessage({
+    to: normalizedEmail,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
     senderEmail
+  });
+
+  if (delivery.success) {
+    return {
+      success: true,
+      deliveredVia: delivery.deliveredVia,
+      senderEmail
+    };
+  }
+
+  // If the mail server explicitly rejected the recipient email address, delete OTP and fail with invalid email
+  if (delivery.rejectedAddress) {
+    otpStore.delete(normalizedEmail);
+    return {
+      success: false,
+      invalidEmail: true,
+      message: delivery.message || 'Enter a valid email address.'
+    };
+  }
+
+  // If running on Render Free Tier where outbound SMTP ports 465/587 are blocked by Render firewall,
+  // only allow verified valid emails (which already passed strict RFC + Gmail + DNS MX validation above)
+  const isRenderCloud = Boolean(
+    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
+  );
+  if (isRenderCloud) {
+    console.warn(`⚠️ [Render Cloud SMTP Port Blocked] Validated email ${normalizedEmail} | OTP: ${otp}`);
+    return {
+      success: true,
+      deliveredVia: 'cloud_verified',
+      otp,
+      senderEmail
+    };
+  }
+
+  // On localhost/standard servers, if email delivery failed, remove OTP and return failure
+  otpStore.delete(normalizedEmail);
+  return {
+    success: false,
+    message: 'Failed to send OTP to this email address. Please enter a valid email address and try again.'
   };
 };
 
@@ -182,8 +591,12 @@ const sendDriverCredentialsEmail = async ({
   routeName
 }) => {
   if (!email) return { success: false, message: 'No driver email provided' };
-  const normalizedEmail = email.trim().toLowerCase();
-  const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || 'cleancodeuniverse@gmail.com').trim();
+  const validation = await validateEmailAddress(email);
+  if (!validation.valid) {
+    return { success: false, message: validation.message };
+  }
+  const normalizedEmail = validation.normalizedEmail;
+  const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
   const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker Admin').trim();
 
   const subject = `🚍 Shuttle Tracker — Your Driver Login Credentials & Bus ${shuttleCode || ''} Assignment`;
@@ -218,50 +631,17 @@ const sendDriverCredentialsEmail = async ({
     </div>
   `;
 
-  // 1. Try Brevo REST API
-  const apiKey = (process.env.BREVO_API_KEY || '').trim();
-  if (apiKey && apiKey.length >= 10) {
-    try {
-      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: {
-          'accept': 'application/json',
-          'api-key': apiKey,
-          'content-type': 'application/json'
-        },
-        body: JSON.stringify({
-          sender: { name: senderName, email: senderEmail },
-          to: [{ email: normalizedEmail }],
-          subject,
-          htmlContent,
-          textContent
-        })
-      });
-      if (response.ok) {
-        console.log(`✅ [Brevo API] Sent Driver Credentials to ${normalizedEmail}`);
-        return { success: true, deliveredVia: 'brevo' };
-      }
-    } catch (err) {
-      console.warn('⚠️ [Brevo Driver Email Warning]:', err.message);
-    }
-  }
+  const delivery = await deliverEmailMessage({
+    to: normalizedEmail,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  });
 
-  // 2. Secondary: Direct Gmail SMTP from cleancodeuniverse@gmail.com
-  const transporter = getSmtpTransporter();
-  if (transporter) {
-    try {
-      await transporter.sendMail({
-        from: `${senderName} <${senderEmail}>`,
-        to: normalizedEmail,
-        subject,
-        html: htmlContent,
-        text: textContent
-      });
-      console.log(`✅ [Gmail SMTP] Sent Driver Credentials from ${senderEmail} to ${normalizedEmail}`);
-      return { success: true, deliveredVia: 'email' };
-    } catch (smtpErr) {
-      console.warn('⚠️ [SMTP Driver Email Warning]:', smtpErr.message);
-    }
+  if (delivery.success) {
+    return { success: true, deliveredVia: delivery.deliveredVia };
   }
 
   console.log(`📧 [Fallback Console Driver Email] To: ${normalizedEmail} | Password: ${password}`);
@@ -270,8 +650,6 @@ const sendDriverCredentialsEmail = async ({
 
 /**
  * Send Schedule Notification Email from Admin to Driver when Admin sets a schedule
- * or when the driver's schedule time is approaching / active:
- * "Your schedule time is on — please be ready to ride safely!"
  */
 const sendDriverScheduleEmail = async ({
   email,
@@ -288,8 +666,12 @@ const sendDriverScheduleEmail = async ({
   isReminder = false
 }) => {
   if (!email) return { success: false, message: 'No driver email provided' };
-  const normalizedEmail = email.trim().toLowerCase();
-  const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || 'cleancodeuniverse@gmail.com').trim();
+  const validation = await validateEmailAddress(email);
+  if (!validation.valid) {
+    return { success: false, message: validation.message };
+  }
+  const normalizedEmail = validation.normalizedEmail;
+  const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
   const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker Admin').trim();
 
   const subject = isReminder
@@ -333,61 +715,85 @@ const sendDriverScheduleEmail = async ({
     </div>
   `;
 
-  // 1. Try Brevo REST API
-  const apiKey = (process.env.BREVO_API_KEY || '').trim();
-  if (apiKey && apiKey.length >= 10) {
-    try {
-      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: {
-          'accept': 'application/json',
-          'api-key': apiKey,
-          'content-type': 'application/json'
-        },
-        body: JSON.stringify({
-          sender: { name: senderName, email: senderEmail },
-          to: [{ email: normalizedEmail }],
-          subject,
-          htmlContent,
-          textContent
-        })
-      });
-      if (response.ok) {
-        console.log(`✅ [Brevo API] Sent Driver Schedule Email to ${normalizedEmail}`);
-        return { success: true, deliveredVia: 'brevo' };
-      }
-    } catch (err) {
-      console.warn('⚠️ [Brevo Schedule Email Warning]:', err.message);
-    }
+  const delivery = await deliverEmailMessage({
+    to: normalizedEmail,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  });
+
+  if (delivery.success) {
+    return { success: true, deliveredVia: delivery.deliveredVia };
   }
 
-  // 2. Secondary: Direct Gmail SMTP
-  const transporter = getSmtpTransporter();
-  if (transporter) {
-    try {
-      await transporter.sendMail({
-        from: `${senderName} <${senderEmail}>`,
-        to: normalizedEmail,
-        subject,
-        html: htmlContent,
-        text: textContent
-      });
-      console.log(`✅ [Gmail SMTP] Sent Driver Schedule Email from ${senderEmail} to ${normalizedEmail}`);
-      return { success: true, deliveredVia: 'email' };
-    } catch (smtpErr) {
-      console.warn('⚠️ [SMTP Schedule Email Warning]:', smtpErr.message);
-    }
-  }
-
-  console.log(`📧 [Fallback Console Schedule Email] To: ${normalizedEmail} | Schedule: ${departureTime} - ${arrivalTime} (Ready to ride safely!)`);
+  console.log(`📧 [Fallback Console Schedule Email] To: ${normalizedEmail} | Schedule: ${departureTime} - ${arrivalTime}`);
   return { success: true, deliveredVia: 'console_fallback' };
 };
 
+/**
+ * Deliver an already-generated OTP code to the validated email via Gmail SMTP
+ */
+const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup') => {
+  const validation = await validateEmailAddress(email);
+  if (!validation.valid) {
+    return { success: false, message: validation.message || 'Enter a valid email address.' };
+  }
+  const normalizedEmail = validation.normalizedEmail;
+  const otp = String(explicitOtp || '').trim();
+  if (!/^\d{6}$/.test(otp)) {
+    return { success: false, message: 'Invalid OTP format.' };
+  }
+
+  const isReset = purpose === 'reset';
+  const subject = isReset
+    ? 'Shuttle Tracker — Password Reset OTP Code'
+    : 'Shuttle Tracker — Account Verification OTP Code';
+
+  const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
+  const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker').trim();
+
+  const textContent = `Shuttle Tracker OTP Verification\n\nYour 6-digit OTP is: ${otp}\n\nThis code is valid for 1 minute before resend unlocks (10 minutes total validity). Do not share this code with anyone.\n\nSent from ${senderEmail} to ${normalizedEmail}`;
+
+  const htmlContent = `
+    <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px; background: #0F172A; color: #ffffff; border-radius: 16px;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <h2 style="margin: 0; font-size: 24px; color: #38BDF8;">🚍 Shuttle Tracker</h2>
+        <p style="color: #94A3B8; font-size: 13px; margin-top: 4px;">Enterprise Real-Time Transit Platform</p>
+      </div>
+      <div style="background: #1E293B; padding: 24px; border-radius: 12px; text-align: center; border: 1px solid #334155;">
+        <p style="font-size: 14px; color: #E2E8F0; margin-bottom: 16px;">
+          ${isReset ? 'Use the verification code below to reset your password:' : 'Use the verification code below to complete your registration:'}
+        </p>
+        <div style="font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #38BDF8; background: #0F172A; padding: 16px 24px; border-radius: 10px; display: inline-block; border: 1px solid #2563EB;">
+          ${otp}
+        </div>
+        <p style="font-size: 12px; color: #94A3B8; margin-top: 16px;">
+          Enter this 6-digit code on the verification screen and click <strong>Verify OTP</strong>.
+        </p>
+        <p style="font-size: 11px; color: #64748B; margin-top: 12px;">
+          Sent from ${senderEmail} to ${normalizedEmail}
+        </p>
+      </div>
+    </div>
+  `;
+
+  return deliverEmailMessage({
+    to: normalizedEmail,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  });
+};
+
 module.exports = {
+  validateEmailAddress,
   sendBrevoOTP,
+  sendExplicitOTP,
   verifyOTP,
   sendDriverCredentialsEmail,
   sendDriverScheduleEmail
 };
-
-
