@@ -498,8 +498,8 @@ router.post('/send-otp', async (req, res) => {
       });
     }
 
-    // Check if account already exists
-    const existing = await db.findUserByEmail(emailValidation.normalizedEmail);
+    // Check if account already exists (fast in-memory check for instant OTP response)
+    const existing = await db.findUserByEmail(emailValidation.normalizedEmail, { memoryOnly: true });
     if (existing) {
       return res.status(400).json({
         success: false,

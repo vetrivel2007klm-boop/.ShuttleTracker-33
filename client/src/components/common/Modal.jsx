@@ -26,8 +26,8 @@ export const Modal = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="flex min-h-screen items-center justify-center p-4 text-center sm:p-0">
+    <div className="fixed inset-0 z-[9999] overflow-y-auto">
+      <div className="flex min-h-screen items-center justify-center p-4 text-center">
         {/* Backdrop */}
         <div
           className="fixed inset-0 bg-navy-950/60 backdrop-blur-sm transition-opacity"
@@ -36,7 +36,7 @@ export const Modal = ({
 
         {/* Modal Dialog Card */}
         <div
-          className={`relative transform overflow-hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-left shadow-2xl transition-all sm:my-8 w-full ${maxWidth} z-10`}
+          className={`relative transform overflow-hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-left shadow-2xl transition-all my-8 w-full ${maxWidth} z-10`}
         >
           {/* Header */}
           <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 px-6 py-4">

@@ -629,25 +629,29 @@ const LiveMapInner = ({
         : 'bg-blue-600 text-white border-white ring-2 ring-blue-500/30';
 
       const roleTag = isStart
-        ? `<span class="px-1.5 py-0.2 rounded bg-emerald-600 text-white text-[8px] font-black uppercase tracking-wider shadow">START</span>`
+        ? `<div class="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded bg-emerald-600 text-white text-[8px] font-black uppercase tracking-wider shadow whitespace-nowrap pointer-events-none">START #1</div>`
         : isEnd
-        ? `<span class="px-1.5 py-0.2 rounded bg-rose-600 text-white text-[8px] font-black uppercase tracking-wider shadow">🏁 DEST</span>`
+        ? `<div class="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded bg-rose-600 text-white text-[8px] font-black uppercase tracking-wider shadow whitespace-nowrap pointer-events-none">🏁 DEST #${index + 1}</div>`
         : '';
 
+      const hasCustomLandmark =
+        stop.landmark &&
+        stop.landmark !== 'Starting Point' &&
+        stop.landmark !== 'Destination Terminal' &&
+        stop.landmark !== 'Transit Stop' &&
+        !String(stop.name).toLowerCase().includes(String(stop.landmark).toLowerCase());
+
+      // Pin circle is 28x28 anchored at [14, 14] so the pin center sits on the EXACT GPS coordinate
       const stopIconHtml = `
-        <div class="relative flex flex-col items-center">
+        <div class="relative w-7 h-7 flex items-center justify-center">
           ${roleTag}
-          <div class="w-7 h-7 rounded-full border-2 ${pinBg} shadow-lg flex items-center justify-center font-extrabold text-xs mt-0.5">
+          <div class="w-7 h-7 rounded-full border-2 ${pinBg} shadow-lg flex items-center justify-center font-extrabold text-xs">
             ${isEnd ? '🏁' : index + 1}
           </div>
-          <div class="mt-0.5 bg-slate-900/95 text-white text-[10px] px-2 py-0.5 rounded-md shadow-md pointer-events-none whitespace-nowrap font-bold border border-slate-700 text-center">
-            <span>${stop.name}</span>
+          <div class="absolute top-full mt-1 left-1/2 -translate-x-1/2 bg-slate-900/95 text-white text-[10px] px-2 py-0.5 rounded-md shadow-md pointer-events-none whitespace-nowrap font-bold border border-slate-700 text-center">
+            <span>${index + 1}. ${stop.name}</span>
             ${
-              stop.landmark &&
-              stop.landmark !== 'Starting Point' &&
-              stop.landmark !== 'Destination Terminal' &&
-              stop.landmark !== 'Transit Stop' &&
-              !String(stop.name).toLowerCase().includes(String(stop.landmark).toLowerCase())
+              hasCustomLandmark
                 ? `<span class="block text-[8px] text-amber-300 font-semibold">${stop.landmark}</span>`
                 : ''
             }
@@ -658,19 +662,24 @@ const LiveMapInner = ({
       const icon = L.divIcon({
         className: 'custom-stop-div-icon',
         html: stopIconHtml,
-        iconSize: [36, 58],
-        iconAnchor: [18, isStart || isEnd ? 26 : 16]
+        iconSize: [28, 28],
+        iconAnchor: [14, 14],
+        popupAnchor: [0, -14]
       });
 
       const stopMarker = L.marker([Number(stop.latitude), Number(stop.longitude)], { icon })
         .addTo(map)
         .bindPopup(`
-          <div style="font-family: inherit; font-size: 12px; line-height: 1.45; color: #0F172A; min-width: 185px;">
+          <div style="font-family: inherit; font-size: 12px; line-height: 1.45; color: #0F172A; min-width: 190px;">
             <strong style="display:block; font-size:13px; color:${isStart ? '#059669' : isEnd ? '#E11D48' : '#2563EB'};">
               ${isStart ? '🟢 Start Stop (#1)' : isEnd ? `🏁 Final Destination (#${index + 1})` : `🔵 Stop #${index + 1}`}: ${stop.name}
             </strong>
-            <span style="color: #475569; font-size:11px; display:block; margin-top:2px;">📍 Landmark: <b>${stop.landmark || stop.name}</b></span>
-            <span style="color: #64748B; font-size:10px; font-family:monospace;">GPS: ${Number(stop.latitude).toFixed(5)}, ${Number(stop.longitude).toFixed(5)}</span>
+            ${
+              hasCustomLandmark
+                ? `<span style="color: #475569; font-size:11px; display:block; margin-top:2px;">📍 Landmark: <b>${stop.landmark}</b></span>`
+                : ''
+            }
+            <span style="color: #64748B; font-size:10px; font-family:monospace; display:block; margin-top:2px;">GPS: ${Number(stop.latitude).toFixed(5)}, ${Number(stop.longitude).toFixed(5)}</span>
           </div>
         `);
 
@@ -680,7 +689,7 @@ const LiveMapInner = ({
     // Fit map to exact route stops when route changes
     const stopBoundsPts = validStops.map((s) => [Number(s.latitude), Number(s.longitude)]);
     if (stopBoundsPts.length > 1) {
-      map.fitBounds(L.latLngBounds(stopBoundsPts), { padding: [55, 55], maxZoom: 16, animate: true });
+      map.fitBounds(L.latLngBounds(stopBoundsPts), { padding: [65, 65], maxZoom: 16, animate: true });
     } else if (stopBoundsPts.length === 1) {
       map.flyTo(stopBoundsPts[0], 15, { duration: 0.6 });
     }
@@ -690,46 +699,57 @@ const LiveMapInner = ({
       return;
     }
 
-    const applyRoadGeometry = (latlngs, distanceKm, durationMins) => {
+    const applyRoadGeometry = (latlngs, distanceKm, durationMins, legDistancesKm = [], notifyParent = true) => {
       if (!mapInstanceRef.current) return;
       currentRoadLatLngsRef.current = latlngs;
       renderRoadAndTrafficLayers(latlngs, showTrafficLayer, validStops);
-      setRoadRouteMeta({ distanceKm, durationMins });
-      if (onRouteCalculatedRef.current && distanceKm) {
+      setRoadRouteMeta({ distanceKm, durationMins, legDistancesKm });
+      if (notifyParent && onRouteCalculatedRef.current && distanceKm) {
         onRouteCalculatedRef.current({
           distanceKm,
           durationMins,
+          legDistancesKm,
           stopsCount: validStops.length
         });
       }
     };
 
     let fallbackSumKm = 0;
+    const fallbackLegDistances = [];
     for (let i = 0; i < validStops.length - 1; i++) {
-      fallbackSumKm += calcHaversineKm(
+      const legDirect = calcHaversineKm(
         Number(validStops[i].latitude),
         Number(validStops[i].longitude),
         Number(validStops[i + 1].latitude),
         Number(validStops[i + 1].longitude)
       );
+      fallbackSumKm += legDirect;
+      fallbackLegDistances.push(Math.max(0.2, Number((legDirect * 1.24).toFixed(2))));
     }
     const fallbackRoadKm = Math.max(0.8, Number((fallbackSumKm * 1.24).toFixed(2)));
     const fallbackMins = Math.max(2, Math.round((fallbackRoadKm / 26) * 60));
 
     if (roadPathCache.has(stopsSignature)) {
       const cached = roadPathCache.get(stopsSignature);
-      applyRoadGeometry(cached.latlngs, cached.distanceKm, cached.durationMins);
+      applyRoadGeometry(
+        cached.latlngs,
+        cached.distanceKm,
+        cached.durationMins,
+        cached.legDistancesKm || fallbackLegDistances,
+        true
+      );
       return;
     }
 
+    // Draw initial straight-line connection while OSRM road route loads, without overwriting parent DB distance
     const straightLatLngs = validStops.map((s) => [Number(s.latitude), Number(s.longitude)]);
-    applyRoadGeometry(straightLatLngs, fallbackRoadKm, fallbackMins);
+    applyRoadGeometry(straightLatLngs, fallbackRoadKm, fallbackMins, fallbackLegDistances, false);
 
     let isCancelled = false;
 
-    // Fetch exact continuous multi-waypoint road geometry in a SINGLE OSRM request across all stops
-    // (Start -> Intermediate Stop 1 -> Intermediate Stop 2 -> ... -> Final Destination)
-    // so it never hits rate limits and always reaches the final destination along the exact road!
+    // Fetch exact continuous multi-waypoint road geometry across all stops in exact sequence:
+    // Start (#1) -> Stop #2 -> Stop #3 -> ... -> Final Destination (#N)
+    // Anchors every intermediate stop and final destination so the road path always reaches the exact destination via all added stops.
     const fetchMultiStopRoadRoute = async () => {
       const coordQuery = validStops
         .map((s) => `${Number(s.longitude).toFixed(5)},${Number(s.latitude).toFixed(5)}`)
@@ -737,32 +757,89 @@ const LiveMapInner = ({
 
       try {
         const res = await fetch(
-          `https://router.project-osrm.org/route/v1/driving/${coordQuery}?overview=full&geometries=geojson&steps=false`
+          `https://router.project-osrm.org/route/v1/driving/${coordQuery}?overview=full&geometries=geojson&steps=true`
         );
         const data = await res.json();
         if (data && data.code === 'Ok' && data.routes && data.routes[0]) {
           const rObj = data.routes[0];
-          const rawCoords = rObj.geometry.coordinates.map(([lng, lat]) => [Number(lat), Number(lng)]);
-          const clampedPath = clampRoadPathToDestination(
-            rawCoords,
-            validStops[0],
-            validStops[validStops.length - 1]
-          );
+          const stitchedPath = [];
+          const legDistancesKm = [];
+          let sumLegKm = 0;
+
+          if (Array.isArray(rObj.legs) && rObj.legs.length === validStops.length - 1) {
+            rObj.legs.forEach((leg, legIdx) => {
+              const fromStop = validStops[legIdx];
+              const toStop = validStops[legIdx + 1];
+              const legDirectKm = calcHaversineKm(
+                Number(fromStop.latitude),
+                Number(fromStop.longitude),
+                Number(toStop.latitude),
+                Number(toStop.longitude)
+              );
+              const legKm = Math.max(
+                Number(legDirectKm.toFixed(2)),
+                Number(((leg.distance || 0) / 1000).toFixed(2))
+              );
+              legDistancesKm.push(legKm);
+              sumLegKm += legKm;
+
+              const legCoords = [];
+              if (Array.isArray(leg.steps) && leg.steps.length > 0) {
+                leg.steps.forEach((step) => {
+                  if (step.geometry && Array.isArray(step.geometry.coordinates)) {
+                    step.geometry.coordinates.forEach(([lng, lat]) => {
+                      legCoords.push([Number(lat), Number(lng)]);
+                    });
+                  }
+                });
+              }
+              const anchoredLeg =
+                legCoords.length >= 2
+                  ? clampRoadPathToDestination(legCoords, fromStop, toStop)
+                  : [
+                      [Number(fromStop.latitude), Number(fromStop.longitude)],
+                      [Number(toStop.latitude), Number(toStop.longitude)]
+                    ];
+
+              if (legIdx === 0) {
+                stitchedPath.push(...anchoredLeg);
+              } else {
+                stitchedPath.push(...anchoredLeg.slice(1));
+              }
+            });
+          }
+
+          const finalPath =
+            stitchedPath.length >= 2
+              ? stitchedPath
+              : clampRoadPathToDestination(
+                  rObj.geometry.coordinates.map(([lng, lat]) => [Number(lat), Number(lng)]),
+                  validStops[0],
+                  validStops[validStops.length - 1]
+                );
+
           const exactKm = Math.max(
             Number(fallbackSumKm.toFixed(2)),
-            Number((rObj.distance / 1000).toFixed(2))
+            Number((sumLegKm > 0 ? sumLegKm : rObj.distance / 1000).toFixed(2))
           );
           const exactMins = Math.max(
             3,
             Math.round(rObj.duration > 60 ? rObj.duration / 60 : (exactKm / 26) * 60)
           );
-          if (!isCancelled && mapInstanceRef.current && clampedPath.length >= 2) {
+          if (!isCancelled && mapInstanceRef.current && finalPath.length >= 2) {
             roadPathCache.set(stopsSignature, {
-              latlngs: clampedPath,
+              latlngs: finalPath,
               distanceKm: exactKm,
-              durationMins: exactMins
+              durationMins: exactMins,
+              legDistancesKm: legDistancesKm.length > 0 ? legDistancesKm : fallbackLegDistances
             });
-            applyRoadGeometry(clampedPath, exactKm, exactMins);
+            applyRoadGeometry(
+              finalPath,
+              exactKm,
+              exactMins,
+              legDistancesKm.length > 0 ? legDistancesKm : fallbackLegDistances,
+              true
+            );
             return;
           }
         }
@@ -772,6 +849,7 @@ const LiveMapInner = ({
 
       // Sequential leg-by-leg fallback
       const combinedLatLngs = [];
+      const legDistancesKm = [];
       let totalExactKm = 0;
       for (let i = 0; i < validStops.length - 1; i++) {
         if (isCancelled) return;
@@ -802,6 +880,7 @@ const LiveMapInner = ({
           }
         } catch {}
 
+        legDistancesKm.push(Number(legKm.toFixed(2)));
         totalExactKm += legKm;
         if (i === 0) {
           combinedLatLngs.push(...legLatLngs);
@@ -816,9 +895,10 @@ const LiveMapInner = ({
         roadPathCache.set(stopsSignature, {
           latlngs: combinedLatLngs,
           distanceKm: exactKm,
-          durationMins: exactMins
+          durationMins: exactMins,
+          legDistancesKm
         });
-        applyRoadGeometry(combinedLatLngs, exactKm, exactMins);
+        applyRoadGeometry(combinedLatLngs, exactKm, exactMins, legDistancesKm, true);
       }
     };
 
@@ -1196,12 +1276,12 @@ const LiveMapInner = ({
         </div>
       </div>
 
-      {/* Middle Interactive Map Canvas — Completely Unobstructed */}
-      <div className="relative flex-1 w-full min-h-[260px]">
+      {/* Middle Interactive Map Canvas — Strictly Contained */}
+      <div className="relative flex-1 w-full min-h-[220px] min-h-0 overflow-hidden z-0">
         <div
           ref={mapContainerRef}
-          className="w-full h-full cursor-grab active:cursor-grabbing"
-          style={{ minHeight: '260px', height: '100%', width: '100%' }}
+          className="w-full h-full cursor-grab active:cursor-grabbing overflow-hidden"
+          style={{ height: '100%', width: '100%' }}
         />
       </div>
 

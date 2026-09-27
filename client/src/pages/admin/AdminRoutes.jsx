@@ -79,7 +79,11 @@ export const AdminRoutes = () => {
     fetchData();
   }, []);
 
-  const [mapMetrics, setMapMetrics] = useState({ distanceKm: null, durationMins: null });
+  const [mapMetrics, setMapMetrics] = useState({
+    distanceKm: null,
+    durationMins: null,
+    legDistancesKm: []
+  });
 
   // Resolve the currently selected Bus and its exclusive Route
   const selectedBus =
@@ -93,20 +97,21 @@ export const AdminRoutes = () => {
       ) || null
     : null;
 
-  const exactDistanceKm =
-    mapMetrics.distanceKm || selectedRoute?.distance_km || 0;
+  const exactDistanceKm = Number(
+    mapMetrics.distanceKm || selectedRoute?.distance_km || 0
+  ).toFixed(2);
   const exactDurationMins =
     mapMetrics.durationMins || selectedRoute?.estimated_time_minutes || 0;
 
   const handleSelectBus = (busId) => {
     setSelectedBusId(Number(busId));
-    setMapMetrics({ distanceKm: null, durationMins: null });
+    setMapMetrics({ distanceKm: null, durationMins: null, legDistancesKm: [] });
     setStopForm({ name: '', landmark: '', latitude: '', longitude: '' });
   };
 
-  const handleRouteCalculatedFromMap = ({ distanceKm, durationMins }) => {
+  const handleRouteCalculatedFromMap = ({ distanceKm, durationMins, legDistancesKm = [] }) => {
     if (!distanceKm) return;
-    setMapMetrics({ distanceKm, durationMins });
+    setMapMetrics({ distanceKm, durationMins, legDistancesKm });
     if (selectedRoute && Math.abs(Number(selectedRoute.distance_km || 0) - distanceKm) >= 0.05) {
       setRoutes((prev) =>
         prev.map((r) =>
@@ -134,8 +139,8 @@ export const AdminRoutes = () => {
         `${selectedBus.start_point || 'Start'} - ${selectedBus.destination || 'Destination'} Express`,
       start_point: selectedRoute?.start_point || selectedBus.start_point || '',
       end_point: selectedRoute?.end_point || selectedBus.destination || '',
-      landmark: selectedRoute?.landmark || 'Main Transit Corridor',
-      distance_km: exactDistanceKm || selectedRoute?.distance_km || 4.5,
+      landmark: selectedRoute?.landmark || '',
+      distance_km: Number(exactDistanceKm) || selectedRoute?.distance_km || 4.5,
       estimated_time_minutes: exactDurationMins || selectedRoute?.estimated_time_minutes || 18
     });
     setIsModalOpen(true);
@@ -147,6 +152,7 @@ export const AdminRoutes = () => {
     try {
       await api.post('/routes', {
         ...formData,
+        landmark: (formData.landmark || '').trim(),
         shuttle_id: Number(formData.shuttle_id || selectedBus?.id)
       });
       addToast({
@@ -155,7 +161,7 @@ export const AdminRoutes = () => {
         type: 'success'
       });
       setIsModalOpen(false);
-      setMapMetrics({ distanceKm: null, durationMins: null });
+      setMapMetrics({ distanceKm: null, durationMins: null, legDistancesKm: [] });
       await fetchData(selectedBus?.id);
     } catch (err) {
       addToast({
@@ -177,7 +183,7 @@ export const AdminRoutes = () => {
     }));
     addToast({
       title: 'Map Coordinates Selected',
-      message: `Pinned (${lat}, ${lng}) for new stop on Bus ${selectedBus?.code}. Enter Stop Name & Landmark to save.`,
+      message: `Pinned (${lat}, ${lng}) for new stop on Bus ${selectedBus?.code}. Enter Stop Name to save (Landmark is optional).`,
       type: 'info'
     });
   };
@@ -194,9 +200,11 @@ export const AdminRoutes = () => {
     }
     setSubmittingStop(true);
     try {
+      const cleanName = stopForm.name.trim();
+      const cleanLandmark = (stopForm.landmark || '').trim();
       const res = await api.post(`/routes/${selectedRoute.id}/stops`, {
-        name: stopForm.name.trim(),
-        landmark: stopForm.landmark.trim(),
+        name: cleanName,
+        landmark: cleanLandmark,
         ...(stopForm.latitude && stopForm.longitude
           ? { latitude: Number(stopForm.latitude), longitude: Number(stopForm.longitude) }
           : {})
@@ -204,14 +212,15 @@ export const AdminRoutes = () => {
       if (res.data?.route) {
         setMapMetrics({
           distanceKm: res.data.route.distance_km,
-          durationMins: res.data.route.estimated_time_minutes
+          durationMins: res.data.route.estimated_time_minutes,
+          legDistancesKm: []
         });
       } else {
-        setMapMetrics({ distanceKm: null, durationMins: null });
+        setMapMetrics({ distanceKm: null, durationMins: null, legDistancesKm: [] });
       }
       addToast({
-        title: 'Stop & Landmark Added in Route Sequence',
-        message: `"${stopForm.name}" (${stopForm.landmark}) added before final destination on Bus ${selectedBus?.code}!`,
+        title: 'Stop Added in Exact Route Sequence',
+        message: `"${cleanName}"${cleanLandmark ? ` (${cleanLandmark})` : ''} added before final destination on Bus ${selectedBus?.code}!`,
         type: 'success'
       });
       setStopForm({ name: '', landmark: '', latitude: '', longitude: '' });
@@ -230,10 +239,11 @@ export const AdminRoutes = () => {
       if (res.data?.route) {
         setMapMetrics({
           distanceKm: res.data.route.distance_km,
-          durationMins: res.data.route.estimated_time_minutes
+          durationMins: res.data.route.estimated_time_minutes,
+          legDistancesKm: []
         });
       } else {
-        setMapMetrics({ distanceKm: null, durationMins: null });
+        setMapMetrics({ distanceKm: null, durationMins: null, legDistancesKm: [] });
       }
       addToast({
         title: 'Stop Removed',
@@ -246,9 +256,16 @@ export const AdminRoutes = () => {
     }
   };
 
-  // Helper to compute leg road distance between consecutive stops
-  const calcStopLegKm = (s1, s2) => {
-    if (!s1 || !s2 || !s1.latitude || !s1.longitude || !s2.latitude || !s2.longitude) return 0;
+  // Helper to compute exact road leg distance between consecutive stops (prefers OSRM leg distance from map)
+  const calcStopLegKm = (s1, s2, legIdx = null) => {
+    if (
+      legIdx !== null &&
+      Array.isArray(mapMetrics.legDistancesKm) &&
+      mapMetrics.legDistancesKm[legIdx] !== undefined
+    ) {
+      return Number(mapMetrics.legDistancesKm[legIdx]).toFixed(2);
+    }
+    if (!s1 || !s2 || !s1.latitude || !s1.longitude || !s2.latitude || !s2.longitude) return '0.00';
     const R = 6371;
     const dLat = ((Number(s2.latitude) - Number(s1.latitude)) * Math.PI) / 180;
     const dLon = ((Number(s2.longitude) - Number(s1.longitude)) * Math.PI) / 180;
@@ -259,7 +276,7 @@ export const AdminRoutes = () => {
         Math.sin(dLon / 2) *
         Math.sin(dLon / 2);
     const straight = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return Number((straight * 1.24).toFixed(2));
+    return Number((straight * 1.24).toFixed(2)).toFixed(2);
   };
 
   return (
@@ -514,17 +531,17 @@ export const AdminRoutes = () => {
                 )}
               </Card>
 
-              {/* Add Stop with Landmark Form */}
-              <Card className="p-5 space-y-4 border border-slate-200 dark:border-slate-800 shadow-premium">
+              {/* Add Stop Form (Landmark is Optional) */}
+              <Card className="p-5 space-y-4 border border-slate-200 dark:border-slate-800 shadow-premium relative z-10">
                 <div className="pb-3 border-b border-slate-100 dark:border-slate-800">
                   <h3 className="text-sm font-extrabold text-navy-900 dark:text-white flex items-center gap-2">
                     <Plus className="w-4 h-4 text-brand-500" />
-                    <span>Add Intermediate Stop & Landmark for Bus {selectedBus.code}</span>
+                    <span>Add Intermediate Stop for Bus {selectedBus.code}</span>
                   </h3>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                    New stops are geocoded strictly within the{' '}
+                    New stops are geocoded to their exact real-world location along{' '}
                     <b>{selectedRoute?.start_point || selectedBus.start_point}</b> ➔{' '}
-                    <b>{selectedRoute?.end_point || selectedBus.destination}</b> road corridor (or click directly on the map to pin exact coordinates).
+                    <b>{selectedRoute?.end_point || selectedBus.destination}</b> in exact sequential order (or click on the map to pin coordinates). Landmark is optional.
                   </p>
                 </div>
 
@@ -539,10 +556,10 @@ export const AdminRoutes = () => {
                   />
 
                   <Input
-                    label="Stop Landmark (Used for Exact Map Location)"
+                    label="Stop Landmark (Optional)"
                     id="stopLandmark"
-                    required
-                    placeholder="e.g. Near Chromepet Railway Station / GST Road"
+                    required={false}
+                    placeholder="Optional — e.g. Near Railway Station / Main Arch"
                     value={stopForm.landmark}
                     onChange={(e) => setStopForm({ ...stopForm, landmark: e.target.value })}
                   />
@@ -551,14 +568,14 @@ export const AdminRoutes = () => {
                     <Input
                       label="Latitude (Click map or auto)"
                       id="stopLat"
-                      placeholder="Auto-geocoded on corridor"
+                      placeholder="Auto-geocoded"
                       value={stopForm.latitude}
                       onChange={(e) => setStopForm({ ...stopForm, latitude: e.target.value })}
                     />
                     <Input
                       label="Longitude (Click map or auto)"
                       id="stopLng"
-                      placeholder="Auto-geocoded on corridor"
+                      placeholder="Auto-geocoded"
                       value={stopForm.longitude}
                       onChange={(e) => setStopForm({ ...stopForm, longitude: e.target.value })}
                     />
@@ -582,7 +599,7 @@ export const AdminRoutes = () => {
 
                   <Button type="submit" disabled={submittingStop} icon={Plus} className="w-full">
                     {submittingStop
-                      ? 'Adding & Recalculating Exact Road Path...'
+                      ? 'Adding Stop & Recalculating Road Path...'
                       : `Add Stop to Bus ${selectedBus.code} Route`}
                   </Button>
                 </form>
@@ -590,12 +607,12 @@ export const AdminRoutes = () => {
             </div>
 
             {/* Right Column (7 cols): Dedicated Isolated Interactive Google Map Card */}
-            <div className="lg:col-span-7">
+            <div className="lg:col-span-7 relative z-0">
               <Card
                 className="p-0 overflow-hidden shadow-premium border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 isolate"
                 style={{ isolation: 'isolate' }}
               >
-                <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900">
+                <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900 relative z-10">
                   <div>
                     <h3 className="text-sm font-extrabold text-navy-900 dark:text-white flex items-center gap-2">
                       <Navigation2 className="w-4 h-4 text-brand-500" />
@@ -604,7 +621,7 @@ export const AdminRoutes = () => {
                       </span>
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                      Displays exact continuous road path from <b>{selectedRoute?.start_point || selectedBus.start_point}</b> through all intermediate stops to <b>{selectedRoute?.end_point || selectedBus.destination}</b>. Click anywhere on the map to pin a new stop.
+                      Exact continuous road path from <b>{selectedRoute?.start_point || selectedBus.start_point}</b> through all intermediate stops to <b>{selectedRoute?.end_point || selectedBus.destination}</b>. Click anywhere on the map to pin a new stop.
                     </p>
                   </div>
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 text-[11px] font-bold border border-emerald-200 dark:border-emerald-800">
@@ -613,7 +630,7 @@ export const AdminRoutes = () => {
                   </span>
                 </div>
 
-                <div className="h-[520px] w-full overflow-hidden relative isolate">
+                <div className="h-[520px] w-full overflow-hidden relative z-0 isolate">
                   <LiveMap
                     stops={selectedRoute?.stops || []}
                     shuttles={selectedBus.status === 'on_trip' ? [selectedBus] : []}
@@ -628,23 +645,23 @@ export const AdminRoutes = () => {
             </div>
           </div>
 
-          {/* SECTION 3: Full-Width Standalone Assigned Route Stops & Landmarks Card (Completely separated below Map) */}
-          <Card className="p-6 space-y-5 shadow-premium border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+          {/* SECTION 3: Full-Width Standalone Assigned Route Stops Card (Cleanly separated below Map) */}
+          <Card className="p-6 space-y-5 shadow-premium border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 relative z-10">
             <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100 dark:border-slate-800">
               <div>
                 <h4 className="text-base font-black uppercase tracking-wider text-navy-900 dark:text-white flex items-center gap-2">
                   <MapPin className="w-4 h-4 text-brand-500" />
                   <span>
-                    Assigned Route Stops & Landmarks — Bus {selectedBus.code} ({selectedRoute?.name || `${selectedBus.start_point} ➔ ${selectedBus.destination}`})
+                    Assigned Route Stops — Bus {selectedBus.code} ({selectedRoute?.name || `${selectedBus.start_point} ➔ ${selectedBus.destination}`})
                   </span>
                 </h4>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  Start: <b className="text-emerald-600 dark:text-emerald-400">{selectedRoute?.start_point || selectedBus.start_point}</b> ➔ Final Destination: <b className="text-rose-600 dark:text-rose-400">{selectedRoute?.end_point || selectedBus.destination}</b> • Total Road Distance Calculated from Map: <b className="text-brand-600 dark:text-blue-400">{exactDistanceKm} km</b> (~{exactDurationMins} min)
+                  Start: <b className="text-emerald-600 dark:text-emerald-400">{selectedRoute?.start_point || selectedBus.start_point}</b> ➔ Final Destination: <b className="text-rose-600 dark:text-rose-400">{selectedRoute?.end_point || selectedBus.destination}</b> • Exact Total Road Distance Calculated from Map: <b className="text-brand-600 dark:text-blue-400">{exactDistanceKm} km</b> (~{exactDurationMins} min)
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-xs font-extrabold border border-emerald-200 dark:border-emerald-800">
-                  Total Distance: {exactDistanceKm} km
+                  Total Map Distance: {exactDistanceKm} km
                 </span>
                 <span className="px-3 py-1.5 rounded-xl bg-brand-50 dark:bg-slate-800 text-brand-600 dark:text-blue-400 text-xs font-extrabold border border-brand-200 dark:border-slate-700">
                   {selectedRoute?.stops?.length || 0} Ordered Stops
@@ -654,92 +671,105 @@ export const AdminRoutes = () => {
 
             {!selectedRoute?.stops || selectedRoute.stops.length === 0 ? (
               <div className="py-8 text-center text-xs text-slate-400">
-                No stops configured yet for Bus {selectedBus.code}. Use the form above to add stops with landmarks.
+                No stops configured yet for Bus {selectedBus.code}. Use the form above to add stops.
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {selectedRoute.stops.map((stop, index) => {
-                  const isStart = index === 0;
-                  const isEnd = index === selectedRoute.stops.length - 1 && selectedRoute.stops.length > 1;
-                  const prevStop = index > 0 ? selectedRoute.stops[index - 1] : null;
-                  const legKm = prevStop ? calcStopLegKm(prevStop, stop) : 0;
+                {(() => {
+                  let cumulativeKm = 0;
+                  return selectedRoute.stops.map((stop, index) => {
+                    const isStart = index === 0;
+                    const isEnd = index === selectedRoute.stops.length - 1 && selectedRoute.stops.length > 1;
+                    const prevStop = index > 0 ? selectedRoute.stops[index - 1] : null;
+                    const legKm = prevStop ? Number(calcStopLegKm(prevStop, stop, index - 1)) : 0;
+                    cumulativeKm = Number((cumulativeKm + legKm).toFixed(2));
+                    const hasLandmark =
+                      stop.landmark &&
+                      stop.landmark !== 'Starting Point' &&
+                      stop.landmark !== 'Destination Terminal' &&
+                      stop.landmark !== 'Transit Stop';
 
-                  return (
-                    <div
-                      key={stop.id || index}
-                      className="flex items-start justify-between gap-3 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/90 dark:border-slate-700 shadow-sm"
-                    >
-                      <div className="flex items-start gap-3 min-w-0">
-                        <div
-                          className={`w-8 h-8 rounded-full text-white font-black text-xs flex items-center justify-center shrink-0 mt-0.5 shadow-sm ${
-                            isStart
-                              ? 'bg-emerald-600'
-                              : isEnd
-                              ? 'bg-rose-600'
-                              : 'bg-brand-600'
-                          }`}
-                        >
-                          {index + 1}
-                        </div>
-                        <div className="min-w-0 space-y-1">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span
-                              className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${
-                                isStart
-                                  ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
-                                  : isEnd
-                                  ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300'
-                                  : 'bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300'
-                              }`}
-                            >
-                              {isStart ? 'Start (#1)' : isEnd ? `Destination (#${index + 1})` : `Stop #${index + 1}`}
-                            </span>
-                            <h5 className="text-sm font-extrabold text-navy-900 dark:text-white truncate">
-                              {stop.name}
-                            </h5>
-                          </div>
-                          <p className="text-xs text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1 truncate">
-                            <Landmark className="w-3.5 h-3.5 shrink-0" />
-                            <span className="truncate">
-                              {stop.landmark || selectedRoute.landmark || 'Designated Transit Bay'}
-                            </span>
-                          </p>
-                          <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                            <span>
-                              GPS: {Number(stop.latitude).toFixed(4)}, {Number(stop.longitude).toFixed(4)}
-                            </span>
-                            {index > 0 && (
-                              <span className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-sans font-bold text-brand-600 dark:text-blue-400">
-                                +{legKm} km from Stop #{index}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteStop(stop.id, stop.name)}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition shrink-0"
-                        title="Remove Stop"
+                    return (
+                      <div
+                        key={stop.id || index}
+                        className="flex items-start justify-between gap-3 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/90 dark:border-slate-700 shadow-sm"
                       >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  );
-                })}
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div
+                            className={`w-8 h-8 rounded-full text-white font-black text-xs flex items-center justify-center shrink-0 mt-0.5 shadow-sm ${
+                              isStart
+                                ? 'bg-emerald-600'
+                                : isEnd
+                                ? 'bg-rose-600'
+                                : 'bg-brand-600'
+                            }`}
+                          >
+                            {index + 1}
+                          </div>
+                          <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span
+                                className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${
+                                  isStart
+                                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                    : isEnd
+                                    ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300'
+                                    : 'bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300'
+                                }`}
+                              >
+                                {isStart ? 'Start (#1)' : isEnd ? `Destination (#${index + 1})` : `Stop #${index + 1}`}
+                              </span>
+                              <h5 className="text-sm font-extrabold text-navy-900 dark:text-white truncate">
+                                {stop.name}
+                              </h5>
+                            </div>
+                            {hasLandmark && (
+                              <p className="text-xs text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1 truncate">
+                                <Landmark className="w-3.5 h-3.5 shrink-0" />
+                                <span className="truncate">{stop.landmark}</span>
+                              </p>
+                            )}
+                            <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                              <span>
+                                GPS: {Number(stop.latitude).toFixed(4)}, {Number(stop.longitude).toFixed(4)}
+                              </span>
+                              {index > 0 ? (
+                                <span className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-sans font-bold text-brand-600 dark:text-blue-400">
+                                  +{legKm.toFixed(2)} km (Total: {cumulativeKm.toFixed(2)} km)
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 font-sans font-bold text-emerald-700 dark:text-emerald-300">
+                                  0.00 km (Origin)
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteStop(stop.id, stop.name)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition shrink-0"
+                          title="Remove Stop"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             )}
           </Card>
         </>
       )}
 
-      {/* Modal: Configure / Update Route for Selected Bus */}
+      {/* Modal: Configure / Update Route for Selected Bus (Landmark is Optional) */}
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         title={`Configure Route for Bus ${selectedBus?.code || ''}`}
-        subtitle="Changes automatically update on the Passenger and Driver websites"
+        subtitle="Landmark is optional. Changes automatically update on the Passenger and Driver websites."
       >
         <form onSubmit={handleSaveRoute} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -781,20 +811,20 @@ export const AdminRoutes = () => {
           </div>
 
           <Input
-            label="Primary Route Landmark"
+            label="Primary Route Landmark (Optional)"
             id="landmark"
-            required
-            placeholder="e.g. Kishkinta Junction / Main Arch"
+            required={false}
+            placeholder="Optional — e.g. Kishkinta Junction / Main Arch"
             value={formData.landmark}
             onChange={(e) => setFormData({ ...formData, landmark: e.target.value })}
           />
 
           <div className="grid grid-cols-2 gap-4">
             <Input
-              label="Distance (km)"
+              label="Distance (km — Auto-Calculated from Map)"
               id="dist"
               type="number"
-              step="0.1"
+              step="0.01"
               value={formData.distance_km}
               onChange={(e) => setFormData({ ...formData, distance_km: e.target.value })}
             />

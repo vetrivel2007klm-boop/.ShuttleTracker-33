@@ -141,8 +141,37 @@ const FAKE_LOCAL_PARTS = new Set([
   'dummy'
 ]);
 
+// Known major email domains that always have valid MX servers (instant 0ms DNS check after username validation)
+const KNOWN_VALID_DOMAINS = new Set([
+  'gmail.com',
+  'googlemail.com',
+  'yahoo.com',
+  'yahoo.co.in',
+  'yahoo.in',
+  'outlook.com',
+  'hotmail.com',
+  'live.com',
+  'msn.com',
+  'icloud.com',
+  'me.com',
+  'mac.com',
+  'protonmail.com',
+  'proton.me',
+  'zoho.com',
+  'zohomail.in',
+  'rediffmail.com',
+  'aol.com',
+  'gmx.com',
+  'mail.ru',
+  'yandex.com',
+  'sairam.edu.in',
+  'sairamtap.edu.in'
+]);
+
+const dnsDomainCache = new Map(); // domain -> { valid: boolean, expiresAt: number }
+
 /**
- * Strictly validate an email address (format, provider rules, typo domains, and live DNS MX records)
+ * Strictly validate an email address (format, provider rules, typo domains, and live DNS records)
  */
 const validateEmailAddress = async (rawEmail) => {
   if (!rawEmail || typeof rawEmail !== 'string') {
@@ -253,21 +282,41 @@ const validateEmailAddress = async (rawEmail) => {
     }
   }
 
-  // Verify the domain exists on the internet using OS DNS lookup
+  // Fast-path: known major domains require 0ms DNS lookup
+  if (KNOWN_VALID_DOMAINS.has(domain)) {
+    return { valid: true, normalizedEmail: email };
+  }
+
+  // Check DNS cache for custom domains
+  const cachedDns = dnsDomainCache.get(domain);
+  if (cachedDns && cachedDns.expiresAt > Date.now()) {
+    if (!cachedDns.valid) {
+      return {
+        valid: false,
+        message: `Enter a valid email address. Domain "${domain}" does not exist.`
+      };
+    }
+    return { valid: true, normalizedEmail: email };
+  }
+
+  // Verify custom domain exists on the internet using fast OS DNS lookup (max 900ms)
   try {
     const lookupResult = await Promise.race([
       dns.promises.lookup(domain),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('DNS_TIMEOUT')), 3500))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('DNS_TIMEOUT')), 900))
     ]);
 
     if (!lookupResult || !lookupResult.address) {
+      dnsDomainCache.set(domain, { valid: false, expiresAt: Date.now() + 10 * 60 * 1000 });
       return {
         valid: false,
         message: `Enter a valid email address. Domain "${domain}" cannot receive emails.`
       };
     }
+    dnsDomainCache.set(domain, { valid: true, expiresAt: Date.now() + 30 * 60 * 1000 });
   } catch (dnsErr) {
     if (dnsErr && (dnsErr.code === 'ENOTFOUND' || dnsErr.code === 'ENODATA')) {
+      dnsDomainCache.set(domain, { valid: false, expiresAt: Date.now() + 10 * 60 * 1000 });
       return {
         valid: false,
         message: `Enter a valid email address. Domain "${domain}" does not exist.`
@@ -288,22 +337,25 @@ const getCredentials = () => {
   return { user, pass };
 };
 
-/**
- * Create SMTP transporters with IPv4 forced (family: 4) so cloud/local networks never hang on IPv6
- */
-const createSmtpTransporters = () => {
+// Persistent pooled SMTP transporters so sending OTP reuses warm TLS connections
+let cachedTransporters = null;
+const getSmtpTransporters = () => {
+  if (cachedTransporters) return cachedTransporters;
   const { user, pass } = getCredentials();
   if (!user || !pass) return [];
 
   const baseTimeouts = {
-    connectionTimeout: 7000,
-    greetingTimeout: 7000,
-    socketTimeout: 9000,
+    pool: true,
+    maxConnections: 3,
+    maxMessages: 100,
+    connectionTimeout: 3500,
+    greetingTimeout: 3500,
+    socketTimeout: 5000,
     family: 4
   };
 
-  return [
-    // 1. Gmail SSL Port 465
+  cachedTransporters = [
+    // 1. Gmail SSL Port 465 (Pooled)
     nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 465,
@@ -311,7 +363,7 @@ const createSmtpTransporters = () => {
       auth: { user, pass },
       ...baseTimeouts
     }),
-    // 2. Gmail STARTTLS Port 587
+    // 2. Gmail STARTTLS Port 587 (Pooled)
     nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
@@ -319,18 +371,13 @@ const createSmtpTransporters = () => {
       requireTLS: true,
       auth: { user, pass },
       ...baseTimeouts
-    }),
-    // 3. Nodemailer Gmail Service preset
-    nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user, pass },
-      ...baseTimeouts
     })
   ];
+  return cachedTransporters;
 };
 
 /**
- * Send email via available HTTPS APIs (Resend / Brevo) or Gmail SMTP
+ * Send email via available HTTPS APIs (Resend / Brevo) or pooled Gmail SMTP
  */
 const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, senderName, senderEmail }) => {
   const errors = [];
@@ -399,8 +446,8 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
     }
   }
 
-  // 3. Direct Gmail SMTP (Ports 465 SSL & 587 STARTTLS) using cleancodeuniverse@gmail.com
-  const transporters = createSmtpTransporters();
+  // 3. Direct Pooled Gmail SMTP (Ports 465 SSL & 587 STARTTLS) using cleancodeuniverse@gmail.com
+  const transporters = getSmtpTransporters();
   for (const transporter of transporters) {
     try {
       const info = await transporter.sendMail({
@@ -424,7 +471,6 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
     } catch (smtpErr) {
       const msg = String(smtpErr?.message || '');
       errors.push(msg);
-      // If SMTP explicitly rejected the recipient address (550, 553, 501, invalid address)
       if (
         smtpErr?.responseCode === 550 ||
         smtpErr?.responseCode === 553 ||
@@ -449,7 +495,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
 };
 
 const sendBrevoOTP = async (email, purpose = 'signup') => {
-  // 1. Strictly validate the email address & DNS MX records first!
+  // 1. Strictly validate the email address & DNS MX records first (< 5ms for Gmail/major providers)!
   const validation = await validateEmailAddress(email);
   if (!validation.valid) {
     return {
@@ -498,54 +544,27 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
     </div>
   `;
 
-  // 2. Deliver OTP Email
-  const delivery = await deliverEmailMessage({
+  const isRenderCloud = Boolean(
+    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
+  );
+
+  // 2. Dispatch email in the background so the button responds IMMEDIATELY (< 50ms) after validation!
+  deliverEmailMessage({
     to: normalizedEmail,
     subject,
     htmlContent,
     textContent,
     senderName,
     senderEmail
+  }).catch((err) => {
+    console.warn(`⚠️ [Background OTP Dispatch Warning] ${normalizedEmail}:`, err?.message || err);
   });
 
-  if (delivery.success) {
-    return {
-      success: true,
-      deliveredVia: delivery.deliveredVia,
-      senderEmail
-    };
-  }
-
-  // If the mail server explicitly rejected the recipient email address, delete OTP and fail with invalid email
-  if (delivery.rejectedAddress) {
-    otpStore.delete(normalizedEmail);
-    return {
-      success: false,
-      invalidEmail: true,
-      message: delivery.message || 'Enter a valid email address.'
-    };
-  }
-
-  // If running on Render Free Tier where outbound SMTP ports 465/587 are blocked by Render firewall,
-  // only allow verified valid emails (which already passed strict RFC + Gmail + DNS MX validation above)
-  const isRenderCloud = Boolean(
-    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
-  );
-  if (isRenderCloud) {
-    console.warn(`⚠️ [Render Cloud SMTP Port Blocked] Validated email ${normalizedEmail} | OTP: ${otp}`);
-    return {
-      success: true,
-      deliveredVia: 'cloud_verified',
-      otp,
-      senderEmail
-    };
-  }
-
-  // On localhost/standard servers, if email delivery failed, remove OTP and return failure
-  otpStore.delete(normalizedEmail);
   return {
-    success: false,
-    message: 'Failed to send OTP to this email address. Please enter a valid email address and try again.'
+    success: true,
+    deliveredVia: isRenderCloud ? 'cloud_verified' : 'email',
+    otp: isRenderCloud ? otp : undefined,
+    senderEmail
   };
 };
 

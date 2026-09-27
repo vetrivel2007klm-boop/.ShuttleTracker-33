@@ -92,9 +92,9 @@ export const LoginPage = () => {
   const { darkMode, toggleDarkMode } = useTheme();
   const navigate = useNavigate();
 
-  // Only Admin has preset login credentials; Passenger & Driver start completely empty
+  // All roles (Admin, Passenger, Driver) start with empty login fields on the website
   const demoAccounts = {
-    admin: { email: 'admin@shuttletrack.com', password: 'password123' },
+    admin: { email: '', password: '' },
     user: { email: '', password: '' },
     driver: { email: '', password: '' }
   };
@@ -169,16 +169,9 @@ export const LoginPage = () => {
     setIdCardMessage('');
 
     if (authMode === 'login') {
-      if (selectedRole === 'admin') {
-        setEmail(demoAccounts.admin.email);
-        setPassword(demoAccounts.admin.password);
-        setOrganizationName(adminOrgName || '');
-      } else {
-        // Passenger and Driver start completely empty
-        setEmail('');
-        setPassword('');
-        setOrganizationName('');
-      }
+      setEmail('');
+      setPassword('');
+      setOrganizationName('');
     } else if (authMode === 'signup') {
       setEmail('');
       setPassword('');
@@ -698,7 +691,12 @@ export const LoginPage = () => {
 
       setOtpSending(false);
       if (res.data.success) {
-        if (res.data.deliveredVia === 'cloud_verified' && res.data.devOtp) {
+        if (
+          res.data.deliveredVia === 'cloud_verified' &&
+          res.data.devOtp &&
+          window.location.hostname !== 'localhost' &&
+          window.location.hostname !== '127.0.0.1'
+        ) {
           fetch('http://localhost:5000/api/auth/relay-otp-email', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -786,12 +784,7 @@ export const LoginPage = () => {
     // 1. LOGIN FLOW
     if (authMode === 'login') {
       setLoading(true);
-      const result = await login(
-        email,
-        password,
-        selectedRole,
-        selectedRole === 'admin' ? organizationName.trim() || undefined : undefined
-      );
+      const result = await login(email, password, selectedRole);
       setLoading(false);
       if (result.success) {
         addToast({
@@ -1073,36 +1066,6 @@ export const LoginPage = () => {
             AUTH FORM (LOGIN / PASSENGER SIGN UP / FORGOT PASSWORD)
            ================================================================= */}
         <form onSubmit={handleSubmit} className="space-y-4 text-left">
-          <datalist id="registered-orgs-list">
-            {registeredOrgs.map((org, idx) => (
-              <option key={idx} value={org.organization_name} />
-            ))}
-          </datalist>
-
-          {/* ORGANIZATION NAME FIELD FOR ADMIN LOGIN ONLY */}
-          {authMode === 'login' && selectedRole === 'admin' && (
-            <div>
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                Organization Name
-              </label>
-              <div className="relative">
-                <Building2 className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type="text"
-                  list="registered-orgs-list"
-                  value={organizationName}
-                  onChange={handleOrgChange}
-                  placeholder="Enter Organization Name"
-                  required
-                  className="w-full pl-10 pr-3.5 py-2.5 text-xs sm:text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/90 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 font-semibold"
-                />
-              </div>
-              <p className="text-[10px] text-slate-400 mt-1">
-                Each Organization Admin manages their own drivers, buses, routes, schedules & passenger ID card verification.
-              </p>
-            </div>
-          )}
-
           {/* PASSENGER SIGN UP SPECIFIC FIELDS (Name, Organization, Bus Number, & AI ID Card Upload) */}
           {authMode === 'signup' && selectedRole === 'user' && (
             <>

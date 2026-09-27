@@ -20,24 +20,36 @@ const KNOWN_LOCATIONS = {
   'sairam hostel': { lat: 12.9595, lng: 80.0560 },
   'sairam': { lat: 12.9602, lng: 80.0569 },
   'west tambaram': { lat: 12.9249, lng: 80.1000 },
+  'tambaram west': { lat: 12.9249, lng: 80.1000 },
   'east tambaram': { lat: 12.9229, lng: 80.1275 },
+  'tambaram east': { lat: 12.9229, lng: 80.1275 },
   'tambaram sanatorium': { lat: 12.9385, lng: 80.1268 },
   'tambaram railway station': { lat: 12.9259, lng: 80.1181 },
   'tambaram bus stand': { lat: 12.9249, lng: 80.1145 },
   'tambaram': { lat: 12.9249, lng: 80.1000 },
+  'mcc': { lat: 12.9212, lng: 80.1228 },
+  'madras christian college': { lat: 12.9212, lng: 80.1228 },
   'irumbuliyur': { lat: 12.9172, lng: 80.1072 },
   'peerkankaranai': { lat: 12.9098, lng: 80.0965 },
   'perungalathur': { lat: 12.9048, lng: 80.0889 },
+  'old perungalathur': { lat: 12.9062, lng: 80.0815 },
+  'new perungalathur': { lat: 12.9048, lng: 80.0889 },
   'vandalur': { lat: 12.8913, lng: 80.0810 },
   'vandalur zoo': { lat: 12.8792, lng: 80.0817 },
+  'vandalur gate': { lat: 12.8913, lng: 80.0810 },
+  'kilambakkam': { lat: 12.8778, lng: 80.0748 },
+  'kilambakkam bus terminus': { lat: 12.8778, lng: 80.0748 },
+  'kcbt': { lat: 12.8778, lng: 80.0748 },
   'urapakkam': { lat: 12.8674, lng: 80.0699 },
   'guduvancheri': { lat: 12.8439, lng: 80.0597 },
+  'nandhivaram': { lat: 12.8415, lng: 80.0635 },
   'potheri': { lat: 12.8231, lng: 80.0428 },
   'kattankulathur': { lat: 12.8184, lng: 80.0384 },
   'maraimalai nagar': { lat: 12.7931, lng: 80.0252 },
   'singaperumal koil': { lat: 12.7606, lng: 80.0043 },
   'chengalpattu': { lat: 12.6819, lng: 79.9888 },
   'mudichur': { lat: 12.9102, lng: 80.0717 },
+  'varadharajapuram': { lat: 12.9065, lng: 80.0575 },
   'mannivakkam': { lat: 12.8935, lng: 80.0628 },
   'padappai': { lat: 12.8837, lng: 80.0298 },
   'oragadam': { lat: 12.8333, lng: 79.9500 },
@@ -59,80 +71,144 @@ const KNOWN_LOCATIONS = {
   'airport': { lat: 12.9941, lng: 80.1709 },
   'alandur': { lat: 13.0042, lng: 80.2015 },
   'st thomas mount': { lat: 13.0053, lng: 80.1931 },
+  'kathipara': { lat: 13.0072, lng: 80.2045 },
+  'ekkatuthangal': { lat: 13.0172, lng: 80.2058 },
   'guindy': { lat: 13.0067, lng: 80.2206 },
   'little mount': { lat: 13.0145, lng: 80.2242 },
   'saidapet': { lat: 13.0213, lng: 80.2231 },
   'nandanam': { lat: 13.0316, lng: 80.2398 },
   'teynampet': { lat: 13.0405, lng: 80.2503 },
+  'dms': { lat: 13.0445, lng: 80.2479 },
   'thousand lights': { lat: 13.0587, lng: 80.2570 },
+  'lic': { lat: 13.0645, lng: 80.2652 },
   'mount road': { lat: 13.0620, lng: 80.2610 },
   'velachery': { lat: 12.9815, lng: 80.2180 },
+  'phoenix mall': { lat: 12.9915, lng: 80.2167 },
   'vijayanagar': { lat: 12.9788, lng: 80.2209 },
   'taramani': { lat: 12.9863, lng: 80.2432 },
+  'tidel park': { lat: 12.9896, lng: 80.2486 },
+  'srp tools': { lat: 12.9789, lng: 80.2498 },
   'thiruvanmiyur': { lat: 12.9830, lng: 80.2594 },
   'adyar': { lat: 13.0012, lng: 80.2565 },
+  'madhya kailash': { lat: 13.0064, lng: 80.2475 },
+  'iit madras': { lat: 12.9915, lng: 80.2337 },
+  'kotturpuram': { lat: 13.0182, lng: 80.2412 },
   'besant nagar': { lat: 13.0003, lng: 80.2667 },
+  'mandaveli': { lat: 13.0241, lng: 80.2642 },
   'mylapore': { lat: 13.0368, lng: 80.2676 },
+  'santhome': { lat: 13.0319, lng: 80.2788 },
+  'royapettah': { lat: 13.0540, lng: 80.2641 },
   'triplicane': { lat: 13.0588, lng: 80.2756 },
   'marina beach': { lat: 13.0500, lng: 80.2824 },
   't nagar': { lat: 13.0418, lng: 80.2341 },
+  'panagal park': { lat: 13.0416, lng: 80.2337 },
+  'pondicherry bazaar': { lat: 13.0398, lng: 80.2392 },
+  'valluvar kottam': { lat: 13.0528, lng: 80.2417 },
+  'nungambakkam': { lat: 13.0569, lng: 80.2425 },
+  'kodambakkam': { lat: 13.0521, lng: 80.2255 },
+  'chetpet': { lat: 13.0714, lng: 80.2417 },
   'west mambalam': { lat: 13.0384, lng: 80.2209 },
   'ashok nagar': { lat: 13.0373, lng: 80.2123 },
+  'ashok pillar': { lat: 13.0348, lng: 80.2102 },
   'kk nagar': { lat: 13.0410, lng: 80.1994 },
+  'nesapakkam': { lat: 13.0372, lng: 80.1912 },
   'vadapalani': { lat: 13.0500, lng: 80.2121 },
   'arumbakkam': { lat: 13.0622, lng: 80.2115 },
+  'aminjikarai': { lat: 13.0698, lng: 80.2245 },
+  'shenoy nagar': { lat: 13.0785, lng: 80.2285 },
   'koyambedu': { lat: 13.0694, lng: 80.1948 },
   'cmbt': { lat: 13.0674, lng: 80.2056 },
   'anna nagar': { lat: 13.0850, lng: 80.2101 },
+  'anna nagar west': { lat: 13.0902, lng: 80.1972 },
+  'anna nagar east': { lat: 13.0852, lng: 80.2212 },
   'kilpauk': { lat: 13.0784, lng: 80.2415 },
+  'purasawalkam': { lat: 13.0872, lng: 80.2535 },
+  'vepery': { lat: 13.0848, lng: 80.2625 },
   'egmore': { lat: 13.0732, lng: 80.2609 },
+  'chintadripet': { lat: 13.0748, lng: 80.2712 },
   'chennai central': { lat: 13.0827, lng: 80.2707 },
   'central': { lat: 13.0827, lng: 80.2707 },
+  'broadway': { lat: 13.0896, lng: 80.2852 },
   'parrys': { lat: 13.0896, lng: 80.2882 },
+  'mannady': { lat: 13.0958, lng: 80.2892 },
+  'washermanpet': { lat: 13.1145, lng: 80.2872 },
   'royapuram': { lat: 13.1137, lng: 80.2954 },
   'tondiarpet': { lat: 13.1265, lng: 80.2897 },
+  'thiruvottiyur': { lat: 13.1622, lng: 80.3015 },
+  'ennore': { lat: 13.2165, lng: 80.3202 },
+  'vyasarpadi': { lat: 13.1185, lng: 80.2582 },
+  'moolakadai': { lat: 13.1292, lng: 80.2415 },
+  'madhavaram': { lat: 13.1482, lng: 80.2312 },
+  'red hills': { lat: 13.1912, lng: 80.1842 },
+  'redhills': { lat: 13.1912, lng: 80.1842 },
+  'puzhal': { lat: 13.1585, lng: 80.2035 },
+  'retteri': { lat: 13.1335, lng: 80.2145 },
   'perambur': { lat: 13.1072, lng: 80.2442 },
+  'ayanavaram': { lat: 13.0985, lng: 80.2325 },
   'kolathur': { lat: 13.1240, lng: 80.2121 },
   'villivakkam': { lat: 13.1086, lng: 80.2061 },
+  'korattur': { lat: 13.1082, lng: 80.1832 },
   'padi': { lat: 13.0968, lng: 80.1845 },
   'mogappair': { lat: 13.0837, lng: 80.1750 },
   'thirumangalam': { lat: 13.0835, lng: 80.1945 },
   'ambattur': { lat: 13.1143, lng: 80.1548 },
   'avadi': { lat: 13.1067, lng: 80.0970 },
+  'pattabiram': { lat: 13.1168, lng: 80.0635 },
+  'thiruninravur': { lat: 13.1195, lng: 80.0275 },
+  'tiruvallur': { lat: 13.1432, lng: 79.9120 },
+  'thiruvallur': { lat: 13.1432, lng: 79.9120 },
   'poonamallee': { lat: 13.0473, lng: 80.0945 },
+  'nazarathpet': { lat: 13.0452, lng: 80.0725 },
+  'thandalam': { lat: 13.0125, lng: 80.0250 },
   'karayanchavadi': { lat: 13.0492, lng: 80.1075 },
   'kumananchavadi': { lat: 13.0439, lng: 80.1211 },
   'iyyappanthangal': { lat: 13.0381, lng: 80.1354 },
   'porur': { lat: 13.0382, lng: 80.1565 },
+  'dlf porur': { lat: 13.0245, lng: 80.1765 },
+  'nandambakkam': { lat: 13.0145, lng: 80.1865 },
   'ramapuram': { lat: 13.0317, lng: 80.1817 },
   'valasaravakkam': { lat: 13.0403, lng: 80.1723 },
+  'alwarthirunagar': { lat: 13.0428, lng: 80.1815 },
   'virugambakkam': { lat: 13.0532, lng: 80.1922 },
+  'nerkundram': { lat: 13.0685, lng: 80.1795 },
   'maduravoyal': { lat: 13.0654, lng: 80.1674 },
   'vanagaram': { lat: 13.0569, lng: 80.1462 },
   'sriperumbudur': { lat: 12.9674, lng: 79.9419 },
   'kanchipuram': { lat: 12.8342, lng: 79.7036 },
   'selaiyur': { lat: 12.9185, lng: 80.1432 },
   'camp road': { lat: 12.9195, lng: 80.1370 },
+  'rajkilpakkam': { lat: 12.9165, lng: 80.1512 },
   'mahalakshmi nagar': { lat: 12.9192, lng: 80.1310 },
   'sembakkam': { lat: 12.9226, lng: 80.1572 },
   'gowrivakkam': { lat: 12.9212, lng: 80.1684 },
   'medavakkam': { lat: 12.9171, lng: 80.1923 },
+  'sithalapakkam': { lat: 12.8895, lng: 80.1895 },
   'pallikaranai': { lat: 12.9349, lng: 80.2137 },
   'madipakkam': { lat: 12.9623, lng: 80.1986 },
   'keelkattalai': { lat: 12.9557, lng: 80.1869 },
   'kovilambakkam': { lat: 12.9442, lng: 80.1851 },
+  'eachangadu': { lat: 12.9482, lng: 80.1735 },
   'nanganallur': { lat: 12.9807, lng: 80.1882 },
+  'pazhavanthangal': { lat: 12.9895, lng: 80.1865 },
   'perumbakkam': { lat: 12.9059, lng: 80.1999 },
   'sholinganallur': { lat: 12.9010, lng: 80.2279 },
   'karapakkam': { lat: 12.9192, lng: 80.2300 },
   'thoraipakkam': { lat: 12.9416, lng: 80.2362 },
   'perungudi': { lat: 12.9654, lng: 80.2461 },
+  'kandanchavadi': { lat: 12.9712, lng: 80.2485 },
   'omr': { lat: 12.9165, lng: 80.2298 },
   'navalur': { lat: 12.8459, lng: 80.2265 },
   'siruseri': { lat: 12.8256, lng: 80.2205 },
+  'padur': { lat: 12.8085, lng: 80.2225 },
   'kelambakkam': { lat: 12.7879, lng: 80.2202 },
   'thiruporur': { lat: 12.7239, lng: 80.1884 },
   'ecr': { lat: 12.9005, lng: 80.2512 },
+  'palavakkam': { lat: 12.9615, lng: 80.2585 },
+  'neelankarai': { lat: 12.9492, lng: 80.2565 },
+  'injambakkam': { lat: 12.9195, lng: 80.2512 },
+  'akkarai': { lat: 12.8995, lng: 80.2495 },
+  'kovalam': { lat: 12.7895, lng: 80.2515 },
+  'mahabalipuram': { lat: 12.6208, lng: 80.1945 },
   'chennai': { lat: 13.0827, lng: 80.2707 },
   'coimbatore': { lat: 11.0168, lng: 76.9558 },
   'madurai': { lat: 9.9252, lng: 78.1198 },
@@ -143,10 +219,13 @@ const KNOWN_LOCATIONS = {
   'srm institute of science and technology': { lat: 12.8230, lng: 80.0444 },
   'vit chennai': { lat: 12.8406, lng: 80.1534 },
   'sathyabama university': { lat: 12.8729, lng: 80.2261 },
+  'sathyabama institute of science and technology': { lat: 12.8729, lng: 80.2261 },
+  'sathyabama': { lat: 12.8729, lng: 80.2261 },
   'rajalakshmi engineering college': { lat: 13.0085, lng: 80.0034 },
   'panimalar engineering college': { lat: 13.0498, lng: 80.0752 },
   'saveetha engineering college': { lat: 13.0262, lng: 80.0160 },
   'crescent university': { lat: 12.8755, lng: 80.0835 },
+  'tagore engineering college': { lat: 12.8635, lng: 80.1395 },
   'loyola college': { lat: 13.0625, lng: 80.2337 },
   'mudichur road': { lat: 12.9188, lng: 80.0865 },
   'shanmugam road': { lat: 12.9268, lng: 80.1125 },
@@ -181,7 +260,7 @@ function calculateDistanceKm(lat1, lon1, lat2, lon2) {
       Math.sin(dLon / 2) *
       Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Math.max(0.1, Number((R * c).toFixed(2)));
+  return Math.max(0.05, Number((R * c).toFixed(2)));
 }
 
 async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 80.0569, routeCorridor = null) {
@@ -189,6 +268,7 @@ async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 8
     return { lat: fallbackLat, lng: fallbackLng };
   }
   const clean = placeName.trim().toLowerCase().replace(/\s+/g, ' ');
+  const primaryPart = clean.split(',')[0].trim();
 
   const hasCorridor =
     routeCorridor &&
@@ -197,67 +277,66 @@ async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 8
     Number.isFinite(Number(routeCorridor.endLat)) &&
     Number.isFinite(Number(routeCorridor.endLng));
 
-  const isWithinCorridor = (lat, lng) => {
+  const refLat = Number(
+    hasCorridor
+      ? (Number(routeCorridor.startLat) + Number(routeCorridor.endLat)) / 2
+      : fallbackLat || 12.9602
+  );
+  const refLng = Number(
+    hasCorridor
+      ? (Number(routeCorridor.startLng) + Number(routeCorridor.endLng)) / 2
+      : fallbackLng || 80.0569
+  );
+
+  // Regional sanity check (150 km around the route region) so real stops anywhere in the city/district are NEVER rejected
+  const isWithinRegion = (lat, lng) => {
     if (!hasCorridor) return true;
-    const sLat = Number(routeCorridor.startLat);
-    const sLng = Number(routeCorridor.startLng);
-    const eLat = Number(routeCorridor.endLat);
-    const eLng = Number(routeCorridor.endLng);
-    const corridorSpanKm = calculateDistanceKm(sLat, sLng, eLat, eLng);
-    const distFromStart = calculateDistanceKm(sLat, sLng, lat, lng);
-    const distFromEnd = calculateDistanceKm(eLat, eLng, lat, lng);
-    // Elliptical corridor check: a genuine intermediate stop between Start & Destination
-    // has (distFromStart + distFromEnd) reasonably close to corridorSpanKm
-    const maxEllipseKm = Math.max(18, corridorSpanKm * 2.15);
-    const maxSingleRadiusKm = Math.max(14, corridorSpanKm * 1.55);
-    return (
-      distFromStart + distFromEnd <= maxEllipseKm &&
-      distFromStart <= maxSingleRadiusKm &&
-      distFromEnd <= maxSingleRadiusKm
-    );
+    const distFromCenter = calculateDistanceKm(refLat, refLng, lat, lng);
+    return distFromCenter <= 150;
   };
 
-  // 1. Check exact match in KNOWN_LOCATIONS (must also satisfy corridor if routeCorridor is provided)
-  if (KNOWN_LOCATIONS[clean] && isWithinCorridor(KNOWN_LOCATIONS[clean].lat, KNOWN_LOCATIONS[clean].lng)) {
+  // 1. Check exact match in KNOWN_LOCATIONS by full string or primary stop name
+  if (KNOWN_LOCATIONS[clean] && isWithinRegion(KNOWN_LOCATIONS[clean].lat, KNOWN_LOCATIONS[clean].lng)) {
     return { ...KNOWN_LOCATIONS[clean] };
+  }
+  if (
+    primaryPart &&
+    KNOWN_LOCATIONS[primaryPart] &&
+    isWithinRegion(KNOWN_LOCATIONS[primaryPart].lat, KNOWN_LOCATIONS[primaryPart].lng)
+  ) {
+    return { ...KNOWN_LOCATIONS[primaryPart] };
   }
 
   // 2. Check specific whole-word landmark match in KNOWN_LOCATIONS (longest key first, excluding broad city names)
   const broadCityKeys = new Set(['chennai', 'coimbatore', 'madurai', 'trichy', 'salem']);
   const sortedEntries = Object.entries(KNOWN_LOCATIONS).sort((a, b) => b[0].length - a[0].length);
   for (const [key, coords] of sortedEntries) {
-    if (key.length >= 4 && !broadCityKeys.has(key)) {
+    if (key.length >= 3 && !broadCityKeys.has(key)) {
       const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const wordRegex = new RegExp(`\\b${escapedKey}\\b`, 'i');
-      if (wordRegex.test(clean) && isWithinCorridor(coords.lat, coords.lng)) {
+      if (
+        (wordRegex.test(primaryPart) || wordRegex.test(clean)) &&
+        isWithinRegion(coords.lat, coords.lng)
+      ) {
         return { ...coords };
       }
     }
   }
 
-  // Determine regional hint so intermediate stops resolve inside the same city/corridor (e.g. Chennai / Tamil Nadu)
-  const refLat = Number(hasCorridor ? (Number(routeCorridor.startLat) + Number(routeCorridor.endLat)) / 2 : fallbackLat || 12.9602);
-  const refLng = Number(hasCorridor ? (Number(routeCorridor.startLng) + Number(routeCorridor.endLng)) / 2 : fallbackLng || 80.0569);
-  const isChennaiRegion = refLat >= 12.4 && refLat <= 13.5 && refLng >= 79.5 && refLng <= 80.5;
+  // Determine regional context for live geocoding (Chennai / Tamil Nadu)
+  const isChennaiRegion = refLat >= 12.3 && refLat <= 13.6 && refLng >= 79.4 && refLng <= 80.5;
+  const rawPrimary = placeName.split(',')[0].trim();
   const searchQueryWithContext =
     isChennaiRegion && !clean.includes('chennai') && !clean.includes('tamil')
-      ? `${placeName.trim()}, Chennai, Tamil Nadu`
-      : placeName.trim();
+      ? `${rawPrimary}, Chennai, Tamil Nadu, India`
+      : `${placeName.trim()}, Tamil Nadu, India`;
 
-  const minLat = hasCorridor
-    ? Math.min(Number(routeCorridor.startLat), Number(routeCorridor.endLat)) - 0.08
-    : refLat - 0.35;
-  const maxLat = hasCorridor
-    ? Math.max(Number(routeCorridor.startLat), Number(routeCorridor.endLat)) + 0.08
-    : refLat + 0.35;
-  const minLng = hasCorridor
-    ? Math.min(Number(routeCorridor.startLng), Number(routeCorridor.endLng)) - 0.08
-    : refLng - 0.35;
-  const maxLng = hasCorridor
-    ? Math.max(Number(routeCorridor.startLng), Number(routeCorridor.endLng)) + 0.08
-    : refLng + 0.35;
+  const minLat = refLat - 0.55;
+  const maxLat = refLat + 0.55;
+  const minLng = refLng - 0.55;
+  const maxLng = refLng + 0.55;
 
-  // 3. Live Google Maps Geocoding API (uses your Google Cloud API Key for exact real-world coordinates)
+  // 3. Live Google Maps Geocoding API (if key is available)
   const googleKey =
     (store && store.settings && store.settings.google_maps_key) ||
     process.env.GOOGLE_MAPS_API_KEY ||
@@ -265,7 +344,7 @@ async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 8
   if (googleKey) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3200);
+      const timeout = setTimeout(() => controller.abort(), 3000);
       const query = encodeURIComponent(searchQueryWithContext);
       const boundsParam = `${minLat.toFixed(4)},${minLng.toFixed(4)}|${maxLat.toFixed(4)},${maxLng.toFixed(4)}`;
       const res = await fetch(
@@ -286,29 +365,28 @@ async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 8
             if (!loc) continue;
             const lat = Number(parseFloat(loc.lat).toFixed(5));
             const lng = Number(parseFloat(loc.lng).toFixed(5));
-            if (!isNaN(lat) && !isNaN(lng) && isWithinCorridor(lat, lng)) {
+            if (!isNaN(lat) && !isNaN(lng) && isWithinRegion(lat, lng)) {
               const resolved = { lat, lng };
-              if (!hasCorridor) KNOWN_LOCATIONS[clean] = resolved;
+              KNOWN_LOCATIONS[primaryPart || clean] = resolved;
               return { ...resolved };
             }
           }
         }
       }
-    } catch (_) {
-      // Fallback to Nominatim if Google Geocoding is unavailable
-    }
+    } catch (_) {}
   }
 
-  // 4. Live OpenStreetMap Nominatim Geocoding (first bounded to route corridor viewbox, then local city search)
+  // 4. Live OpenStreetMap Nominatim Geocoding (regional search first, then broad Tamil Nadu / India search)
   const nominatimQueries = [
-    `https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=in&viewbox=${minLng.toFixed(4)},${maxLat.toFixed(4)},${maxLng.toFixed(4)},${minLat.toFixed(4)}&bounded=1&q=${encodeURIComponent(placeName.trim())}`,
-    `https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=in&q=${encodeURIComponent(searchQueryWithContext)}`
+    `https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=in&viewbox=${minLng.toFixed(4)},${maxLat.toFixed(4)},${maxLng.toFixed(4)},${minLat.toFixed(4)}&q=${encodeURIComponent(searchQueryWithContext)}`,
+    `https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=in&q=${encodeURIComponent(rawPrimary + ', Chennai, Tamil Nadu')}`,
+    `https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=in&q=${encodeURIComponent(placeName.trim() + ', Tamil Nadu')}`
   ];
 
   for (const url of nominatimQueries) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3200);
+      const timeout = setTimeout(() => controller.abort(), 3000);
       const res = await fetch(url, {
         headers: { 'User-Agent': 'ShuttleTrackerEnterprise/1.0' },
         signal: controller.signal
@@ -320,52 +398,24 @@ async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 8
           for (const item of data) {
             const lat = Number(parseFloat(item.lat).toFixed(5));
             const lng = Number(parseFloat(item.lon).toFixed(5));
-            if (!isNaN(lat) && !isNaN(lng) && isWithinCorridor(lat, lng)) {
+            if (!isNaN(lat) && !isNaN(lng) && isWithinRegion(lat, lng)) {
               const resolved = { lat, lng };
-              if (!hasCorridor) KNOWN_LOCATIONS[clean] = resolved;
+              KNOWN_LOCATIONS[primaryPart || clean] = resolved;
               return { ...resolved };
             }
           }
         }
       }
-    } catch (_) {
-      // Fallback if offline or rate-limited
-    }
+    } catch (_) {}
   }
 
-  // 5. If routeCorridor is provided (e.g., adding an intermediate stop whose custom name wasn't found in online gazetteer),
-  // interpolate along the actual OSRM road geometry between Start and Destination so it sits right on the real road!
+  // 5. Fallback if stop name is a custom campus building / gate not in external gazetteers
   if (hasCorridor) {
     const sLat = Number(routeCorridor.startLat);
     const sLng = Number(routeCorridor.startLng);
     const eLat = Number(routeCorridor.endLat);
     const eLng = Number(routeCorridor.endLng);
     const frac = Math.min(0.88, Math.max(0.15, Number(routeCorridor.fraction) || 0.5));
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2800);
-      const osrmRes = await fetch(
-        `https://router.project-osrm.org/route/v1/driving/${sLng.toFixed(5)},${sLat.toFixed(5)};${eLng.toFixed(5)},${eLat.toFixed(5)}?overview=full&geometries=geojson`,
-        { signal: controller.signal }
-      );
-      clearTimeout(timeout);
-      if (osrmRes.ok) {
-        const osrmData = await osrmRes.json();
-        const coords = osrmData?.routes?.[0]?.geometry?.coordinates;
-        if (Array.isArray(coords) && coords.length >= 2) {
-          const targetIdx = Math.min(
-            coords.length - 2,
-            Math.max(1, Math.round(frac * (coords.length - 1)))
-          );
-          const [roadLng, roadLat] = coords[targetIdx];
-          return {
-            lat: Number(Number(roadLat).toFixed(5)),
-            lng: Number(Number(roadLng).toFixed(5))
-          };
-        }
-      }
-    } catch (_) {}
-
     return {
       lat: Number((sLat + (eLat - sLat) * frac).toFixed(5)),
       lng: Number((sLng + (eLng - sLng) * frac).toFixed(5))
@@ -775,6 +825,7 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
               landmark TEXT DEFAULT '',
               latitude NUMERIC(10,6) NOT NULL,
               longitude NUMERIC(10,6) NOT NULL,
+              sequence_order INT DEFAULT 1,
               stop_order INT DEFAULT 1,
               eta_minutesFromStart INT DEFAULT 0,
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -908,6 +959,10 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
             ALTER TABLE routes ADD COLUMN IF NOT EXISTS organization_name TEXT DEFAULT 'Sairam Engineering College';
             ALTER TABLE routes ADD COLUMN IF NOT EXISTS shuttle_id INT;
             ALTER TABLE routes ADD COLUMN IF NOT EXISTS landmark TEXT DEFAULT '';
+
+            ALTER TABLE stops ADD COLUMN IF NOT EXISTS sequence_order INT DEFAULT 1;
+            ALTER TABLE stops ADD COLUMN IF NOT EXISTS landmark TEXT DEFAULT '';
+            ALTER TABLE stops ADD COLUMN IF NOT EXISTS eta_minutesFromStart INT DEFAULT 0;
 
             ALTER TABLE schedules ADD COLUMN IF NOT EXISTS organization_name TEXT DEFAULT 'Sairam Engineering College';
             ALTER TABLE schedules ADD COLUMN IF NOT EXISTS route_name TEXT DEFAULT '';
@@ -1077,84 +1132,58 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
             organization_name: r.organization_name || defaultOrgName
           }));
 
-          const stopsRes = await client.query('SELECT * FROM stops ORDER BY route_id ASC, sequence_order ASC');
+          const stopsRes = await client.query('SELECT * FROM stops ORDER BY route_id ASC, sequence_order ASC, id ASC');
           store.stops = stopsRes.rows || [];
 
-          // Automatically repair any stop that was previously geocoded outside its route's Start -> Destination corridor
-          // (for example, stops that previously jumped to Bangalore 77.59 while the route is in Chennai 80.05)
+          // Verify all stops on each route have accurate geocoded coordinates matching their stop name
           for (const rt of store.routes) {
             const rtStops = store.stops
               .filter((s) => Number(s.route_id) === Number(rt.id))
-              .sort((a, b) => a.sequence_order - b.sequence_order);
-            if (rtStops.length >= 2) {
-              const sCoords = await geocodeLocation(rt.start_point || rtStops[0].name, 12.9602, 80.0569);
-              const eCoords = await geocodeLocation(rt.end_point || rtStops[rtStops.length - 1].name, 12.9249, 80.1000);
-              const firstSt = rtStops[0];
-              const lastSt = rtStops[rtStops.length - 1];
+              .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1));
 
-              if (calculateDistanceKm(Number(firstSt.latitude), Number(firstSt.longitude), sCoords.lat, sCoords.lng) > 25) {
-                firstSt.latitude = sCoords.lat;
-                firstSt.longitude = sCoords.lng;
-                await client.query('UPDATE stops SET latitude = $1, longitude = $2 WHERE id = $3', [
-                  firstSt.latitude,
-                  firstSt.longitude,
-                  firstSt.id
-                ]);
-              }
-              if (calculateDistanceKm(Number(lastSt.latitude), Number(lastSt.longitude), eCoords.lat, eCoords.lng) > 25) {
-                lastSt.latitude = eCoords.lat;
-                lastSt.longitude = eCoords.lng;
-                await client.query('UPDATE stops SET latitude = $1, longitude = $2 WHERE id = $3', [
-                  lastSt.latitude,
-                  lastSt.longitude,
-                  lastSt.id
-                ]);
-              }
+            const sCoords = await geocodeLocation(rt.start_point || rtStops[0]?.name || 'Sairam Engineering College', 12.9602, 80.0569);
+            const eCoords = await geocodeLocation(rt.end_point || rtStops[rtStops.length - 1]?.name || 'West Tambaram', 12.9249, 80.1000);
 
-              const spanKm = calculateDistanceKm(
-                Number(firstSt.latitude),
-                Number(firstSt.longitude),
-                Number(lastSt.latitude),
-                Number(lastSt.longitude)
+            if (rtStops.length === 0 && rt.start_point && rt.end_point) {
+              const s1Res = await client.query(
+                `INSERT INTO stops (route_id, name, sequence_order, latitude, longitude, landmark)
+                 VALUES ($1, $2, 1, $3, $4, $5) RETURNING *`,
+                [rt.id, rt.start_point, sCoords.lat, sCoords.lng, rt.landmark || 'Starting Point']
               );
-              const maxAllowed = Math.max(20, spanKm * 2.2);
-
-              for (let idx = 1; idx < rtStops.length - 1; idx++) {
-                const mid = rtStops[idx];
-                const d1 = calculateDistanceKm(
-                  Number(firstSt.latitude),
-                  Number(firstSt.longitude),
-                  Number(mid.latitude),
-                  Number(mid.longitude)
-                );
-                const d2 = calculateDistanceKm(
-                  Number(mid.latitude),
-                  Number(mid.longitude),
-                  Number(lastSt.latitude),
-                  Number(lastSt.longitude)
-                );
-                if (isNaN(d1) || isNaN(d2) || d1 + d2 > maxAllowed) {
-                  const frac = idx / (rtStops.length - 1);
-                  const fixed = await geocodeLocation(
-                    `${mid.name} ${mid.landmark || ''}`.trim(),
-                    Number(firstSt.latitude),
-                    Number(firstSt.longitude),
-                    {
-                      startLat: Number(firstSt.latitude),
-                      startLng: Number(firstSt.longitude),
-                      endLat: Number(lastSt.latitude),
-                      endLng: Number(lastSt.longitude),
-                      fraction: frac
-                    }
-                  );
-                  mid.latitude = fixed.lat;
-                  mid.longitude = fixed.lng;
-                  await client.query('UPDATE stops SET latitude = $1, longitude = $2 WHERE id = $3', [
-                    mid.latitude,
-                    mid.longitude,
-                    mid.id
-                  ]);
+              const s2Res = await client.query(
+                `INSERT INTO stops (route_id, name, sequence_order, latitude, longitude, landmark)
+                 VALUES ($1, $2, 2, $3, $4, $5) RETURNING *`,
+                [rt.id, rt.end_point, eCoords.lat, eCoords.lng, 'Destination Terminal']
+              );
+              if (s1Res.rows[0]) store.stops.push(s1Res.rows[0]);
+              if (s2Res.rows[0]) store.stops.push(s2Res.rows[0]);
+            } else if (rtStops.length >= 2) {
+              for (let idx = 0; idx < rtStops.length; idx++) {
+                const st = rtStops[idx];
+                st.sequence_order = idx + 1;
+                const targetName =
+                  idx === 0
+                    ? rt.start_point || st.name
+                    : idx === rtStops.length - 1
+                    ? rt.end_point || st.name
+                    : st.name;
+                const resolved = await geocodeLocation(targetName, sCoords.lat, sCoords.lng, {
+                  startLat: sCoords.lat,
+                  startLng: sCoords.lng,
+                  endLat: eCoords.lat,
+                  endLng: eCoords.lng,
+                  fraction: idx / Math.max(1, rtStops.length - 1)
+                });
+                if (
+                  calculateDistanceKm(Number(st.latitude), Number(st.longitude), resolved.lat, resolved.lng) > 0.35
+                ) {
+                  st.latitude = resolved.lat;
+                  st.longitude = resolved.lng;
                 }
+                await client.query(
+                  'UPDATE stops SET latitude = $1, longitude = $2, sequence_order = $3 WHERE id = $4',
+                  [st.latitude, st.longitude, st.sequence_order, st.id]
+                );
               }
             }
           }
@@ -1335,19 +1364,25 @@ const db = {
   },
 
   // Users
-  findUserByEmail: async (email) => {
+  findUserByEmail: async (email, options = {}) => {
+    const normalized = String(email || '').trim().toLowerCase();
+    const memMatch = store.users.find((u) => u.email && u.email.toLowerCase() === normalized);
+    if (options.memoryOnly || memMatch) {
+      return memMatch;
+    }
     if (isPostgresConnected && pool) {
       try {
-        const { rows } = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1', [email]);
+        const { rows } = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1', [normalized]);
         if (rows.length > 0) {
           const u = rows[0];
           const memIdx = store.users.findIndex((m) => m.id === u.id);
           if (memIdx !== -1) store.users[memIdx] = { ...store.users[memIdx], ...u };
+          else store.users.push(u);
           return u;
         }
       } catch (_) {}
     }
-    return store.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+    return memMatch;
   },
 
   findUserById: async (id) => {
@@ -2678,11 +2713,12 @@ const db = {
     if (!route) return null;
     const stops = store.stops
       .filter((s) => Number(s.route_id) === rId)
-      .sort((a, b) => a.sequence_order - b.sequence_order);
+      .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1));
 
     if (stops.length >= 2) {
       let straightSumKm = 0;
       const validCoords = [];
+      const legStraightKm = [0];
       for (let i = 0; i < stops.length; i++) {
         const lat = Number(stops[i].latitude);
         const lng = Number(stops[i].longitude);
@@ -2693,30 +2729,65 @@ const db = {
           const lat2 = Number(stops[i + 1].latitude);
           const lng2 = Number(stops[i + 1].longitude);
           if (!isNaN(lat) && !isNaN(lng) && !isNaN(lat2) && !isNaN(lng2)) {
-            straightSumKm += calculateDistanceKm(lat, lng, lat2, lng2);
+            const legDist = calculateDistanceKm(lat, lng, lat2, lng2);
+            straightSumKm += legDist;
+            legStraightKm.push(straightSumKm);
+          } else {
+            legStraightKm.push(straightSumKm);
           }
         }
       }
 
-      // Query OSRM multi-stop road routing for exact road distance & duration across all stops
-      let totalRoadKm = Number(Math.max(1.2, straightSumKm * 1.24).toFixed(2));
-      let estMinutes = Math.max(5, Math.round((totalRoadKm / 26) * 60));
+      // Default road-factor calculation if offline
+      let totalRoadKm = Number(Math.max(0.5, straightSumKm * 1.26).toFixed(2));
+      let estMinutes = Math.max(4, Math.round((totalRoadKm / 26) * 60));
 
+      // Query OSRM multi-stop road routing via native fetch for exact road distance & duration across all stops in sequence
       if (validCoords.length >= 2) {
         try {
-          const coordString = validCoords.map((c) => `${c.lng},${c.lat}`).join(';');
+          const coordString = validCoords.map((c) => `${c.lng.toFixed(5)},${c.lat.toFixed(5)}`).join(';');
           const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${coordString}?overview=false`;
-          const res = await axios.get(osrmUrl, { timeout: 4500 });
-          const osrmRoute = res.data?.routes?.[0];
-          if (osrmRoute && Number(osrmRoute.distance) > 100) {
-            totalRoadKm = Number((Number(osrmRoute.distance) / 1000).toFixed(2));
-            estMinutes = Math.max(
-              5,
-              Math.round(Number(osrmRoute.duration) > 60 ? Number(osrmRoute.duration) / 60 : (totalRoadKm / 26) * 60)
-            );
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 3800);
+          const res = await fetch(osrmUrl, { signal: controller.signal });
+          clearTimeout(timeout);
+          if (res.ok) {
+            const osrmData = await res.json();
+            const osrmRoute = osrmData?.routes?.[0];
+            if (osrmRoute && Number(osrmRoute.distance) > 50) {
+              totalRoadKm = Number((Number(osrmRoute.distance) / 1000).toFixed(2));
+              const durationMins = Math.round(Number(osrmRoute.duration) / 60);
+              estMinutes = Math.max(
+                4,
+                durationMins > 2 ? durationMins : Math.round((totalRoadKm / 26) * 60)
+              );
+
+              // If OSRM returned per-leg distances/durations, assign cumulative ETA to each stop
+              if (Array.isArray(osrmRoute.legs) && osrmRoute.legs.length === stops.length - 1) {
+                let cumSec = 0;
+                stops[0].eta_minutesFromStart = 0;
+                for (let k = 0; k < osrmRoute.legs.length; k++) {
+                  cumSec += Number(osrmRoute.legs[k].duration) || 0;
+                  stops[k + 1].eta_minutesFromStart = Math.max(k + 1, Math.round(cumSec / 60));
+                }
+              }
+            }
           }
         } catch (_) {
           // Keep road-factor calculation if OSRM is temporarily unreachable
+        }
+      }
+
+      // Ensure every stop has a monotonic eta_minutesFromStart
+      for (let i = 0; i < stops.length; i++) {
+        if (i === 0) {
+          stops[i].eta_minutesFromStart = 0;
+        } else if (!stops[i].eta_minutesFromStart || stops[i].eta_minutesFromStart <= stops[i - 1].eta_minutesFromStart) {
+          const frac = straightSumKm > 0 ? (legStraightKm[i] || 0) / straightSumKm : i / (stops.length - 1);
+          stops[i].eta_minutesFromStart = Math.max(
+            (stops[i - 1].eta_minutesFromStart || 0) + 2,
+            Math.round(frac * estMinutes)
+          );
         }
       }
 
@@ -2757,7 +2828,7 @@ const db = {
     return routesList.map((route) => {
       const stops = store.stops
         .filter((s) => s.route_id === route.id)
-        .sort((a, b) => a.sequence_order - b.sequence_order);
+        .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1));
       const activeShuttles = store.shuttles.filter(
         (s) => s.current_route_id === route.id || s.id === route.shuttle_id
       );
@@ -2785,7 +2856,7 @@ const db = {
         driver_name: driver ? driver.name : 'No Driver Allocated',
         stop_reached_times: primaryShuttle?.stop_reached_times || {},
         traffic_delay_stop: primaryShuttle?.traffic_delay_stop || null,
-        landmark: route.landmark || stops[0]?.landmark || 'Campus Transit Hub',
+        landmark: route.landmark || stops[0]?.landmark || '',
         stops,
         stops_count: stops.length,
         active_shuttles_count: activeShuttles.length
@@ -2798,7 +2869,7 @@ const db = {
     if (!route) return null;
     const stops = store.stops
       .filter((s) => s.route_id === route.id)
-      .sort((a, b) => a.sequence_order - b.sequence_order);
+      .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1));
     return { ...route, stops };
   },
 
@@ -2831,6 +2902,8 @@ const db = {
           'Sathyabama Institute of Science and Technology'
       ).trim();
 
+    const cleanRouteLandmark = routeData.landmark ? String(routeData.landmark).trim() : '';
+
     let newRoute = {
       id: existingForBus
         ? existingForBus.id
@@ -2845,7 +2918,7 @@ const db = {
       description: routeData.description || `${routeData.start_point} to ${routeData.end_point}`,
       start_point: routeData.start_point,
       end_point: routeData.end_point,
-      landmark: routeData.landmark || 'Main Transit Landmark',
+      landmark: cleanRouteLandmark,
       shuttle_id: targetShuttleId,
       distance_km: computedDist,
       estimated_time_minutes: computedTime,
@@ -2917,7 +2990,7 @@ const db = {
     const previousRouteStops = existingForBus
       ? store.stops
           .filter((s) => Number(s.route_id) === Number(existingForBus.id))
-          .sort((a, b) => a.sequence_order - b.sequence_order)
+          .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1))
       : [];
     const sameEndpoints =
       existingForBus &&
@@ -2947,13 +3020,13 @@ const db = {
               name: routeData.start_point,
               latitude: startCoords.lat,
               longitude: startCoords.lng,
-              landmark: routeData.landmark || 'Starting Point'
+              landmark: cleanRouteLandmark || 'Starting Point'
             },
             ...preservedIntermediateStops.map((mid) => ({
               name: mid.name,
               latitude: mid.latitude,
               longitude: mid.longitude,
-              landmark: mid.landmark || routeData.landmark || 'Transit Stop'
+              landmark: mid.landmark || ''
             })),
             {
               name: routeData.end_point,
@@ -2966,14 +3039,10 @@ const db = {
     for (let idx = 0; idx < stopsToCreate.length; idx++) {
       const st = stopsToCreate[idx];
       const fraction = stopsToCreate.length > 1 ? idx / (stopsToCreate.length - 1) : 0.5;
-      const searchLabel =
-        st.landmark && !String(st.name).toLowerCase().includes(String(st.landmark).toLowerCase())
-          ? `${st.name}, ${st.landmark}`
-          : st.name;
       const coords =
         st.latitude && st.longitude
           ? { lat: Number(st.latitude), lng: Number(st.longitude) }
-          : await geocodeLocation(searchLabel, startCoords.lat, startCoords.lng, {
+          : await geocodeLocation(st.name, startCoords.lat, startCoords.lng, {
               startLat: startCoords.lat,
               startLng: startCoords.lng,
               endLat: endCoords.lat,
@@ -2986,7 +3055,7 @@ const db = {
         sequence_order: idx + 1,
         latitude: coords.lat,
         longitude: coords.lng,
-        landmark: st.landmark || routeData.landmark || 'Transit Stop'
+        landmark: st.landmark || ''
       });
     }
 
@@ -3024,7 +3093,7 @@ const db = {
     // Sync stops of this route so Stop #1 is start_point and the Final Stop is end_point (Destination)
     const routeStops = store.stops
       .filter((st) => st.route_id === updated.id)
-      .sort((a, b) => a.sequence_order - b.sequence_order);
+      .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1));
 
     if (routeStops.length > 0 && updateData.start_point !== undefined) {
       routeStops[0].name = updated.start_point;
@@ -3043,12 +3112,7 @@ const db = {
       for (let i = 1; i < routeStops.length - 1; i++) {
         const midStop = routeStops[i];
         const fraction = i / (routeStops.length - 1);
-        const searchLabel =
-          midStop.landmark &&
-          !String(midStop.name).toLowerCase().includes(String(midStop.landmark).toLowerCase())
-            ? `${midStop.name}, ${midStop.landmark}`
-            : midStop.name;
-        const fixed = await geocodeLocation(searchLabel, startCoords.lat, startCoords.lng, {
+        const fixed = await geocodeLocation(midStop.name, startCoords.lat, startCoords.lng, {
           startLat: startCoords.lat,
           startLng: startCoords.lng,
           endLat: endCoords.lat,
@@ -3082,7 +3146,7 @@ const db = {
       updated.distance_km = Number(Number(updateData.distance_km).toFixed(2));
       updated.estimated_time_minutes =
         Number(updateData.estimated_time_minutes) ||
-        Math.max(5, Math.round((updated.distance_km / 26) * 60));
+        Math.max(4, Math.round((updated.distance_km / 26) * 60));
     } else {
       await db.recalculateRouteMetrics(updated.id);
     }
@@ -3142,7 +3206,7 @@ const db = {
   getStopsByRoute: async (routeId) => {
     return store.stops
       .filter((s) => s.route_id === Number(routeId))
-      .sort((a, b) => a.sequence_order - b.sequence_order);
+      .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1));
   },
   getAllStops: async () => {
     return store.stops;
@@ -3150,9 +3214,41 @@ const db = {
   addStop: async (stopData) => {
     const routeId = Number(stopData.route_id);
     const parentRoute = store.routes.find((r) => Number(r.id) === routeId);
-    const existingStops = store.stops
+    let existingStops = store.stops
       .filter((s) => Number(s.route_id) === routeId)
-      .sort((a, b) => a.sequence_order - b.sequence_order);
+      .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1));
+
+    // If adding an intermediate stop to a route that doesn't yet have its Start & Destination stops initialized,
+    // automatically initialize Stop #1 (Start) and Stop #2 (Destination) first
+    if (!stopData.sequence_order && existingStops.length < 2 && parentRoute && parentRoute.start_point && parentRoute.end_point) {
+      const sCoords = await geocodeLocation(parentRoute.start_point, 12.9602, 80.0569);
+      const eCoords = await geocodeLocation(parentRoute.end_point, 12.9249, 80.1000);
+      if (existingStops.length === 0) {
+        const s1 = {
+          id: store.stops.length ? Math.max(...store.stops.map((s) => s.id)) + 1 : 1,
+          route_id: routeId,
+          name: parentRoute.start_point,
+          sequence_order: 1,
+          latitude: sCoords.lat,
+          longitude: sCoords.lng,
+          landmark: parentRoute.landmark || 'Starting Point'
+        };
+        store.stops.push(s1);
+        const s2 = {
+          id: store.stops.length ? Math.max(...store.stops.map((s) => s.id)) + 1 : 2,
+          route_id: routeId,
+          name: parentRoute.end_point,
+          sequence_order: 2,
+          latitude: eCoords.lat,
+          longitude: eCoords.lng,
+          landmark: 'Destination Terminal'
+        };
+        store.stops.push(s2);
+      }
+      existingStops = store.stops
+        .filter((s) => Number(s.route_id) === routeId)
+        .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1));
+    }
 
     const startLat = Number(existingStops[0]?.latitude) || 12.9602;
     const startLng = Number(existingStops[0]?.longitude) || 80.0569;
@@ -3169,7 +3265,6 @@ const db = {
         ? Math.min(0.85, Math.max(0.2, (existingStops.length - 1) / (existingStops.length + 1)))
         : 0.5;
 
-    // Combine stop name + landmark when geocoding so stops like "Bus Stand" with landmark "Tambaram" resolve accurately!
     const cleanName = String(stopData.name || '').trim();
     const cleanLandmark = String(stopData.landmark || '').trim();
     const geocodeQuery =
@@ -3182,32 +3277,14 @@ const db = {
         : cleanName;
 
     let coords = { lat: Number(stopData.latitude), lng: Number(stopData.longitude) };
-    const isStartOrDestInit = Boolean(stopData.sequence_order);
-    if (!coords.lat || !coords.lng || !isStartOrDestInit) {
-      // Always geocode new intermediate stops within the Start <-> Destination corridor
-      if (!coords.lat || !coords.lng) {
-        coords = await geocodeLocation(geocodeQuery, startLat, startLng, {
-          startLat,
-          startLng,
-          endLat,
-          endLng,
-          fraction
-        });
-      } else if (existingStops.length >= 2) {
-        // Validate explicitly passed coordinates are inside the route corridor
-        const directKm = Math.max(1.5, calculateDistanceKm(startLat, startLng, endLat, endLng));
-        const dStart = calculateDistanceKm(startLat, startLng, coords.lat, coords.lng);
-        const dEnd = calculateDistanceKm(endLat, endLng, coords.lat, coords.lng);
-        if (dStart + dEnd > Math.max(directKm * 1.55, directKm + 5)) {
-          coords = await geocodeLocation(geocodeQuery, startLat, startLng, {
-            startLat,
-            startLng,
-            endLat,
-            endLng,
-            fraction
-          });
-        }
-      }
+    if (!coords.lat || !coords.lng || isNaN(coords.lat) || isNaN(coords.lng)) {
+      coords = await geocodeLocation(geocodeQuery, startLat, startLng, {
+        startLat,
+        startLng,
+        endLat,
+        endLng,
+        fraction
+      });
     }
 
     const isDestStop =
@@ -3217,6 +3294,7 @@ const db = {
 
     let insertSeq = Number(stopData.sequence_order) || existingStops.length + 1;
     if (!stopData.sequence_order && existingStops.length >= 2 && !isDestStop) {
+      // Insert right before the final Destination stop
       insertSeq = existingStops.length;
     }
 
@@ -3246,36 +3324,17 @@ const db = {
           ]
         );
         if (rows.length > 0) newStop = rows[0];
-      } catch (_) {}
+      } catch (err) {
+        console.warn('Postgres addStop insert warning:', err.message);
+      }
     }
 
     if (!stopData.sequence_order && existingStops.length >= 2 && !isDestStop) {
-      // Keep Start (#1) first and Destination (last) at the end, and order intermediate stops progressively
-      // along the Start -> Destination vector so the route path smoothly progresses to Destination without backtracking!
+      // Keep Start (#1) first, preserve the exact sequential order of intermediate stops added by Admin,
+      // and keep Destination (#N) as the final stop!
       const startStop = existingStops[0];
       const finalDestStop = existingStops[existingStops.length - 1];
       const middleStops = [...existingStops.slice(1, existingStops.length - 1), newStop];
-
-      const dLat = Number(finalDestStop.latitude) - Number(startStop.latitude);
-      const dLng = Number(finalDestStop.longitude) - Number(startStop.longitude);
-      const lenSq = dLat * dLat + dLng * dLng;
-
-      middleStops.sort((a, b) => {
-        if (lenSq < 1e-8) {
-          const da = calculateDistanceKm(startStop.latitude, startStop.longitude, a.latitude, a.longitude);
-          const dbDist = calculateDistanceKm(startStop.latitude, startStop.longitude, b.latitude, b.longitude);
-          return da - dbDist;
-        }
-        const projA =
-          ((Number(a.latitude) - Number(startStop.latitude)) * dLat +
-            (Number(a.longitude) - Number(startStop.longitude)) * dLng) /
-          lenSq;
-        const projB =
-          ((Number(b.latitude) - Number(startStop.latitude)) * dLat +
-            (Number(b.longitude) - Number(startStop.longitude)) * dLng) /
-          lenSq;
-        return projA - projB;
-      });
 
       store.stops.push(newStop);
       const finalOrdered = [startStop, ...middleStops, finalDestStop];
