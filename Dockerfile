@@ -1,5 +1,5 @@
 # Production Dockerfile for ShuttleTrack
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 
 WORKDIR /app
 
@@ -10,7 +10,7 @@ COPY server/package*.json ./server/
 
 # Install dependencies
 RUN npm install
-RUN cd client && npm install
+RUN cd client && npm install --include=dev
 RUN cd server && npm install
 
 # Copy application code
@@ -20,11 +20,10 @@ COPY . .
 RUN cd client && npm run build
 
 # Production Runner stage
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 ENV NODE_ENV=production
-ENV PORT=5000
 
 COPY --from=build /app/server ./server
 COPY --from=build /app/client/dist ./client/dist
