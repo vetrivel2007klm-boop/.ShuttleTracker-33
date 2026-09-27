@@ -1,0 +1,931 @@
+import React, { useState, useEffect, useRef } from 'react';
+import api from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
+import { useSocket } from '../../context/SocketContext';
+import { useToast } from '../../components/common/Toast';
+import LiveMap from '../../components/map/LiveMap';
+import Card from '../../components/common/Card';
+import Badge from '../../components/common/Badge';
+import Button from '../../components/common/Button';
+import Modal from '../../components/common/Modal';
+import Input from '../../components/common/Input';
+import {
+  Play,
+  Square,
+  MapPin,
+  Clock,
+  AlertTriangle,
+  Sparkles,
+  Compass,
+  CheckCircle2,
+  NavigationOff,
+  Star,
+  Siren,
+  ArrowRight,
+  Calendar,
+  Mail,
+  Users2,
+  IdCard,
+  Award,
+  Eye
+} from 'lucide-react';
+
+export const DriverDashboard = () => {
+  const { user } = useAuth();
+  const {
+    socket,
+    liveLocations,
+    sendDriverLocation,
+    startSimulation,
+    stopSimulation,
+    simulationActive
+  } = useSocket();
+  const { addToast } = useToast();
+
+  const [driverData, setDriverData] = useState(null);
+  const [tripStatus, setTripStatus] = useState('NOT_STARTED');
+  const [activeTripId, setActiveTripId] = useState(null);
+  const [gpsStatus, setGpsStatus] = useState('Standby');
+  const [mapFocusTrigger, setMapFocusTrigger] = useState(0);
+  const [previewPassengerIdCard, setPreviewPassengerIdCard] = useState(null);
+  const [currentCoords, setCurrentCoords] = useState({
+    lat: 12.9752,
+    lng: 77.6001,
+    speed: 24,
+    heading: 65
+  });
+
+  // One-time per-trip notification flags (shared with backend and passenger portal)
+  const [delayNotifiedForTrip, setDelayNotifiedForTrip] = useState(false);
+  const [offRouteNotifiedForTrip, setOffRouteNotifiedForTrip] = useState(false);
+  const [emergencyStoppedNotifiedForTrip, setEmergencyStoppedNotifiedForTrip] = useState(false);
+
+  // Delay reporting modal
+  const [isDelayModalOpen, setIsDelayModalOpen] = useState(false);
+  const [delayMinutes, setDelayMinutes] = useState(5);
+  const [delayReason, setDelayReason] = useState('Heavy campus traffic near current stop');
+
+  const watchIdRef = useRef(null);
+
+  const fetchDriver = async () => {
+    try {
+      const res = await api.get('/drivers/me');
+      if (res.data.success && res.data.data) {
+        const d = res.data.data;
+        setDriverData(d);
+        if (d.assignedShuttle?.status === 'on_trip') {
+          setTripStatus('LIVE');
+          setGpsStatus('Connected (Live GPS)');
+        } else {
+          setTripStatus('NOT_STARTED');
+          setGpsStatus('Standby (Press Start Trip)');
+        }
+        if (d.delayNotifiedForTrip !== undefined) {
+          setDelayNotifiedForTrip(Boolean(d.delayNotifiedForTrip));
+        }
+        if (d.offRouteNotifiedForTrip !== undefined) {
+          setOffRouteNotifiedForTrip(Boolean(d.offRouteNotifiedForTrip));
+        }
+        if (d.emergencyStoppedNotifiedForTrip !== undefined) {
+          setEmergencyStoppedNotifiedForTrip(Boolean(d.emergencyStoppedNotifiedForTrip));
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching driver:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchDriver();
+  }, []);
+
+  useEffect(() => {
+    if (!socket) return;
+    const sId = driverData?.assignedShuttle?.id || 1;
+
+    const handleSync = () => fetchDriver();
+    const handleScheduleUpdate = (payload) => {
+      fetchDriver();
+      if (payload && Number(payload.shuttleId) === Number(sId) && payload.delayMinutes > 0) {
+        setDelayNotifiedForTrip(true);
+      }
+    };
+    const handleDriverScheduleAssigned = () => {
+      fetchDriver();
+    };
+    const handleOffRoute = (payload) => {
+      if (payload && Number(payload.shuttleId) === Number(sId)) {
+        setOffRouteNotifiedForTrip(true);
+      }
+    };
+    const handleEmergencyStopped = (payload) => {
+      if (
+        payload &&
+        Number(payload.shuttleId) === Number(sId) &&
+        (payload.thresholdReached || payload.reportedByRole === 'driver' || payload.reportedByRole === 'system')
+      ) {
+        setEmergencyStoppedNotifiedForTrip(true);
+      }
+    };
+
+    socket.on('route:updated', handleSync);
+    socket.on('shuttle:updated', handleSync);
+    socket.on('driver:updated', handleSync);
+    socket.on('driver:feedback_updated', handleSync);
+    socket.on('schedule:updated', handleScheduleUpdate);
+    socket.on('driver:schedule_assigned', handleDriverScheduleAssigned);
+    socket.on('shuttle:off_route', handleOffRoute);
+    socket.on('shuttle:emergency_stopped', handleEmergencyStopped);
+
+    return () => {
+      socket.off('route:updated', handleSync);
+      socket.off('shuttle:updated', handleSync);
+      socket.off('driver:updated', handleSync);
+      socket.off('driver:feedback_updated', handleSync);
+      socket.off('schedule:updated', handleScheduleUpdate);
+      socket.off('driver:schedule_assigned', handleDriverScheduleAssigned);
+      socket.off('shuttle:off_route', handleOffRoute);
+      socket.off('shuttle:emergency_stopped', handleEmergencyStopped);
+    };
+  }, [socket, driverData?.assignedShuttle?.id]);
+
+  const baseShuttle = driverData?.assignedShuttle || {
+    id: 1,
+    code: 'BUS',
+    name: 'Assigned Shuttle',
+    start_point: 'Start',
+    destination: 'Destination',
+    route_name: 'Assigned Route',
+    next_stop_name: 'Start',
+    eta_minutes: 0,
+    distance_km: 0,
+    current_lat: 12.9249,
+    current_lng: 80.1275,
+    speed: 0,
+    heading: 0,
+    status: 'idle',
+    stops: []
+  };
+
+  const live = liveLocations[baseShuttle.id];
+  const assignedShuttle =
+    live && (tripStatus === 'LIVE' || baseShuttle.status === 'on_trip')
+      ? {
+          ...baseShuttle,
+          current_lat: live.latitude ?? baseShuttle.current_lat,
+          current_lng: live.longitude ?? baseShuttle.current_lng,
+          speed: live.speed ?? baseShuttle.speed,
+          heading: live.heading ?? baseShuttle.heading,
+          status: 'on_trip',
+          eta_minutes: live.eta_minutes !== undefined ? live.eta_minutes : baseShuttle.eta_minutes,
+          next_stop_name: live.next_stop_name || baseShuttle.next_stop_name,
+          distance_km: live.distance_km !== undefined ? live.distance_km : baseShuttle.distance_km
+        }
+      : {
+          ...baseShuttle,
+          status: tripStatus === 'LIVE' ? 'on_trip' : 'idle',
+          speed: tripStatus === 'LIVE' ? baseShuttle.speed : 0
+        };
+
+  const driverAvatar =
+    driverData?.avatar_url ||
+    user?.avatar_url ||
+    `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(driverData?.name || user?.name || 'Driver')}`;
+  const driverCode = driverData?.driver_code || `DRV-${100 + Number(driverData?.id || 1)}`;
+  const routePassengers = driverData?.routePassengers || [];
+  const activeStops = assignedShuttle.stops?.length > 0 ? assignedShuttle.stops : [];
+
+  // Start Trip & Geolocation Watcher (requests GPS permission or automatically acquires location and streams immediately with zero delay)
+  const handleStartTrip = async () => {
+    try {
+      setGpsStatus('Acquiring GPS...');
+
+      // Immediately request browser GPS permission so Driver can allow location sharing right away
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const { latitude, longitude, speed, heading } = pos.coords;
+            const initialSpeed = speed && speed > 0 ? speed * 3.6 : 26;
+            setCurrentCoords({
+              lat: latitude,
+              lng: longitude,
+              speed: initialSpeed,
+              heading: heading || 65
+            });
+            setGpsStatus('Connected (Live GPS)');
+            sendDriverLocation({
+              shuttleId: assignedShuttle.id,
+              latitude,
+              longitude,
+              speed: initialSpeed,
+              heading: heading || 65,
+              driverId: user?.id
+            });
+          },
+          () => {
+            setGpsStatus('Connected (Auto Route GPS)');
+            startSimulation(assignedShuttle.id);
+          },
+          { enableHighAccuracy: true, timeout: 6000, maximumAge: 0 }
+        );
+      }
+
+      const res = await api.post('/trips/start', {
+        shuttle_id: assignedShuttle.id,
+        route_id: assignedShuttle.current_route_id || 1,
+        passenger_count: routePassengers.length || 14
+      });
+
+      if (res.data.success) {
+        setActiveTripId(res.data.data.id);
+        setTripStatus('LIVE');
+        setGpsStatus('Connected (Live GPS)');
+        setMapFocusTrigger((c) => c + 1);
+        setDelayNotifiedForTrip(false);
+        setOffRouteNotifiedForTrip(false);
+        setEmergencyStoppedNotifiedForTrip(false);
+
+        // Immediately start live route movement so there is zero delay across Driver, Passenger, and Admin maps
+        startSimulation(assignedShuttle.id);
+
+        addToast({
+          title: 'Trip Started — Live GPS Sharing Active',
+          message: `Bus ${assignedShuttle.code} GPS is now live on Google Maps and immediately shared with allocated passengers on ${assignedShuttle.start_point || 'Start'} ➔ ${assignedShuttle.destination || 'Destination'}.`,
+          type: 'success'
+        });
+
+        if (navigator.geolocation) {
+          if (watchIdRef.current !== null) {
+            navigator.geolocation.clearWatch(watchIdRef.current);
+          }
+          watchIdRef.current = navigator.geolocation.watchPosition(
+            (position) => {
+              const { latitude, longitude, speed, heading } = position.coords;
+              const newCoords = {
+                lat: latitude,
+                lng: longitude,
+                speed: speed && speed > 0 ? speed * 3.6 : 26,
+                heading: heading || 65
+              };
+              setCurrentCoords(newCoords);
+              setGpsStatus('Connected (Live GPS)');
+
+              sendDriverLocation({
+                shuttleId: assignedShuttle.id,
+                tripId: res.data.data.id,
+                latitude,
+                longitude,
+                speed: newCoords.speed,
+                heading: newCoords.heading,
+                driverId: user?.id
+              });
+            },
+            () => {
+              setGpsStatus('Connected (Auto Route GPS)');
+              startSimulation(assignedShuttle.id);
+            },
+            { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+          );
+        } else {
+          startSimulation(assignedShuttle.id);
+          setGpsStatus('Connected (Auto Route GPS)');
+        }
+      }
+    } catch (err) {
+      addToast({
+        title: 'Error',
+        message: 'Failed to initiate trip on server',
+        type: 'danger'
+      });
+    }
+  };
+
+  // End Trip (When driver reaches destination within scheduled time, do NOT notify Admin that END TRIP was pressed; if delayed, notify Admin & calculate points based on delay)
+  const handleEndTrip = async () => {
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    if (simulationActive) {
+      stopSimulation(assignedShuttle.id);
+    }
+    try {
+      const currentDelay = Number(driverData?.delayMinutes || 0);
+      const arrivalRes = await api.post('/trips/destination-arrival', {
+        shuttle_id: assignedShuttle.id,
+        delay_minutes: currentDelay
+      });
+      await api.post(`/trips/${activeTripId || assignedShuttle.id}/end`);
+
+      setTripStatus('NOT_STARTED');
+      setGpsStatus('Standby');
+      fetchDriver();
+
+      const ptsEarned = arrivalRes.data?.data?.pointsEarned ?? (currentDelay > 0 ? Math.max(2, 10 - currentDelay) : 10);
+      const monthlyPts =
+        arrivalRes.data?.data?.monthlyPoints ??
+        arrivalRes.data?.data?.driverPoints ??
+        (Number(driverData?.monthlyPoints ?? driverData?.driver_points ?? 10) + ptsEarned);
+      const yearlyPts =
+        arrivalRes.data?.data?.yearlyPoints ??
+        (Number(driverData?.yearlyPoints ?? driverData?.yearly_points ?? monthlyPts));
+
+      if (currentDelay > 0) {
+        addToast({
+          title: `Trip Completed (+${currentDelay}m Delayed • +${ptsEarned} Pts)`,
+          message: `Destination reached with +${currentDelay} min delay. Admin notified & points added to all-trips score (Monthly: ${monthlyPts} pts • Yearly: ${yearlyPts} pts).`,
+          type: 'warning'
+        });
+      } else {
+        addToast({
+          title: `Destination Reached On Time (+${ptsEarned} Pts)`,
+          message: `Trip completed within scheduled time! +${ptsEarned} points added to all-trips score (Monthly: ${monthlyPts} pts • Yearly: ${yearlyPts} pts).`,
+          type: 'success'
+        });
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Report Delay (Sends to Admin ONLY ONE TIME per trip & notifies passengers of stop traffic delay)
+  const handleReportDelay = async (e) => {
+    e.preventDefault();
+    if (delayNotifiedForTrip) {
+      addToast({
+        title: 'Already Notified for This Trip',
+        message: 'Delay notification has already been sent once to Admin for the current trip.',
+        type: 'info'
+      });
+      setIsDelayModalOpen(false);
+      return;
+    }
+    try {
+      const res = await api.post(`/trips/${activeTripId || assignedShuttle.id}/delay`, {
+        minutes: delayMinutes,
+        reason: delayReason
+      });
+      setDelayNotifiedForTrip(true);
+      fetchDriver();
+      addToast({
+        title: res.data?.alreadyNotified ? 'Delay Already Notified (1/Trip)' : 'Delay Notification Sent (Once/Trip)',
+        message:
+          res.data?.message ||
+          `Admin and passengers notified of ${delayMinutes} min traffic delay on Bus ${assignedShuttle.code} (1 time for this trip).`,
+        type: 'warning'
+      });
+      setIsDelayModalOpen(false);
+    } catch (err) {
+      addToast({ title: 'Error', message: 'Could not report delay', type: 'danger' });
+    }
+  };
+
+  // Off-Route Deviation Alert to Admin (Sends to Admin ONLY ONE TIME per trip)
+  const handleTriggerOffRouteAlert = async () => {
+    if (offRouteNotifiedForTrip) {
+      addToast({
+        title: 'Already Notified for This Trip',
+        message: 'Off-route notification has already been sent once to Admin for the current trip.',
+        type: 'info'
+      });
+      return;
+    }
+    try {
+      const res = await api.post('/trips/off-route', {
+        shuttle_id: assignedShuttle.id,
+        latitude: Number(assignedShuttle.current_lat || currentCoords.lat) + 0.012,
+        longitude: Number(assignedShuttle.current_lng || currentCoords.lng) - 0.011,
+        reason: `Driver ${driverData?.name || user?.name || ''} deviated from allocated route (${assignedShuttle.start_point || 'Start'} ➔ ${assignedShuttle.destination || 'Destination'}) on Bus ${assignedShuttle.code}.`
+      });
+      if (res.data.success) {
+        setOffRouteNotifiedForTrip(true);
+        addToast({
+          title: res.data.alreadyNotified
+            ? 'Off-Route Already Notified (1/Trip)'
+            : 'Off-Route Notification Sent to Admin (Once/Trip)',
+          message:
+            res.data.message ||
+            `Admin has been notified once for this trip that Bus ${assignedShuttle.code} deviated from its allocated route.`,
+          type: 'warning'
+        });
+      }
+    } catch (err) {
+      addToast({ title: 'Error', message: 'Failed to send off-route alert', type: 'danger' });
+    }
+  };
+
+  // 20-Minute Stopped Bus Emergency Notification to Admin (Sends to Admin ONLY ONE TIME per trip across Driver & Passenger)
+  const handleEmergencyStoppedAlert = async () => {
+    if (emergencyStoppedNotifiedForTrip) {
+      addToast({
+        title: 'Emergency Already Sent (1/Trip)',
+        message: `Emergency notification for Bus ${assignedShuttle.code} (stopped 20+ mins) was already sent once to Admin for this trip.`,
+        type: 'info'
+      });
+      return;
+    }
+    try {
+      const res = await api.post('/trips/emergency-stopped', {
+        shuttle_id: assignedShuttle.id,
+        stopped_minutes: 20,
+        reason: `Emergency reported by Driver (${driverData?.name || user?.name || 'Driver'}): Bus ${assignedShuttle.code} on route ${assignedShuttle.start_point || 'Start'} ➔ ${assignedShuttle.destination || 'Destination'} has been stopped for 20 minutes or more.`
+      });
+      if (res.data.success) {
+        setEmergencyStoppedNotifiedForTrip(true);
+        addToast({
+          title: res.data.alreadyNotified
+            ? 'Emergency Already Notified (1/Trip)'
+            : '20+ Min Stopped Emergency Sent to Admin (Once/Trip)',
+          message: res.data.message,
+          type: res.data.alreadyNotified ? 'info' : 'danger'
+        });
+      }
+    } catch (err) {
+      addToast({ title: 'Error', message: 'Failed to send 20-min stopped emergency alert', type: 'danger' });
+    }
+  };
+
+  const handleToggleSimulation = () => {
+    if (simulationActive) {
+      stopSimulation(assignedShuttle.id);
+      addToast({ title: 'Simulation Stopped', message: 'Paused simulated coordinates', type: 'info' });
+    } else {
+      setDelayNotifiedForTrip(false);
+      setOffRouteNotifiedForTrip(false);
+      setEmergencyStoppedNotifiedForTrip(false);
+      startSimulation(assignedShuttle.id);
+      setGpsStatus('Simulated');
+      setTripStatus('LIVE');
+      addToast({ title: 'Simulation Active', message: 'Emitting smooth GPS route waypoints', type: 'success' });
+    }
+  };
+
+  const displaySpeed = Math.round(Number(assignedShuttle.speed ?? currentCoords.speed ?? 24));
+  const assignedSchedules = Array.isArray(driverData?.schedules) ? driverData.schedules : [];
+  const monthlyPoints = driverData?.monthlyPoints ?? driverData?.monthly_points ?? driverData?.driver_points ?? driverData?.dailyPoints ?? 10;
+  const yearlyPoints = driverData?.yearlyPoints ?? driverData?.yearly_points ?? driverData?.driver_points ?? monthlyPoints;
+  const totalTripsCompleted = driverData?.totalTripsCompleted ?? driverData?.total_trips ?? 1;
+  const lastPointsEarned = driverData?.lastPointsEarned ?? driverData?.last_points_earned ?? 10;
+  const driverDelayMins = Number(driverData?.delayMinutes ?? driverData?.delay_minutes ?? 0);
+
+  return (
+    <div className="space-y-6 max-w-6xl mx-auto">
+      {/* Top Section: Driver Profile Image, ID, Name & Assigned Bus/Route */}
+      <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-premium flex flex-col sm:flex-row items-center justify-between gap-6">
+        <div className="flex items-center gap-4 text-center sm:text-left">
+          <img
+            src={driverAvatar}
+            alt={driverData?.name || user?.name || 'Driver'}
+            className="w-16 h-16 rounded-2xl object-cover border-2 border-brand-500 shadow-glow shrink-0"
+          />
+          <div>
+            <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+              <h2 className="text-xl font-black text-navy-900 dark:text-white">
+                {driverData?.name || user?.name || 'Driver Cockpit'}
+              </h2>
+              <span className="px-2.5 py-0.5 rounded-lg bg-brand-50 dark:bg-brand-950/70 text-brand-600 dark:text-accent-blue text-[11px] font-black border border-brand-200 dark:border-brand-800">
+                ID: {driverCode}
+              </span>
+              <Badge status={tripStatus === 'LIVE' ? 'on_trip' : 'idle'}>
+                {tripStatus === 'LIVE' ? 'ON TRIP' : 'TRIP NOT STARTED'}
+              </Badge>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              Assigned Bus:{' '}
+              <b className="text-brand-600 dark:text-accent-blue">{assignedShuttle.code}</b> ({assignedShuttle.name})
+            </p>
+            <p className="text-xs text-slate-400">
+              Allocated Route:{' '}
+              <span className="font-semibold text-slate-700 dark:text-slate-300">
+                {assignedShuttle.start_point || 'Hostel'} ➔ {assignedShuttle.destination || 'Campus'}
+              </span>
+            </p>
+          </div>
+        </div>
+
+        {/* GPS Status, All-Trips Points (Monthly & Yearly) & Admin-Verified License Badge */}
+        <div className="flex flex-col items-center sm:items-end gap-2">
+          <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2">
+            <div className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-xs font-extrabold text-amber-700 dark:text-amber-300">
+              <Award className="w-4 h-4 text-amber-500" />
+              <span>Monthly: {monthlyPoints} pts • Yearly: {yearlyPoints} pts</span>
+              <span className="text-[10px] font-bold opacity-80">
+                ({totalTripsCompleted} Trips • {driverDelayMins > 0 ? `+${lastPointsEarned} pts after ${driverDelayMins}m delay` : '+10 pts On-Time'})
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-semibold">
+              <span
+                className={`w-2.5 h-2.5 rounded-full ${
+                  gpsStatus.includes('Connected') || gpsStatus === 'Simulated'
+                    ? 'bg-emerald-500 animate-pulse'
+                    : 'bg-slate-400'
+                }`}
+              />
+              <span>
+                GPS: <b className="text-navy-900 dark:text-white">{gpsStatus}</b>
+              </span>
+            </div>
+          </div>
+
+          {driverData?.license_photo_url && (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 text-xs font-bold border border-emerald-200 dark:border-emerald-800">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Driving License Verified</span>
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Admin Schedule Notification Banner in Driver Login */}
+      <div className="p-4 rounded-2xl bg-gradient-to-r from-blue-50 via-indigo-50/80 to-emerald-50/70 dark:from-slate-900 dark:via-blue-950/40 dark:to-emerald-950/30 border border-brand-200 dark:border-brand-800/80 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-brand-500 text-white flex items-center justify-center shrink-0 shadow-sm">
+              <Calendar className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-black text-navy-900 dark:text-white">
+                  Admin Assigned Schedule & Safe Ride Notice
+                </h3>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold">
+                  <Mail className="w-3 h-3" />
+                  Email & Login Notified
+                </span>
+              </div>
+              {assignedSchedules.length > 0 ? (
+                <div className="mt-1.5 space-y-1">
+                  {assignedSchedules.map((sc, idx) => (
+                    <p
+                      key={sc.id || idx}
+                      className="text-xs font-semibold text-slate-700 dark:text-slate-200 flex flex-wrap items-center gap-2"
+                    >
+                      <span className="px-2 py-0.5 rounded-md bg-brand-600 text-white font-mono text-[11px] font-bold">
+                        {sc.departure_time} – {sc.arrival_time}
+                      </span>
+                      <span>
+                        Bus <b>{sc.shuttle_code || assignedShuttle.code}</b> •{' '}
+                        <b>{sc.route_name || `${assignedShuttle.start_point} ➔ ${assignedShuttle.destination}`}</b>
+                      </span>
+                      <span className="text-emerald-700 dark:text-emerald-400 font-bold">
+                        — Your schedule time is on, so be ready to ride safely!
+                      </span>
+                    </p>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
+                  When Admin sets your schedule time, you will be notified here earlier and receive an email from Admin (<i>"Your schedule time is on — ready to ride safely"</i>).
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* LARGE TRIP CONTROL BUTTON & ONE-TIME PER-TRIP DELAY / OFF-ROUTE / 20-MIN EMERGENCY CONTROLS */}
+      <div className="space-y-4">
+        {tripStatus === 'NOT_STARTED' ? (
+          <button
+            type="button"
+            onClick={handleStartTrip}
+            className="w-full py-5 sm:py-6 rounded-3xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-black text-xl sm:text-2xl shadow-glow flex items-center justify-center gap-3 transition-transform active:scale-[0.99]"
+          >
+            <Play className="w-7 h-7 fill-white" />
+            <span>START TRIP</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={handleEndTrip}
+            className="w-full py-5 sm:py-6 rounded-3xl bg-gradient-to-r from-rose-600 to-red-500 hover:from-rose-500 hover:to-red-400 text-white font-black text-xl sm:text-2xl shadow-elevated flex items-center justify-center gap-3 transition-transform active:scale-[0.99]"
+          >
+            <Square className="w-7 h-7 fill-white" />
+            <span>END TRIP</span>
+          </button>
+        )}
+
+        {/* Driver Action Controls: One-Time Delay, One-Time Off-Route, One-Time 20+ Min Stopped Emergency, & GPS Simulation */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <Button
+            variant="outline"
+            size="lg"
+            icon={delayNotifiedForTrip ? CheckCircle2 : AlertTriangle}
+            disabled={delayNotifiedForTrip}
+            onClick={() => setIsDelayModalOpen(true)}
+            className={`w-full justify-center ${
+              delayNotifiedForTrip
+                ? 'border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30 opacity-80 cursor-not-allowed'
+                : 'border-amber-300 dark:border-amber-800 text-amber-600 dark:text-amber-400 bg-amber-50/40 dark:bg-amber-950/20'
+            }`}
+          >
+            {delayNotifiedForTrip ? 'Delay Notified (1/Trip)' : 'Report Route Delay'}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="lg"
+            icon={offRouteNotifiedForTrip ? CheckCircle2 : NavigationOff}
+            disabled={offRouteNotifiedForTrip}
+            onClick={handleTriggerOffRouteAlert}
+            className={`w-full justify-center ${
+              offRouteNotifiedForTrip
+                ? 'border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30 opacity-80 cursor-not-allowed'
+                : 'border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 bg-rose-50/40 dark:bg-rose-950/20'
+            }`}
+          >
+            {offRouteNotifiedForTrip ? 'Off-Route Notified (1/Trip)' : 'Off-Route Alert'}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="lg"
+            icon={emergencyStoppedNotifiedForTrip ? CheckCircle2 : Siren}
+            disabled={emergencyStoppedNotifiedForTrip}
+            onClick={handleEmergencyStoppedAlert}
+            className={`w-full justify-center ${
+              emergencyStoppedNotifiedForTrip
+                ? 'border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30 opacity-80 cursor-not-allowed'
+                : 'border-red-400 dark:border-red-800 text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-950/30'
+            }`}
+          >
+            {emergencyStoppedNotifiedForTrip ? 'Emergency Sent' : 'Emergency'}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="lg"
+            icon={Sparkles}
+            onClick={handleToggleSimulation}
+            className="w-full justify-center border-blue-300 dark:border-blue-800 text-brand-600 dark:text-accent-blue bg-blue-50/40 dark:bg-blue-950/20"
+          >
+            {simulationActive ? 'Stop Simulation' : '⚡ Simulate GPS'}
+          </Button>
+        </div>
+      </div>
+
+      {/* Operational Telemetry Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-stretch">
+        <Card className="p-6 text-center flex flex-col justify-between border-brand-200 dark:border-brand-900/60 shadow-premium">
+          <div className="w-10 h-10 rounded-2xl bg-blue-50 dark:bg-blue-950 text-brand-600 dark:text-accent-blue mx-auto flex items-center justify-center">
+            <MapPin className="w-5 h-5" />
+          </div>
+          <div className="my-2">
+            <span className="text-xs uppercase font-bold tracking-wider text-slate-400 block">
+              Next Stop / Destination
+            </span>
+            <h3 className="text-xl font-black text-navy-900 dark:text-white mt-1">
+              {assignedShuttle.next_stop_name || assignedShuttle.destination || 'Academic Block'}
+            </h3>
+          </div>
+          <span className="text-xs font-semibold text-brand-600 dark:text-accent-blue">
+            Allocated Corridor
+          </span>
+        </Card>
+
+        <Card className="p-6 text-center flex flex-col justify-between border-emerald-200 dark:border-emerald-900/60 shadow-premium">
+          <div className="w-10 h-10 rounded-2xl bg-emerald-50 dark:bg-emerald-950 text-emerald-600 mx-auto flex items-center justify-center">
+            <Clock className="w-5 h-5" />
+          </div>
+          <div className="my-2">
+            <span className="text-xs uppercase font-bold tracking-wider text-slate-400 block">
+              Estimated Arrival (ETA)
+            </span>
+            <h3 className="text-3xl font-black text-emerald-600 dark:text-emerald-400 mt-1">
+              {assignedShuttle.eta_minutes ?? 3} min
+            </h3>
+          </div>
+          <span className="text-xs text-slate-400">
+            Distance: {assignedShuttle.distance_km ?? 1.8} km
+          </span>
+        </Card>
+
+        <Card className="p-6 text-center flex flex-col justify-between border-slate-200 dark:border-slate-800 shadow-premium">
+          <div className="w-10 h-10 rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 mx-auto flex items-center justify-center">
+            <Compass className="w-5 h-5" />
+          </div>
+          <div className="my-2">
+            <span className="text-xs uppercase font-bold tracking-wider text-slate-400 block">
+              Vehicle Speed
+            </span>
+            <h3 className="text-3xl font-black text-navy-900 dark:text-white mt-1">
+              {displaySpeed} km/h
+            </h3>
+          </div>
+          <span className="text-xs text-slate-400">Heading: North-East</span>
+        </Card>
+      </div>
+
+      {/* Live Map Embedded Directly in Driver Dashboard */}
+      <Card className="p-4 border border-slate-200 dark:border-slate-800 shadow-elevated space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+            <h3 className="text-sm font-black text-navy-900 dark:text-white flex items-center gap-2">
+              <span>Live Route Map — Bus {assignedShuttle.code}</span>
+              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                ({assignedShuttle.start_point || 'Hostel'}
+                <ArrowRight className="w-3 h-3 text-brand-500" />
+                {assignedShuttle.destination || 'Campus'})
+              </span>
+            </h3>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 font-mono text-[11px] font-bold text-slate-700 dark:text-slate-300">
+              GPS: {Number(assignedShuttle.current_lat || 12.9745).toFixed(5)}°N, {Number(assignedShuttle.current_lng || 77.5992).toFixed(5)}°E
+            </span>
+            <span className="px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/60 font-bold text-brand-600 dark:text-accent-blue">
+              {activeStops.length} Route Stops • {displaySpeed} km/h • ETA {assignedShuttle.eta_minutes ?? 3}m
+            </span>
+          </div>
+        </div>
+
+        <div className="h-[460px] w-full rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 relative">
+          <LiveMap
+            shuttles={tripStatus === 'LIVE' ? [assignedShuttle] : []}
+            stops={activeStops}
+            selectedShuttleId={tripStatus === 'LIVE' ? assignedShuttle.id : null}
+            focusTrigger={mapFocusTrigger}
+            className="h-full w-full"
+          />
+        </div>
+      </Card>
+
+      {/* Allocated Passengers on Driver's Bus (Passenger Name, Profile Photo & Passenger ID) */}
+      <Card className="p-5 border border-slate-200 dark:border-slate-800 shadow-premium space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-brand-50 dark:bg-brand-950/60 text-brand-600 dark:text-accent-blue flex items-center justify-center">
+              <Users2 className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-navy-900 dark:text-white">
+                Allocated Passengers — Bus {assignedShuttle.code} ({routePassengers.length} Passengers)
+              </h3>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Passenger Name, Profile Photo & Verified Passenger ID for your allocated route ({assignedShuttle.start_point || 'Start'} ➔ {assignedShuttle.destination || 'Destination'})
+              </p>
+            </div>
+          </div>
+          <Badge status="active">Bus {assignedShuttle.code} Manifest</Badge>
+        </div>
+
+        {routePassengers.length === 0 ? (
+          <div className="py-8 text-center text-xs text-slate-400">
+            No passengers currently allocated to Bus {assignedShuttle.code}.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+            {routePassengers.map((p, idx) => {
+              const passengerCode = p.passenger_code || `PASS-${1000 + Number(p.id || idx + 1)}`;
+              const passengerAvatar =
+                p.avatar_url ||
+                `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(p.name || 'Passenger')}`;
+
+              return (
+                <div
+                  key={p.id || idx}
+                  className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/80 flex items-start justify-between gap-3"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <img
+                      src={passengerAvatar}
+                      alt={p.name}
+                      className="w-12 h-12 rounded-xl object-cover border-2 border-brand-500/70 shrink-0"
+                    />
+                    <div className="min-w-0 space-y-0.5">
+                      <p className="text-xs font-black text-navy-900 dark:text-white truncate">
+                        {p.name}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-brand-50 dark:bg-brand-950/80 text-brand-700 dark:text-blue-300 text-[10px] font-extrabold border border-brand-200 dark:border-brand-800">
+                          <IdCard className="w-3 h-3" />
+                          ID: {passengerCode}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold">
+                          Bus {p.bus_number || assignedShuttle.code}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                        Stop: <b className="text-slate-700 dark:text-slate-200">{p.destination || assignedShuttle.destination}</b>
+                      </p>
+                      {p.organization_name && (
+                        <p className="text-[10px] text-slate-400 truncate">{p.organization_name}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {p.id_card_url && (
+                    <button
+                      type="button"
+                      onClick={() => setPreviewPassengerIdCard(p)}
+                      className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[10px] font-bold text-brand-600 dark:text-brand-400 hover:bg-brand-50 transition flex items-center gap-1 shrink-0"
+                      title="View Passenger ID Card"
+                    >
+                      <Eye className="w-3 h-3" />
+                      <span>ID Card</span>
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      {/* Passenger ID Card Preview Modal */}
+      {previewPassengerIdCard && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setPreviewPassengerIdCard(null)}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 max-w-md w-full p-4 space-y-3 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
+              <div className="flex items-center gap-2.5">
+                <img
+                  src={
+                    previewPassengerIdCard.avatar_url ||
+                    `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(previewPassengerIdCard.name || 'P')}`
+                  }
+                  alt={previewPassengerIdCard.name}
+                  className="w-9 h-9 rounded-lg object-cover border border-brand-400"
+                />
+                <div>
+                  <h4 className="text-sm font-black text-navy-900 dark:text-white">
+                    {previewPassengerIdCard.name}
+                  </h4>
+                  <p className="text-[11px] font-bold text-brand-600 dark:text-brand-400">
+                    Passenger ID: {previewPassengerIdCard.passenger_code || `PASS-${1000 + Number(previewPassengerIdCard.id || 1)}`}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewPassengerIdCard(null)}
+                className="px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+              >
+                Close
+              </button>
+            </div>
+            <img
+              src={previewPassengerIdCard.id_card_url}
+              alt={`${previewPassengerIdCard.name} ID Card`}
+              className="w-full max-h-80 object-contain rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Delay Reporting Modal */}
+      <Modal
+        isOpen={isDelayModalOpen}
+        onClose={() => setIsDelayModalOpen(false)}
+        title="Report Route Delay & Traffic Alert (Once Per Trip)"
+        subtitle="Notifies Admin once per trip and sends a Stop Delay + Traffic Alert to passengers on this route"
+      >
+        <form onSubmit={handleReportDelay} className="space-y-4">
+          <Input
+            label="Estimated Delay (Minutes)"
+            id="delayMins"
+            type="number"
+            required
+            value={delayMinutes}
+            onChange={(e) => setDelayMinutes(e.target.value)}
+          />
+
+          <div className="w-full">
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+              Traffic / Delay Reason
+            </label>
+            <select
+              value={delayReason}
+              onChange={(e) => setDelayReason(e.target.value)}
+              className="block w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-sm py-2.5 px-3.5"
+            >
+              <option value="Heavy campus traffic near current stop">Heavy campus traffic near current stop</option>
+              <option value="Campus pedestrian crowd near Gate 2">Campus pedestrian crowd near Gate 2</option>
+              <option value="Construction detour at North Circle">Construction detour at North Circle</option>
+              <option value="Weather / heavy rain traffic slowdown">Weather / heavy rain traffic slowdown</option>
+            </select>
+          </div>
+
+          <div className="flex justify-end gap-3 pt-3">
+            <Button variant="secondary" type="button" onClick={() => setIsDelayModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="danger">
+              Send Delay & Traffic Alert
+            </Button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+};
+
+export default DriverDashboard;
+
