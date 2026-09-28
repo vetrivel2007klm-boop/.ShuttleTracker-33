@@ -102,6 +102,10 @@ const LiveMapInner = ({
   onShowAllBuses,
   onMapClick,
   onRouteCalculated,
+  dropPinLocation = null,
+  onDropPinChange,
+  editableStops = false,
+  onStopDragEnd,
   center = [12.9782, 77.6035],
   zoom = 14,
   className = 'h-full min-h-[420px]',
@@ -123,6 +127,8 @@ const LiveMapInner = ({
   const markersRef = useRef(new window.Map());
   const markerStateRef = useRef(new window.Map());
   const stopMarkersRef = useRef([]);
+  const dropPinMarkerRef = useRef(null);
+  const dropPinPreviewLayerRef = useRef(null);
   const routeLayersRef = useRef([]);
   const otherRouteLayersRef = useRef([]);
   const currentRoadLatLngsRef = useRef([]);
@@ -132,9 +138,13 @@ const LiveMapInner = ({
   const lastStopsSigRef = useRef('');
   const shuttlesRef = useRef(shuttles);
   const onMapClickRef = useRef(onMapClick);
+  const onDropPinChangeRef = useRef(onDropPinChange);
+  const onStopDragEndRef = useRef(onStopDragEnd);
   const onRouteCalculatedRef = useRef(onRouteCalculated);
   shuttlesRef.current = shuttles;
   onMapClickRef.current = onMapClick;
+  onDropPinChangeRef.current = onDropPinChange;
+  onStopDragEndRef.current = onStopDragEnd;
   onRouteCalculatedRef.current = onRouteCalculated;
 
   const { darkMode } = useTheme();
@@ -433,11 +443,14 @@ const LiveMapInner = ({
       });
 
       map.on('click', (e) => {
-        if (onMapClickRef.current && e.latlng) {
-          onMapClickRef.current(
-            Number(e.latlng.lat.toFixed(5)),
-            Number(e.latlng.lng.toFixed(5))
-          );
+        if (!e.latlng) return;
+        const clickedLat = Number(e.latlng.lat.toFixed(5));
+        const clickedLng = Number(e.latlng.lng.toFixed(5));
+        if (onDropPinChangeRef.current) {
+          onDropPinChangeRef.current(clickedLat, clickedLng);
+        }
+        if (onMapClickRef.current) {
+          onMapClickRef.current(clickedLat, clickedLng);
         }
       });
 
@@ -487,6 +500,116 @@ const LiveMapInner = ({
       renderRoadAndTrafficLayers(currentRoadLatLngsRef.current, showTrafficLayer, validStops);
     }
   }, [darkMode, mapProvider, showTrafficLayer]);
+
+  // Render Draggable "Drop Location on Map" Pin & Live Preview Connection
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    const map = mapInstanceRef.current;
+
+    if (dropPinMarkerRef.current) {
+      dropPinMarkerRef.current.remove();
+      dropPinMarkerRef.current = null;
+    }
+    if (dropPinPreviewLayerRef.current) {
+      dropPinPreviewLayerRef.current.remove();
+      dropPinPreviewLayerRef.current = null;
+    }
+
+    if (
+      !dropPinLocation ||
+      !Number.isFinite(Number(dropPinLocation.lat)) ||
+      !Number.isFinite(Number(dropPinLocation.lng))
+    ) {
+      return;
+    }
+
+    const pinLat = Number(dropPinLocation.lat);
+    const pinLng = Number(dropPinLocation.lng);
+    const pinLabel = dropPinLocation.label || 'Drop Location (Drag Me)';
+
+    const dropIconHtml = `
+      <div class="relative w-9 h-9 flex items-center justify-center cursor-grab active:cursor-grabbing">
+        <div class="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-md bg-amber-500 text-slate-950 text-[9px] font-black uppercase tracking-wider shadow-lg whitespace-nowrap border border-white pointer-events-none">
+          📍 ${pinLabel}
+        </div>
+        <span class="animate-ping absolute inline-flex h-8 w-8 rounded-full bg-amber-400 opacity-60"></span>
+        <div class="relative w-8 h-8 rounded-full border-2 border-white bg-amber-500 text-slate-950 shadow-xl flex items-center justify-center font-black text-sm ring-4 ring-amber-500/40">
+          📍
+        </div>
+        <div class="absolute top-full mt-1 left-1/2 -translate-x-1/2 bg-slate-900/95 text-amber-300 text-[9px] px-2 py-0.5 rounded shadow-md pointer-events-none whitespace-nowrap font-mono font-bold border border-amber-500/50">
+          ${pinLat.toFixed(5)}, ${pinLng.toFixed(5)}
+        </div>
+      </div>
+    `;
+
+    const dropIcon = L.divIcon({
+      className: 'custom-drop-pin-icon',
+      html: dropIconHtml,
+      iconSize: [36, 36],
+      iconAnchor: [18, 18]
+    });
+
+    const marker = L.marker([pinLat, pinLng], {
+      icon: dropIcon,
+      draggable: true,
+      zIndexOffset: 1500
+    }).addTo(map);
+
+    const drawPreviewConnection = (lat, lng) => {
+      if (dropPinPreviewLayerRef.current) {
+        dropPinPreviewLayerRef.current.remove();
+        dropPinPreviewLayerRef.current = null;
+      }
+      const validStops = (activeStops || []).filter((s) => s && s.latitude && s.longitude);
+      if (validStops.length >= 2) {
+        const prevStop = validStops[validStops.length - 2];
+        const destStop = validStops[validStops.length - 1];
+        const previewPts = [
+          [Number(prevStop.latitude), Number(prevStop.longitude)],
+          [lat, lng],
+          [Number(destStop.latitude), Number(destStop.longitude)]
+        ];
+        dropPinPreviewLayerRef.current = L.polyline(previewPts, {
+          color: '#F59E0B',
+          weight: 3.5,
+          dashArray: '7, 7',
+          opacity: 0.95
+        }).addTo(map);
+      } else if (validStops.length === 1) {
+        const startStop = validStops[0];
+        dropPinPreviewLayerRef.current = L.polyline(
+          [
+            [Number(startStop.latitude), Number(startStop.longitude)],
+            [lat, lng]
+          ],
+          {
+            color: '#F59E0B',
+            weight: 3.5,
+            dashArray: '7, 7',
+            opacity: 0.95
+          }
+        ).addTo(map);
+      }
+    };
+
+    drawPreviewConnection(pinLat, pinLng);
+
+    marker.on('drag', (e) => {
+      const pos = e.target.getLatLng();
+      if (pos) {
+        drawPreviewConnection(pos.lat, pos.lng);
+      }
+    });
+
+    marker.on('dragend', (e) => {
+      const pos = e.target.getLatLng();
+      if (pos && onDropPinChangeRef.current) {
+        onDropPinChangeRef.current(Number(pos.lat.toFixed(5)), Number(pos.lng.toFixed(5)));
+      }
+    });
+
+    dropPinMarkerRef.current = marker;
+  }, [dropPinLocation, stopsSignature]);
 
   // Render Secondary/Other Routes in Distinct Colors (Purple, Teal, Orange, Pink)
   useEffect(() => {
@@ -557,13 +680,20 @@ const LiveMapInner = ({
           .map((s) => `${Number(s.longitude).toFixed(5)},${Number(s.latitude).toFixed(5)}`)
           .join(';');
         fetch(
-          `https://router.project-osrm.org/route/v1/driving/${coordQuery}?overview=full&geometries=geojson&steps=false`
+          `https://router.project-osrm.org/route/v1/driving/${coordQuery}?overview=full&geometries=geojson&steps=false&alternatives=true`
         )
           .then((res) => res.json())
           .then((data) => {
             if (isCancelled || !mapInstanceRef.current) return;
             if (data && data.code === 'Ok' && data.routes && data.routes[0]) {
-              const rawLatLngs = data.routes[0].geometry.coordinates.map(([lng, lat]) => [
+              const bestRoute = data.routes.reduce(
+                (shortest, candidate) =>
+                  Number(candidate.distance || Infinity) < Number(shortest.distance || Infinity)
+                    ? candidate
+                    : shortest,
+                data.routes[0]
+              );
+              const rawLatLngs = bestRoute.geometry.coordinates.map(([lng, lat]) => [
                 Number(lat),
                 Number(lng)
               ]);
@@ -572,7 +702,7 @@ const LiveMapInner = ({
                 rStops[0],
                 rStops[rStops.length - 1]
               );
-              const exactKm = Math.max(0.5, Number((data.routes[0].distance / 1000).toFixed(2)));
+              const exactKm = Math.max(0.5, Number((bestRoute.distance / 1000).toFixed(2)));
               const exactMins = Math.max(2, Math.round((exactKm / 26) * 60));
               roadPathCache.set(routeItem.sig, {
                 latlngs: clamped,
@@ -595,13 +725,14 @@ const LiveMapInner = ({
     };
   }, [secondaryRoutesSig]);
 
-  // Render Exact Real-World Road Route Path (in Blue #2563EB) & Stop Markers IN EXACT ORDER
+  // Render Exact Real-World Shortest Connected Road Route Path (in Blue #2563EB) & Stop Markers IN EXACT ORDER
   useEffect(() => {
     if (!mapInstanceRef.current) return;
-    if (lastStopsSigRef.current === stopsSignature && stopMarkersRef.current.length > 0) {
+    const sigWithEdit = `${stopsSignature}|edit:${Boolean(editableStops)}`;
+    if (lastStopsSigRef.current === sigWithEdit && stopMarkersRef.current.length > 0) {
       return;
     }
-    lastStopsSigRef.current = stopsSignature;
+    lastStopsSigRef.current = sigWithEdit;
 
     const map = mapInstanceRef.current;
 
@@ -643,7 +774,7 @@ const LiveMapInner = ({
 
       // Pin circle is 28x28 anchored at [14, 14] so the pin center sits on the EXACT GPS coordinate
       const stopIconHtml = `
-        <div class="relative w-7 h-7 flex items-center justify-center">
+        <div class="relative w-7 h-7 flex items-center justify-center ${editableStops ? 'cursor-grab active:cursor-grabbing' : ''}">
           ${roleTag}
           <div class="w-7 h-7 rounded-full border-2 ${pinBg} shadow-lg flex items-center justify-center font-extrabold text-xs">
             ${isEnd ? '🏁' : index + 1}
@@ -667,10 +798,13 @@ const LiveMapInner = ({
         popupAnchor: [0, -14]
       });
 
-      const stopMarker = L.marker([Number(stop.latitude), Number(stop.longitude)], { icon })
+      const stopMarker = L.marker([Number(stop.latitude), Number(stop.longitude)], {
+        icon,
+        draggable: Boolean(editableStops)
+      })
         .addTo(map)
         .bindPopup(`
-          <div style="font-family: inherit; font-size: 12px; line-height: 1.45; color: #0F172A; min-width: 190px;">
+          <div style="font-family: inherit; font-size: 12px; line-height: 1.45; color: #0F172A; min-width: 195px;">
             <strong style="display:block; font-size:13px; color:${isStart ? '#059669' : isEnd ? '#E11D48' : '#2563EB'};">
               ${isStart ? '🟢 Start Stop (#1)' : isEnd ? `🏁 Final Destination (#${index + 1})` : `🔵 Stop #${index + 1}`}: ${stop.name}
             </strong>
@@ -680,8 +814,26 @@ const LiveMapInner = ({
                 : ''
             }
             <span style="color: #64748B; font-size:10px; font-family:monospace; display:block; margin-top:2px;">GPS: ${Number(stop.latitude).toFixed(5)}, ${Number(stop.longitude).toFixed(5)}</span>
+            ${
+              editableStops
+                ? `<span style="color: #D97706; font-size:10px; font-weight:700; display:block; margin-top:4px;">✋ Drag this pin to relocate on map</span>`
+                : ''
+            }
           </div>
         `);
+
+      if (editableStops) {
+        stopMarker.on('dragend', (evt) => {
+          const pos = evt.target.getLatLng();
+          if (pos && onStopDragEndRef.current) {
+            onStopDragEndRef.current(
+              stop,
+              Number(pos.lat.toFixed(5)),
+              Number(pos.lng.toFixed(5))
+            );
+          }
+        });
+      }
 
       stopMarkersRef.current.push(stopMarker);
     });
@@ -747,9 +899,8 @@ const LiveMapInner = ({
 
     let isCancelled = false;
 
-    // Fetch exact connected road geometry leg-by-leg in parallel across all stops in exact sequence:
+    // Fetch exact connected SHORTEST road geometry leg-by-leg in parallel across all stops in exact sequence:
     // Start (#1) -> Stop #2 -> Stop #3 -> ... -> Final Destination (#N)
-    // Each leg (Stop[i] -> Stop[i+1]) is cached so adding a 2nd or 3rd stop preserves previous legs and links directly to the new stop and destination.
     const fetchMultiStopRoadRoute = async () => {
       try {
         const legPromises = [];
@@ -760,7 +911,7 @@ const LiveMapInner = ({
           const fromLng = Number(fromStop.longitude);
           const toLat = Number(toStop.latitude);
           const toLng = Number(toStop.longitude);
-          const legKey = `LEG:${fromLat.toFixed(5)},${fromLng.toFixed(5)}->${toLat.toFixed(5)},${toLng.toFixed(5)}`;
+          const legKey = `LEG_SHORTEST:${fromLat.toFixed(5)},${fromLng.toFixed(5)}->${toLat.toFixed(5)},${toLng.toFixed(5)}`;
           const legDirectKm = calcHaversineKm(fromLat, fromLng, toLat, toLng);
 
           if (roadPathCache.has(legKey)) {
@@ -769,12 +920,19 @@ const LiveMapInner = ({
             const legQuery = `${fromLng.toFixed(5)},${fromLat.toFixed(5)};${toLng.toFixed(5)},${toLat.toFixed(5)}`;
             legPromises.push(
               fetch(
-                `https://router.project-osrm.org/route/v1/driving/${legQuery}?overview=full&geometries=geojson&steps=false`
+                `https://router.project-osrm.org/route/v1/driving/${legQuery}?overview=full&geometries=geojson&steps=false&alternatives=true`
               )
                 .then((res) => res.json())
                 .then((data) => {
                   if (data && data.code === 'Ok' && data.routes && data.routes[0]) {
-                    const rObj = data.routes[0];
+                    // Pick the shortest-distance road path connecting this stop to the next stop
+                    const rObj = data.routes.reduce(
+                      (shortest, candidate) =>
+                        Number(candidate.distance || Infinity) < Number(shortest.distance || Infinity)
+                          ? candidate
+                          : shortest,
+                      data.routes[0]
+                    );
                     const rawCoords = rObj.geometry.coordinates.map(([lng, lat]) => [
                       Number(lat),
                       Number(lng)
@@ -854,7 +1012,7 @@ const LiveMapInner = ({
     return () => {
       isCancelled = true;
     };
-  }, [stopsSignature]);
+  }, [stopsSignature, editableStops]);
 
   // Update Shuttle Markers immediately on every GPS / socket tick with zero delay
   useEffect(() => {
@@ -990,9 +1148,11 @@ const LiveMapInner = ({
     }
   }, [shuttles, selectedShuttleId, followSelectedBus, showAllFitOnLoad]);
 
-  // Fly to bus when user explicitly clicks/changes selectedShuttleId or focusTrigger
+  // Fly to bus ONLY when user explicitly triggers focusTrigger > 0 (or when no route stops exist)
+  // This ensures initial load in Passenger & Admin views fits the full connected route path!
   useEffect(() => {
     if (!mapInstanceRef.current || !selectedShuttleId || isUserInteractingRef.current) return;
+    if (focusTrigger === 0 && activeStops && activeStops.length >= 2) return;
     const map = mapInstanceRef.current;
     const selected = shuttlesRef.current.find((s) => Number(s.id) === Number(selectedShuttleId));
     if (selected && selected.current_lat && selected.current_lng) {

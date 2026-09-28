@@ -105,39 +105,31 @@ export const AdminDashboard = () => {
     [mergedShuttles]
   );
 
-  // Show route stops ONLY when the shuttle is on_trip AND currently within its scheduled time window
+  // Always show connected route stops and paths on the Admin Dashboard map
   const activeMapStops = useMemo(() => {
     if (selectedShuttleId) {
-      const selShuttle = onTripShuttles.find((s) => Number(s.id) === Number(selectedShuttleId));
-      if (!selShuttle || !selShuttle.is_scheduled_time_now) return [];
+      const selShuttle = mergedShuttles.find((s) => Number(s.id) === Number(selectedShuttleId));
       const selRoute = routes.find(
         (r) =>
-          Number(r.id) === Number(selShuttle.current_route_id) ||
+          Number(r.id) === Number(selShuttle?.current_route_id) ||
           Number(r.shuttle_id) === Number(selectedShuttleId)
       );
-      return selRoute && selRoute.stops?.length > 0 ? selRoute.stops : selShuttle.stops || [];
+      return selRoute && selRoute.stops?.length > 0 ? selRoute.stops : selShuttle?.stops || [];
     }
-    const firstScheduledOnTrip = onTripShuttles.find((s) => Boolean(s.is_scheduled_time_now));
-    if (!firstScheduledOnTrip) return [];
-    const firstRoute = routes.find(
-      (r) =>
-        Number(r.id) === Number(firstScheduledOnTrip.current_route_id) ||
-        Number(r.shuttle_id) === Number(firstScheduledOnTrip.id)
-    );
-    return firstRoute?.stops || firstScheduledOnTrip.stops || [];
-  }, [routes, selectedShuttleId, onTripShuttles]);
+    const firstActive = onTripShuttles[0] || mergedShuttles[0];
+    if (firstActive) {
+      const firstRoute = routes.find(
+        (r) =>
+          Number(r.id) === Number(firstActive.current_route_id) ||
+          Number(r.shuttle_id) === Number(firstActive.id)
+      );
+      if (firstRoute?.stops?.length > 0) return firstRoute.stops;
+      if (firstActive.stops?.length > 0) return firstActive.stops;
+    }
+    return routes[0]?.stops || [];
+  }, [routes, selectedShuttleId, onTripShuttles, mergedShuttles]);
 
-  const activeMapRoutes = useMemo(
-    () =>
-      routes.filter((rt) =>
-        onTripShuttles.some(
-          (s) =>
-            Boolean(s.is_scheduled_time_now) &&
-            (Number(s.id) === Number(rt.shuttle_id) || Number(s.current_route_id) === Number(rt.id))
-        )
-      ),
-    [routes, onTripShuttles]
-  );
+  const activeMapRoutes = useMemo(() => routes, [routes]);
 
   const handleFocusShuttle = (shuttleId) => {
     if (Number(selectedShuttleId) === Number(shuttleId)) {

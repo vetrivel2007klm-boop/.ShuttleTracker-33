@@ -42,13 +42,14 @@ export const AdminRoutes = () => {
     estimated_time_minutes: 18
   });
 
-  // Inline / Map-Click Add Stop with Landmark Form
+  // Inline / Map-Click / Drag-Pin Add Stop with Landmark Form
   const [stopForm, setStopForm] = useState({
     name: '',
     landmark: '',
     latitude: '',
     longitude: ''
   });
+  const [dropPinLocation, setDropPinLocation] = useState(null);
 
   const { addToast } = useToast();
 
@@ -107,6 +108,97 @@ export const AdminRoutes = () => {
     setSelectedBusId(Number(busId));
     setMapMetrics({ distanceKm: null, durationMins: null, legDistancesKm: [] });
     setStopForm({ name: '', landmark: '', latitude: '', longitude: '' });
+    setDropPinLocation(null);
+  };
+
+  // Activate "Drop Location on Map" draggable pin along the current route corridor
+  const handleActivateDropLocation = () => {
+    const rStops = selectedRoute?.stops || [];
+    let defaultLat = 12.9592;
+    let defaultLng = 80.0597;
+
+    if (rStops.length >= 2) {
+      const prevStop = rStops[rStops.length - 2];
+      const destStop = rStops[rStops.length - 1];
+      defaultLat = Number(((Number(prevStop.latitude) + Number(destStop.latitude)) / 2).toFixed(5));
+      defaultLng = Number(((Number(prevStop.longitude) + Number(destStop.longitude)) / 2).toFixed(5));
+    } else if (rStops.length === 1) {
+      defaultLat = Number((Number(rStops[0].latitude) + 0.005).toFixed(5));
+      defaultLng = Number((Number(rStops[0].longitude) + 0.005).toFixed(5));
+    }
+
+    const pinObj = {
+      lat: defaultLat,
+      lng: defaultLng,
+      label: stopForm.name?.trim() || 'Drag Pin to Stop Location'
+    };
+    setDropPinLocation(pinObj);
+    setStopForm((prev) => ({
+      ...prev,
+      latitude: defaultLat,
+      longitude: defaultLng
+    }));
+    addToast({
+      title: '📍 Drop Location Pin Active on Map',
+      message: 'Drag the glowing amber pin on the map (or click anywhere on the map) to assign the exact stop location.',
+      type: 'info'
+    });
+  };
+
+  const handleDropPinMoved = (lat, lng) => {
+    if (!dropPinLocation) return;
+    setDropPinLocation((prev) => ({
+      ...(prev || {}),
+      lat,
+      lng,
+      label: stopForm.name?.trim() || 'Dropped Stop Location'
+    }));
+    setStopForm((prev) => ({
+      ...prev,
+      latitude: lat,
+      longitude: lng
+    }));
+  };
+
+  const handleClearDropLocation = () => {
+    setDropPinLocation(null);
+    setStopForm((prev) => ({
+      ...prev,
+      latitude: '',
+      longitude: ''
+    }));
+  };
+
+  // Persist dragged stop marker coordinates directly from the map
+  const handleStopDragEnd = async (stop, newLat, newLng) => {
+    if (!selectedRoute || !stop?.id) return;
+    try {
+      const res = await api.put(`/routes/${selectedRoute.id}/stops/${stop.id}`, {
+        latitude: newLat,
+        longitude: newLng
+      });
+      if (res.data?.route) {
+        setMapMetrics({
+          distanceKm: res.data.route.distance_km,
+          durationMins: res.data.route.estimated_time_minutes,
+          legDistancesKm: []
+        });
+      } else {
+        setMapMetrics({ distanceKm: null, durationMins: null, legDistancesKm: [] });
+      }
+      addToast({
+        title: '📍 Stop Location Updated on Map',
+        message: `"${stop.name}" moved to (${newLat.toFixed(4)}, ${newLng.toFixed(4)}) and connected shortest path recalculated.`,
+        type: 'success'
+      });
+      await fetchData(selectedBus?.id);
+    } catch (err) {
+      addToast({
+        title: 'Error',
+        message: 'Failed to update dragged stop coordinates',
+        type: 'danger'
+      });
+    }
   };
 
   const handleRouteCalculatedFromMap = ({ distanceKm, durationMins, legDistancesKm = [] }) => {
@@ -188,10 +280,21 @@ export const AdminRoutes = () => {
     try {
       const cleanName = stopForm.name.trim();
       const cleanLandmark = (stopForm.landmark || '').trim();
-      const res = await api.post(`/routes/${selectedRoute.id}/stops`, {
+      const payload = {
         name: cleanName,
         landmark: cleanLandmark
-      });
+      };
+      if (
+        stopForm.latitude !== '' &&
+        stopForm.longitude !== '' &&
+        Number.isFinite(Number(stopForm.latitude)) &&
+        Number.isFinite(Number(stopForm.longitude))
+      ) {
+        payload.latitude = Number(stopForm.latitude);
+        payload.longitude = Number(stopForm.longitude);
+      }
+
+      const res = await api.post(`/routes/${selectedRoute.id}/stops`, payload);
       if (res.data?.route) {
         setMapMetrics({
           distanceKm: res.data.route.distance_km,
@@ -202,11 +305,12 @@ export const AdminRoutes = () => {
         setMapMetrics({ distanceKm: null, durationMins: null, legDistancesKm: [] });
       }
       addToast({
-        title: 'Stop Added in Exact Route Sequence',
-        message: `"${cleanName}"${cleanLandmark ? ` (${cleanLandmark})` : ''} added and linked along the path to destination on Bus ${selectedBus?.code}!`,
+        title: 'Stop Added & Connected on Shortest Path',
+        message: `"${cleanName}"${cleanLandmark ? ` (${cleanLandmark})` : ''} added and linked along the shortest road path to destination on Bus ${selectedBus?.code}!`,
         type: 'success'
       });
       setStopForm({ name: '', landmark: '', latitude: '', longitude: '' });
+      setDropPinLocation(null);
       await fetchData(selectedBus?.id);
     } catch (err) {
       addToast({ title: 'Error', message: 'Failed to add stop to bus route', type: 'danger' });
@@ -271,15 +375,34 @@ export const AdminRoutes = () => {
             Bus Route & Stop Landmark Configuration
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Select an Assigned Bus Route below to view its exact multi-stop road path, add intermediate stops along the route corridor, and calculate exact road distance from the map.
+            Select an Assigned Bus Route below to view its exact shortest multi-stop road path, drag stop pins or use "Drop Location on Map", and calculate exact road distance.
           </p>
         </div>
 
-        <Button onClick={openConfigureRouteModal} icon={selectedRoute ? Edit2 : Plus} size="sm" className="shrink-0">
-          {selectedRoute
-            ? `Update Route for Bus ${selectedBus?.code || ''}`
-            : `Add Route for Bus ${selectedBus?.code || ''}`}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={dropPinLocation ? handleClearDropLocation : handleActivateDropLocation}
+            className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 border transition shadow-sm ${
+              dropPinLocation
+                ? 'bg-amber-500 text-slate-950 border-amber-400 ring-2 ring-amber-400/40'
+                : 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-800 hover:bg-amber-500 hover:text-slate-950'
+            }`}
+          >
+            <Crosshair className="w-4 h-4" />
+            <span>
+              {dropPinLocation
+                ? `📍 Pin Active (${Number(dropPinLocation.lat).toFixed(4)}, ${Number(dropPinLocation.lng).toFixed(4)})`
+                : '📍 Drop Location on Map (Drag to Locate)'}
+            </span>
+          </button>
+
+          <Button onClick={openConfigureRouteModal} icon={selectedRoute ? Edit2 : Plus} size="sm" className="shrink-0">
+            {selectedRoute
+              ? `Update Route for Bus ${selectedBus?.code || ''}`
+              : `Add Route for Bus ${selectedBus?.code || ''}`}
+          </Button>
+        </div>
       </div>
 
       {/* SECTION 1: Dedicated Assigned Routes Cards Grid (Cleanly aligned at top, never merged with Map) */}
@@ -453,7 +576,7 @@ export const AdminRoutes = () => {
                 {selectedRoute?.stops?.length > 0 && (
                   <div className="p-3.5 rounded-xl bg-blue-50/70 dark:bg-slate-800/80 border border-blue-200/70 dark:border-slate-700">
                     <span className="text-[10px] font-extrabold uppercase tracking-wider text-brand-600 dark:text-blue-400 block mb-2">
-                      Assigned Route Path Sequence ({selectedRoute.stops.length} Stops):
+                      Assigned Shortest Connected Path ({selectedRoute.stops.length} Stops):
                     </span>
                     <div className="flex flex-wrap items-center gap-1.5 text-xs font-bold text-navy-900 dark:text-white">
                       {selectedRoute.stops.map((st, idx) => (
@@ -514,17 +637,29 @@ export const AdminRoutes = () => {
                 )}
               </Card>
 
-              {/* Add Stop Form (Landmark is Optional) */}
+              {/* Add Stop Form with "Drop Location on Map (Drag to Locate)" Button */}
               <Card className="p-5 space-y-4 border border-slate-200 dark:border-slate-800 shadow-premium relative z-10">
                 <div className="pb-3 border-b border-slate-100 dark:border-slate-800">
-                  <h3 className="text-sm font-extrabold text-navy-900 dark:text-white flex items-center gap-2">
-                    <Plus className="w-4 h-4 text-brand-500" />
-                    <span>Add Intermediate Stop for Bus {selectedBus.code}</span>
-                  </h3>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                    Enter the Stop Name to automatically mark its exact location on the map and link the connected road path from{' '}
-                    <b>{selectedRoute?.start_point || selectedBus.start_point}</b> through each stop to{' '}
-                    <b>{selectedRoute?.end_point || selectedBus.destination}</b>. Landmark is optional.
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-extrabold text-navy-900 dark:text-white flex items-center gap-2">
+                      <Plus className="w-4 h-4 text-brand-500" />
+                      <span>Add Intermediate Stop for Bus {selectedBus.code}</span>
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={dropPinLocation ? handleClearDropLocation : handleActivateDropLocation}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold flex items-center gap-1 border transition ${
+                        dropPinLocation
+                          ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-sm'
+                          : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700 hover:bg-amber-500 hover:text-slate-950'
+                      }`}
+                    >
+                      <Crosshair className="w-3.5 h-3.5" />
+                      <span>{dropPinLocation ? 'Clear Dropped Pin' : 'Drop Location on Map'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                    Type a Stop Name to auto-locate along the shortest road path, OR click <b>"Drop Location on Map"</b> and drag the pin on the map to assign your exact custom location.
                   </p>
                 </div>
 
@@ -535,7 +670,13 @@ export const AdminRoutes = () => {
                     required
                     placeholder="e.g. Chromepet / Erumaiyur / Camp Road"
                     value={stopForm.name}
-                    onChange={(e) => setStopForm({ ...stopForm, name: e.target.value })}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setStopForm({ ...stopForm, name: val });
+                      if (dropPinLocation) {
+                        setDropPinLocation((prev) => (prev ? { ...prev, label: val || 'Drag Pin to Stop Location' } : null));
+                      }
+                    }}
                   />
 
                   <Input
@@ -547,9 +688,47 @@ export const AdminRoutes = () => {
                     onChange={(e) => setStopForm({ ...stopForm, landmark: e.target.value })}
                   />
 
+                  {/* Drop Location on Map Interactive Control Box */}
+                  <div className="p-3 rounded-xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/70 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-extrabold text-amber-900 dark:text-amber-300 flex items-center gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-amber-600" />
+                        <span>
+                          {dropPinLocation
+                            ? 'Dropped Map Location Assigned (Drag Pin on Map to Adjust)'
+                            : 'Want to pick the exact spot on the map by dragging?'}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={dropPinLocation ? handleClearDropLocation : handleActivateDropLocation}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition ${
+                          dropPinLocation
+                            ? 'bg-rose-600 text-white hover:bg-rose-700'
+                            : 'bg-amber-500 text-slate-950 hover:bg-amber-400 shadow-sm'
+                        }`}
+                      >
+                        {dropPinLocation ? 'Reset to Auto' : '📍 Drop Location Pin'}
+                      </button>
+                    </div>
+
+                    {dropPinLocation && (
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <div className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-[11px] font-mono text-slate-700 dark:text-slate-200">
+                          Lat: <b>{Number(stopForm.latitude).toFixed(5)}</b>
+                        </div>
+                        <div className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-[11px] font-mono text-slate-700 dark:text-slate-200">
+                          Lng: <b>{Number(stopForm.longitude).toFixed(5)}</b>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   <Button type="submit" disabled={submittingStop} icon={Plus} className="w-full">
                     {submittingStop
-                      ? 'Adding Stop & Linking Route Path...'
+                      ? 'Adding Stop & Connecting Shortest Path...'
+                      : dropPinLocation
+                      ? `Add Stop at Dropped Map Location (${Number(stopForm.latitude).toFixed(3)}, ${Number(stopForm.longitude).toFixed(3)})`
                       : `Add Stop to Bus ${selectedBus.code} Route`}
                   </Button>
                 </form>
@@ -571,13 +750,27 @@ export const AdminRoutes = () => {
                       </span>
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                      Connected multi-stop road path from <b>{selectedRoute?.start_point || selectedBus.start_point}</b> through all added stops in sequence to <b>{selectedRoute?.end_point || selectedBus.destination}</b>.
+                      Shortest connected road path from <b>{selectedRoute?.start_point || selectedBus.start_point}</b> through all stops to <b>{selectedRoute?.end_point || selectedBus.destination}</b>. <b>Tip:</b> You can drag any stop pin on the map to relocate it!
                     </p>
                   </div>
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 text-[11px] font-bold border border-emerald-200 dark:border-emerald-800">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Exact Road Distance: {exactDistanceKm} km (~{exactDurationMins} min)</span>
-                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={dropPinLocation ? handleClearDropLocation : handleActivateDropLocation}
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-extrabold border transition ${
+                        dropPinLocation
+                          ? 'bg-amber-500 text-slate-950 border-amber-400'
+                          : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800 hover:bg-amber-500 hover:text-slate-950'
+                      }`}
+                    >
+                      <Crosshair className="w-3.5 h-3.5" />
+                      <span>{dropPinLocation ? 'Dragging Pin Active (Click to Clear)' : '📍 Drop Location on Map'}</span>
+                    </button>
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 text-[11px] font-bold border border-emerald-200 dark:border-emerald-800">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Shortest Road Distance: {exactDistanceKm} km (~{exactDurationMins} min)</span>
+                    </span>
+                  </div>
                 </div>
 
                 <div className="h-[520px] w-full overflow-hidden relative z-0 isolate">
@@ -586,6 +779,10 @@ export const AdminRoutes = () => {
                     shuttles={selectedBus.status === 'on_trip' ? [selectedBus] : []}
                     selectedShuttleId={selectedBus.status === 'on_trip' ? selectedBus.id : null}
                     onRouteCalculated={handleRouteCalculatedFromMap}
+                    dropPinLocation={dropPinLocation}
+                    onDropPinChange={handleDropPinMoved}
+                    editableStops={true}
+                    onStopDragEnd={handleStopDragEnd}
                     showAllFitOnLoad={true}
                     className="h-full w-full rounded-none border-none"
                   />

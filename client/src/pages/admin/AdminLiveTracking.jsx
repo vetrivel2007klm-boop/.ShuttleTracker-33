@@ -189,29 +189,22 @@ export const AdminLiveTracking = () => {
     : onTripShuttles;
 
   const mapStops = selectedShuttle
-    ? selectedShuttle.status === 'on_trip' && Boolean(selectedShuttle.is_scheduled_time_now)
-      ? activeRoute?.stops || selectedShuttle?.stops || []
-      : []
+    ? activeRoute?.stops || selectedShuttle?.stops || []
     : (() => {
-        const firstScheduledOnTrip = onTripShuttles.find((s) => Boolean(s.is_scheduled_time_now));
-        if (!firstScheduledOnTrip) return [];
-        const r = routes.find(
-          (rt) =>
-            Number(rt.id) === Number(firstScheduledOnTrip.current_route_id) ||
-            Number(rt.shuttle_id) === Number(firstScheduledOnTrip.id)
-        );
-        return r?.stops || firstScheduledOnTrip.stops || [];
+        const firstShuttle = onTripShuttles[0] || mergedShuttles[0];
+        if (firstShuttle) {
+          const r = routes.find(
+            (rt) =>
+              Number(rt.id) === Number(firstShuttle.current_route_id) ||
+              Number(rt.shuttle_id) === Number(firstShuttle.id)
+          );
+          if (r?.stops?.length > 0) return r.stops;
+          if (firstShuttle.stops?.length > 0) return firstShuttle.stops;
+        }
+        return routes[0]?.stops || [];
       })();
 
-  const mapAllRoutes = selectedShuttle
-    ? []
-    : routes.filter((rt) =>
-        onTripShuttles.some(
-          (s) =>
-            Boolean(s.is_scheduled_time_now) &&
-            (Number(s.id) === Number(rt.shuttle_id) || Number(s.current_route_id) === Number(rt.id))
-        )
-      );
+  const mapAllRoutes = selectedShuttle ? [] : routes;
 
   // Shuttles currently in scheduled time window where driver has NOT pressed Start Trip
   const unstartedScheduledShuttles = mergedShuttles.filter(

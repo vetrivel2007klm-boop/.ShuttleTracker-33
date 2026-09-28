@@ -35,6 +35,7 @@ export const PassengerDashboard = () => {
   const { user } = useAuth();
   const { addToast } = useToast();
   const [shuttles, setShuttles] = useState([]);
+  const [routes, setRoutes] = useState([]);
   const [trafficAlert, setTrafficAlert] = useState(null);
   const [sendingEmergency, setSendingEmergency] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now());
@@ -45,9 +46,15 @@ export const PassengerDashboard = () => {
 
   const fetchShuttles = async () => {
     try {
-      const res = await api.get('/shuttles');
-      if (res.data.success && res.data.data.length > 0) {
-        setShuttles(res.data.data);
+      const [shuttlesRes, routesRes] = await Promise.all([
+        api.get('/shuttles'),
+        api.get('/routes')
+      ]);
+      if (shuttlesRes.data.success && shuttlesRes.data.data.length > 0) {
+        setShuttles(shuttlesRes.data.data);
+      }
+      if (routesRes.data.success && routesRes.data.data.length > 0) {
+        setRoutes(routesRes.data.data);
       }
     } catch (err) {
       console.error('Error fetching shuttles:', err);
@@ -157,8 +164,22 @@ export const PassengerDashboard = () => {
       : matchedBaseShuttle
     : null;
 
-  const activeStops = currentShuttle?.stops?.length > 0 ? currentShuttle.stops : [];
-  const startingPlace = currentShuttle?.start_point || activeStops[0]?.name || 'Starting Point';
+  const matchedRoute = currentShuttle
+    ? routes.find(
+        (r) =>
+          Number(r.shuttle_id) === Number(currentShuttle.id) ||
+          Number(r.id) === Number(currentShuttle.current_route_id)
+      ) || null
+    : routes[0] || null;
+
+  const activeStops =
+    matchedRoute?.stops?.length > 0
+      ? matchedRoute.stops
+      : currentShuttle?.stops?.length > 0
+      ? currentShuttle.stops
+      : [];
+  const startingPlace =
+    matchedRoute?.start_point || currentShuttle?.start_point || activeStops[0]?.name || 'Starting Point';
 
   // Calculate live distance covered from starting place
   const computedDistanceCovered =
@@ -518,14 +539,51 @@ export const PassengerDashboard = () => {
         </Card>
       </div>
 
-      {/* Passenger Selected Shuttle Map Location Only */}
-      <Card className="p-4 border border-slate-200 dark:border-slate-800 shadow-elevated">
-        <div className="h-[480px] w-full rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 relative">
+      {/* Passenger Selected Shuttle Live Route & Stop Path Map */}
+      <Card className="p-4 space-y-3 border border-slate-200 dark:border-slate-800 shadow-elevated">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
+          <div>
+            <h3 className="text-sm font-black text-navy-900 dark:text-white flex items-center gap-2">
+              <Route className="w-4 h-4 text-brand-500" />
+              <span>
+                Live Connected Route Map — Bus {currentShuttle?.code || passengerBusCode} ({activeStops.length} Stops • {matchedRoute?.distance_km || currentShuttle?.distance_km || '4.5'} km)
+              </span>
+            </h3>
+            {activeStops.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1 mt-1 text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                {activeStops.map((st, idx) => (
+                  <React.Fragment key={st.id || idx}>
+                    <span
+                      className={`px-2 py-0.5 rounded ${
+                        idx === 0
+                          ? 'bg-emerald-600 text-white'
+                          : idx === activeStops.length - 1
+                          ? 'bg-rose-600 text-white'
+                          : 'bg-blue-50 dark:bg-slate-800 text-brand-600 dark:text-blue-400 border border-blue-200 dark:border-slate-700'
+                      }`}
+                    >
+                      {idx + 1}. {st.name}
+                    </span>
+                    {idx < activeStops.length - 1 && (
+                      <span className="text-slate-400 font-black">➔</span>
+                    )}
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
+          </div>
+          <span className="px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-xs font-extrabold border border-emerald-200 dark:border-emerald-800">
+            Shortest Road Path Connected
+          </span>
+        </div>
+
+        <div className="h-[500px] w-full rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 relative">
           <LiveMap
             shuttles={currentShuttle ? [currentShuttle] : []}
             stops={activeStops}
             selectedShuttleId={currentShuttle?.id || selectedShuttleId}
-            className="h-full w-full min-h-[480px]"
+            showAllFitOnLoad={true}
+            className="h-full w-full min-h-[500px]"
           />
         </div>
       </Card>

@@ -172,6 +172,38 @@ router.post('/:id/stops', authenticate, authorize('admin'), async (req, res) => 
   }
 });
 
+// PUT /api/routes/:id/stops/:stopId - Update a stop's location (dragged/dropped on map) or name/landmark
+router.put('/:id/stops/:stopId', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const updatedStop = await db.updateStop(req.params.stopId, req.body);
+    if (!updatedStop) {
+      return res.status(404).json({ success: false, message: 'Stop not found.' });
+    }
+
+    const updatedRoute = await db.getRouteById(req.params.id);
+    const io = req.app.get('io');
+    if (io && updatedRoute) {
+      if (updatedRoute.shuttle_id) {
+        const updatedShuttle = await db.getShuttleById(updatedRoute.shuttle_id);
+        if (updatedShuttle && updatedShuttle.status === 'on_trip' && updatedRoute.stops?.length >= 2) {
+          startAutonomousShuttle(io, Number(updatedRoute.shuttle_id), updatedRoute.stops, 25);
+        }
+        if (updatedShuttle) io.emit('shuttle:updated', updatedShuttle);
+      }
+      io.emit('route:updated', updatedRoute);
+    }
+
+    res.json({
+      success: true,
+      message: 'Stop location updated and synced across Admin, Passenger, and Driver maps.',
+      data: updatedStop,
+      route: updatedRoute
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to update stop location.' });
+  }
+});
+
 // DELETE /api/routes/:id/stops/:stopId - Remove a stop from a route
 router.delete('/:id/stops/:stopId', authenticate, authorize('admin'), async (req, res) => {
   try {

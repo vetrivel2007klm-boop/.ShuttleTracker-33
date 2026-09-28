@@ -1221,23 +1221,20 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
               for (let idx = 0; idx < rtStops.length; idx++) {
                 const st = rtStops[idx];
                 st.sequence_order = idx + 1;
-                const targetName =
-                  idx === 0
-                    ? rt.start_point || st.name
-                    : idx === rtStops.length - 1
-                    ? rt.end_point || st.name
-                    : st.name;
-                const resolved = await geocodeLocation(targetName, sCoords.lat, sCoords.lng, {
-                  startLat: sCoords.lat,
-                  startLng: sCoords.lng,
-                  endLat: eCoords.lat,
-                  endLng: eCoords.lng,
-                  fraction: idx / Math.max(1, rtStops.length - 1)
-                });
-                if (
-                  !resolved.isFallback &&
-                  calculateDistanceKm(Number(st.latitude), Number(st.longitude), resolved.lat, resolved.lng) > 0.35
-                ) {
+                if (!Number(st.latitude) || !Number(st.longitude)) {
+                  const targetName =
+                    idx === 0
+                      ? rt.start_point || st.name
+                      : idx === rtStops.length - 1
+                      ? rt.end_point || st.name
+                      : st.name;
+                  const resolved = await geocodeLocation(targetName, sCoords.lat, sCoords.lng, {
+                    startLat: sCoords.lat,
+                    startLng: sCoords.lng,
+                    endLat: eCoords.lat,
+                    endLng: eCoords.lng,
+                    fraction: idx / Math.max(1, rtStops.length - 1)
+                  });
                   st.latitude = resolved.lat;
                   st.longitude = resolved.lng;
                 }
@@ -1253,8 +1250,16 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
           const shuttlesRes = await client.query('SELECT * FROM shuttles ORDER BY id ASC');
           store.shuttles = (shuttlesRes.rows || []).map((s) => {
             const r = store.routes.find((rt) => rt.id === s.current_route_id || Number(rt.shuttle_id) === Number(s.id));
+            const rStops = r
+              ? store.stops
+                  .filter((st) => Number(st.route_id) === Number(r.id))
+                  .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1))
+              : [];
+            const startSt = rStops[0];
             return {
               ...s,
+              current_lat: startSt ? Number(startSt.latitude) : Number(s.current_lat),
+              current_lng: startSt ? Number(startSt.longitude) : Number(s.current_lng),
               organization_name: s.organization_name || r?.organization_name || defaultOrgName,
               status: 'idle',
               speed: 0,
@@ -1587,9 +1592,10 @@ const db = {
 
   // Shuttles
   getAllShuttles: async (orgName = null) => {
-    const list = orgName
+    const filtered = orgName
       ? store.shuttles.filter((s) => matchesOrg(s.organization_name, orgName))
       : store.shuttles;
+    const list = filtered.length > 0 ? filtered : store.shuttles;
     return list.map((shuttle) => {
       const driver = resolveDriverForShuttle(shuttle);
       const driverUser = driver ? store.users.find((u) => u.id === driver.user_id) : null;
@@ -1610,14 +1616,16 @@ const db = {
       const activeSchedule = schedCtx.activeSchedule;
       const isOnTrip = shuttle.status === 'on_trip';
       const startStop = stops[0];
+      const effectiveLat = !isOnTrip && startStop ? Number(startStop.latitude) : Number(shuttle.current_lat);
+      const effectiveLng = !isOnTrip && startStop ? Number(startStop.longitude) : Number(shuttle.current_lng);
       const distanceCoveredKm = !isOnTrip
         ? 0
         : startStop
         ? calculateDistanceKm(
             Number(startStop.latitude),
             Number(startStop.longitude),
-            Number(shuttle.current_lat || startStop.latitude),
-            Number(shuttle.current_lng || startStop.longitude)
+            effectiveLat || Number(startStop.latitude),
+            effectiveLng || Number(startStop.longitude)
           )
         : 0;
       const nowMs = Date.now();
@@ -1639,6 +1647,8 @@ const db = {
       const resolvedDest = shuttle.destination || (route ? route.end_point : '');
       return {
         ...shuttle,
+        current_lat: effectiveLat,
+        current_lng: effectiveLng,
         organization_name: shuttle.organization_name || store.settings.organization_name || 'Sairam Engineering College',
         is_on_trip: isOnTrip,
         is_scheduled_time_now: schedCtx.isScheduledTimeNow,
@@ -1706,14 +1716,16 @@ const db = {
     const activeSchedule = schedCtx.activeSchedule;
     const isOnTrip = shuttle.status === 'on_trip';
     const startStop = stops[0];
+    const effectiveLat = !isOnTrip && startStop ? Number(startStop.latitude) : Number(shuttle.current_lat);
+    const effectiveLng = !isOnTrip && startStop ? Number(startStop.longitude) : Number(shuttle.current_lng);
     const distanceCoveredKm = !isOnTrip
       ? 0
       : startStop
       ? calculateDistanceKm(
           Number(startStop.latitude),
           Number(startStop.longitude),
-          Number(shuttle.current_lat || startStop.latitude),
-          Number(shuttle.current_lng || startStop.longitude)
+          effectiveLat || Number(startStop.latitude),
+          effectiveLng || Number(startStop.longitude)
         )
       : 0;
     const nowMs = Date.now();
@@ -1735,6 +1747,8 @@ const db = {
     const resolvedDest = shuttle.destination || (route ? route.end_point : '');
     return {
       ...shuttle,
+      current_lat: effectiveLat,
+      current_lng: effectiveLng,
       organization_name: shuttle.organization_name || store.settings.organization_name || 'Sairam Engineering College',
       is_on_trip: isOnTrip,
       is_scheduled_time_now: schedCtx.isScheduledTimeNow,
@@ -2773,9 +2787,91 @@ const db = {
     const rId = Number(routeId);
     const route = store.routes.find((r) => Number(r.id) === rId);
     if (!route) return null;
-    const stops = store.stops
+    let stops = store.stops
       .filter((s) => Number(s.route_id) === rId)
       .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1));
+
+    // Order intermediate stops (between Start #1 and Destination #N) along the SHORTEST continuous path
+    if (stops.length >= 3) {
+      const startStop = stops[0];
+      const destStop = stops[stops.length - 1];
+      const intermediates = stops.slice(1, -1);
+
+      const orderedIntermediates = [];
+      const remaining = [...intermediates];
+      let curr = startStop;
+      while (remaining.length > 0) {
+        let bestIdx = 0;
+        let bestCost = Infinity;
+        for (let i = 0; i < remaining.length; i++) {
+          const cand = remaining[i];
+          const dFromCurr = calculateDistanceKm(
+            Number(curr.latitude),
+            Number(curr.longitude),
+            Number(cand.latitude),
+            Number(cand.longitude)
+          );
+          const dToDest = calculateDistanceKm(
+            Number(cand.latitude),
+            Number(cand.longitude),
+            Number(destStop.latitude),
+            Number(destStop.longitude)
+          );
+          const cost = dFromCurr + dToDest * 0.35;
+          if (cost < bestCost) {
+            bestCost = cost;
+            bestIdx = i;
+          }
+        }
+        curr = remaining.splice(bestIdx, 1)[0];
+        orderedIntermediates.push(curr);
+      }
+
+      const finalOrdered = [startStop, ...orderedIntermediates, destStop];
+      // 2-opt refinement on intermediate stops to guarantee shortest total distance Start -> ... -> Dest
+      if (finalOrdered.length >= 4) {
+        let improved = true;
+        let guard = 0;
+        while (improved && guard < 25) {
+          improved = false;
+          guard++;
+          for (let i = 1; i < finalOrdered.length - 2; i++) {
+            for (let j = i + 1; j < finalOrdered.length - 1; j++) {
+              const a = finalOrdered[i - 1];
+              const b = finalOrdered[i];
+              const c = finalOrdered[j];
+              const d = finalOrdered[j + 1];
+              const curDist =
+                calculateDistanceKm(Number(a.latitude), Number(a.longitude), Number(b.latitude), Number(b.longitude)) +
+                calculateDistanceKm(Number(c.latitude), Number(c.longitude), Number(d.latitude), Number(d.longitude));
+              const swappedDist =
+                calculateDistanceKm(Number(a.latitude), Number(a.longitude), Number(c.latitude), Number(c.longitude)) +
+                calculateDistanceKm(Number(b.latitude), Number(b.longitude), Number(d.latitude), Number(d.longitude));
+              if (swappedDist + 0.02 < curDist) {
+                const reversedSlice = finalOrdered.slice(i, j + 1).reverse();
+                finalOrdered.splice(i, j - i + 1, ...reversedSlice);
+                improved = true;
+              }
+            }
+          }
+        }
+      }
+
+      for (let i = 0; i < finalOrdered.length; i++) {
+        if (finalOrdered[i].sequence_order !== i + 1) {
+          finalOrdered[i].sequence_order = i + 1;
+          if (isPostgresConnected && pool && finalOrdered[i].id) {
+            try {
+              await pool.query('UPDATE stops SET sequence_order = $1 WHERE id = $2', [
+                i + 1,
+                finalOrdered[i].id
+              ]);
+            } catch (_) {}
+          }
+        }
+      }
+      stops = finalOrdered;
+    }
 
     if (stops.length >= 2) {
       let straightSumKm = 0;
@@ -2871,13 +2967,25 @@ const db = {
       if (linkedShuttle) {
         linkedShuttle.distance_km = totalRoadKm;
         linkedShuttle.eta_minutes = estMinutes;
+        if (linkedShuttle.status !== 'on_trip' && stops[0]) {
+          linkedShuttle.current_lat = Number(stops[0].latitude);
+          linkedShuttle.current_lng = Number(stops[0].longitude);
+          if (isPostgresConnected && pool) {
+            try {
+              await pool.query(
+                'UPDATE shuttles SET current_lat = $1, current_lng = $2 WHERE id = $3',
+                [linkedShuttle.current_lat, linkedShuttle.current_lng, linkedShuttle.id]
+              );
+            } catch (_) {}
+          }
+        }
       }
     }
     return route;
   },
 
   getAllRoutes: async (orgName = null) => {
-    const routesList = orgName
+    const filtered = orgName
       ? store.routes.filter((r) => {
           if (matchesOrg(r.organization_name, orgName)) return true;
           const sht = store.shuttles.find(
@@ -2886,6 +2994,7 @@ const db = {
           return sht ? matchesOrg(sht.organization_name, orgName) : false;
         })
       : store.routes;
+    const routesList = filtered.length > 0 ? filtered : store.routes;
 
     return routesList.map((route) => {
       const stops = store.stops
@@ -3402,7 +3511,7 @@ const db = {
     }
 
     if (!stopData.sequence_order && existingStops.length >= 2 && !isDestStop) {
-      // Keep Start (#1) first, preserve the exact sequential order of intermediate stops added by Admin,
+      // Keep Start (#1) first, order intermediate stops along the shortest continuous path toward Destination,
       // and keep Destination (#N) as the final stop!
       const startStop = existingStops[0];
       const finalDestStop = existingStops[existingStops.length - 1];
@@ -3410,6 +3519,34 @@ const db = {
 
       store.stops.push(newStop);
       const finalOrdered = [startStop, ...middleStops, finalDestStop];
+
+      // Apply 2-opt shortest path refinement on intermediate stops (keeping Start at 0 and Destination at N-1)
+      if (finalOrdered.length >= 4) {
+        let improved = true;
+        while (improved) {
+          improved = false;
+          for (let i = 1; i < finalOrdered.length - 2; i++) {
+            for (let j = i + 1; j < finalOrdered.length - 1; j++) {
+              const a = finalOrdered[i - 1];
+              const b = finalOrdered[i];
+              const c = finalOrdered[j];
+              const d = finalOrdered[j + 1];
+              const curDist =
+                calculateDistanceKm(Number(a.latitude), Number(a.longitude), Number(b.latitude), Number(b.longitude)) +
+                calculateDistanceKm(Number(c.latitude), Number(c.longitude), Number(d.latitude), Number(d.longitude));
+              const swappedDist =
+                calculateDistanceKm(Number(a.latitude), Number(a.longitude), Number(c.latitude), Number(c.longitude)) +
+                calculateDistanceKm(Number(b.latitude), Number(b.longitude), Number(d.latitude), Number(d.longitude));
+              if (swappedDist + 0.05 < curDist) {
+                const reversedSlice = finalOrdered.slice(i, j + 1).reverse();
+                finalOrdered.splice(i, j - i + 1, ...reversedSlice);
+                improved = true;
+              }
+            }
+          }
+        }
+      }
+
       for (let i = 0; i < finalOrdered.length; i++) {
         finalOrdered[i].sequence_order = i + 1;
         if (isPostgresConnected && pool) {
@@ -3428,6 +3565,50 @@ const db = {
     await db.recalculateRouteMetrics(routeId);
 
     return newStop;
+  },
+  updateStop: async (stopId, stopData = {}) => {
+    const stop = store.stops.find((s) => Number(s.id) === Number(stopId));
+    if (!stop) return null;
+    if (stopData.name !== undefined && String(stopData.name).trim()) {
+      stop.name = String(stopData.name).trim();
+    }
+    if (stopData.landmark !== undefined) {
+      stop.landmark = String(stopData.landmark).trim();
+    }
+    if (stopData.latitude !== undefined && !isNaN(Number(stopData.latitude))) {
+      stop.latitude = Number(Number(stopData.latitude).toFixed(6));
+    }
+    if (stopData.longitude !== undefined && !isNaN(Number(stopData.longitude))) {
+      stop.longitude = Number(Number(stopData.longitude).toFixed(6));
+    }
+
+    if (isPostgresConnected && pool) {
+      try {
+        await pool.query(
+          'UPDATE stops SET name = $1, landmark = $2, latitude = $3, longitude = $4 WHERE id = $5',
+          [stop.name, stop.landmark || '', stop.latitude, stop.longitude, Number(stop.id)]
+        );
+      } catch (err) {
+        console.warn('Postgres updateStop warning:', err.message);
+      }
+    }
+
+    const routeId = Number(stop.route_id);
+    const parentRoute = store.routes.find((r) => Number(r.id) === routeId);
+    const routeStops = store.stops
+      .filter((s) => Number(s.route_id) === routeId)
+      .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1));
+
+    if (parentRoute && routeStops.length > 0) {
+      if (Number(stop.id) === Number(routeStops[0].id)) {
+        parentRoute.start_point = stop.name;
+      } else if (routeStops.length > 1 && Number(stop.id) === Number(routeStops[routeStops.length - 1].id)) {
+        parentRoute.end_point = stop.name;
+      }
+    }
+
+    await db.recalculateRouteMetrics(routeId);
+    return stop;
   },
   deleteStop: async (stopId) => {
     const idx = store.stops.findIndex((s) => s.id === Number(stopId));

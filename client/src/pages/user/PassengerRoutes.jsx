@@ -5,6 +5,7 @@ import { useSocket } from '../../context/SocketContext';
 import { useToast } from '../../components/common/Toast';
 import Card from '../../components/common/Card';
 import Badge from '../../components/common/Badge';
+import LiveMap from '../../components/map/LiveMap';
 import {
   ArrowRight,
   Bus,
@@ -305,6 +306,30 @@ export const PassengerRoutes = () => {
                   {activeRoute.distance_km} km
                 </span>
               </div>
+            </div>
+          </div>
+
+          {/* Connected Multi-Stop Google Route Map for Passenger */}
+          <div className="space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-xs font-black uppercase tracking-wider text-navy-900 dark:text-white flex items-center gap-2">
+                <Navigation className="w-4 h-4 text-brand-500" />
+                <span>
+                  Connected Shortest Route Map ({activeRoute.stops?.length || selectedShuttle?.stops?.length || 0} Stops • {activeRoute.distance_km} km)
+                </span>
+              </h4>
+              <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                Start: {activeRoute.start_point} ➔ Destination: {activeRoute.end_point}
+              </span>
+            </div>
+            <div className="h-[460px] w-full rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 relative">
+              <LiveMap
+                stops={activeRoute.stops || selectedShuttle?.stops || []}
+                shuttles={selectedShuttle ? [selectedShuttle] : []}
+                selectedShuttleId={selectedShuttle?.id}
+                showAllFitOnLoad={true}
+                className="h-full w-full min-h-[460px]"
+              />
             </div>
           </div>
 
