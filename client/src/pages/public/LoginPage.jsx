@@ -783,8 +783,17 @@ export const LoginPage = () => {
 
     // 1. LOGIN FLOW
     if (authMode === 'login') {
+      if (selectedRole === 'admin' && !organizationName.trim()) {
+        setErrorMessage('Please enter your Organization Name.');
+        return;
+      }
       setLoading(true);
-      const result = await login(email, password, selectedRole);
+      const result = await login(
+        email.trim(),
+        password,
+        selectedRole,
+        selectedRole === 'admin' ? organizationName.trim() : undefined
+      );
       setLoading(false);
       if (result.success) {
         addToast({
@@ -1211,6 +1220,27 @@ export const LoginPage = () => {
                 )}
               </div>
             </>
+          )}
+
+          {/* ADMIN LOGIN: ORGANIZATION NAME FIELD (No default value, no extra description) */}
+          {authMode === 'login' && selectedRole === 'admin' && (
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                Organization Name
+              </label>
+              <div className="relative">
+                <Building2 className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  id="adminOrgName"
+                  type="text"
+                  placeholder="Enter Organization Name"
+                  value={organizationName}
+                  onChange={(e) => setOrganizationName(e.target.value)}
+                  required
+                  className="w-full pl-10 pr-3.5 py-2.5 text-xs sm:text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/90 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500 font-semibold"
+                />
+              </div>
+            </div>
           )}
 
           {/* EMAIL ADDRESS FIELD + SEND / RESEND OTP BUTTON */}

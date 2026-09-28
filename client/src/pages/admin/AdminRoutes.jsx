@@ -174,20 +174,6 @@ export const AdminRoutes = () => {
     }
   };
 
-  // Click on the map to pick coordinates for a new stop
-  const handleMapClickForStop = (lat, lng) => {
-    setStopForm((prev) => ({
-      ...prev,
-      latitude: lat,
-      longitude: lng
-    }));
-    addToast({
-      title: 'Map Coordinates Selected',
-      message: `Pinned (${lat}, ${lng}) for new stop on Bus ${selectedBus?.code}. Enter Stop Name to save (Landmark is optional).`,
-      type: 'info'
-    });
-  };
-
   const handleAddStop = async (e) => {
     e.preventDefault();
     if (!selectedRoute) {
@@ -204,10 +190,7 @@ export const AdminRoutes = () => {
       const cleanLandmark = (stopForm.landmark || '').trim();
       const res = await api.post(`/routes/${selectedRoute.id}/stops`, {
         name: cleanName,
-        landmark: cleanLandmark,
-        ...(stopForm.latitude && stopForm.longitude
-          ? { latitude: Number(stopForm.latitude), longitude: Number(stopForm.longitude) }
-          : {})
+        landmark: cleanLandmark
       });
       if (res.data?.route) {
         setMapMetrics({
@@ -220,7 +203,7 @@ export const AdminRoutes = () => {
       }
       addToast({
         title: 'Stop Added in Exact Route Sequence',
-        message: `"${cleanName}"${cleanLandmark ? ` (${cleanLandmark})` : ''} added before final destination on Bus ${selectedBus?.code}!`,
+        message: `"${cleanName}"${cleanLandmark ? ` (${cleanLandmark})` : ''} added and linked along the path to destination on Bus ${selectedBus?.code}!`,
         type: 'success'
       });
       setStopForm({ name: '', landmark: '', latitude: '', longitude: '' });
@@ -539,9 +522,9 @@ export const AdminRoutes = () => {
                     <span>Add Intermediate Stop for Bus {selectedBus.code}</span>
                   </h3>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                    New stops are geocoded to their exact real-world location along{' '}
-                    <b>{selectedRoute?.start_point || selectedBus.start_point}</b> ➔{' '}
-                    <b>{selectedRoute?.end_point || selectedBus.destination}</b> in exact sequential order (or click on the map to pin coordinates). Landmark is optional.
+                    Enter the Stop Name to automatically mark its exact location on the map and link the connected road path from{' '}
+                    <b>{selectedRoute?.start_point || selectedBus.start_point}</b> through each stop to{' '}
+                    <b>{selectedRoute?.end_point || selectedBus.destination}</b>. Landmark is optional.
                   </p>
                 </div>
 
@@ -550,7 +533,7 @@ export const AdminRoutes = () => {
                     label="Stop Name / Location"
                     id="stopName"
                     required
-                    placeholder="e.g. Chromepet / Pallavaram / Camp Road"
+                    placeholder="e.g. Chromepet / Erumaiyur / Camp Road"
                     value={stopForm.name}
                     onChange={(e) => setStopForm({ ...stopForm, name: e.target.value })}
                   />
@@ -559,47 +542,14 @@ export const AdminRoutes = () => {
                     label="Stop Landmark (Optional)"
                     id="stopLandmark"
                     required={false}
-                    placeholder="Optional — e.g. Near Railway Station / Main Arch"
+                    placeholder="Optional — e.g. Near Bus Stand / Main Arch"
                     value={stopForm.landmark}
                     onChange={(e) => setStopForm({ ...stopForm, landmark: e.target.value })}
                   />
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <Input
-                      label="Latitude (Click map or auto)"
-                      id="stopLat"
-                      placeholder="Auto-geocoded"
-                      value={stopForm.latitude}
-                      onChange={(e) => setStopForm({ ...stopForm, latitude: e.target.value })}
-                    />
-                    <Input
-                      label="Longitude (Click map or auto)"
-                      id="stopLng"
-                      placeholder="Auto-geocoded"
-                      value={stopForm.longitude}
-                      onChange={(e) => setStopForm({ ...stopForm, longitude: e.target.value })}
-                    />
-                  </div>
-
-                  {stopForm.latitude && stopForm.longitude && (
-                    <div className="flex items-center justify-between text-[11px] text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 px-3 py-1.5 rounded-lg font-semibold">
-                      <span className="flex items-center gap-1">
-                        <Crosshair className="w-3.5 h-3.5" />
-                        Pinned on Map: {stopForm.latitude}, {stopForm.longitude}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setStopForm({ ...stopForm, latitude: '', longitude: '' })}
-                        className="text-xs underline"
-                      >
-                        Clear Pin
-                      </button>
-                    </div>
-                  )}
-
                   <Button type="submit" disabled={submittingStop} icon={Plus} className="w-full">
                     {submittingStop
-                      ? 'Adding Stop & Recalculating Road Path...'
+                      ? 'Adding Stop & Linking Route Path...'
                       : `Add Stop to Bus ${selectedBus.code} Route`}
                   </Button>
                 </form>
@@ -621,7 +571,7 @@ export const AdminRoutes = () => {
                       </span>
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                      Exact continuous road path from <b>{selectedRoute?.start_point || selectedBus.start_point}</b> through all intermediate stops to <b>{selectedRoute?.end_point || selectedBus.destination}</b>. Click anywhere on the map to pin a new stop.
+                      Connected multi-stop road path from <b>{selectedRoute?.start_point || selectedBus.start_point}</b> through all added stops in sequence to <b>{selectedRoute?.end_point || selectedBus.destination}</b>.
                     </p>
                   </div>
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 text-[11px] font-bold border border-emerald-200 dark:border-emerald-800">
@@ -635,7 +585,6 @@ export const AdminRoutes = () => {
                     stops={selectedRoute?.stops || []}
                     shuttles={selectedBus.status === 'on_trip' ? [selectedBus] : []}
                     selectedShuttleId={selectedBus.status === 'on_trip' ? selectedBus.id : null}
-                    onMapClick={handleMapClickForStop}
                     onRouteCalculated={handleRouteCalculatedFromMap}
                     showAllFitOnLoad={true}
                     className="h-full w-full rounded-none border-none"

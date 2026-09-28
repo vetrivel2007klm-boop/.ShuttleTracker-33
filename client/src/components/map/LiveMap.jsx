@@ -747,158 +747,105 @@ const LiveMapInner = ({
 
     let isCancelled = false;
 
-    // Fetch exact continuous multi-waypoint road geometry across all stops in exact sequence:
+    // Fetch exact connected road geometry leg-by-leg in parallel across all stops in exact sequence:
     // Start (#1) -> Stop #2 -> Stop #3 -> ... -> Final Destination (#N)
-    // Anchors every intermediate stop and final destination so the road path always reaches the exact destination via all added stops.
+    // Each leg (Stop[i] -> Stop[i+1]) is cached so adding a 2nd or 3rd stop preserves previous legs and links directly to the new stop and destination.
     const fetchMultiStopRoadRoute = async () => {
-      const coordQuery = validStops
-        .map((s) => `${Number(s.longitude).toFixed(5)},${Number(s.latitude).toFixed(5)}`)
-        .join(';');
-
       try {
-        const res = await fetch(
-          `https://router.project-osrm.org/route/v1/driving/${coordQuery}?overview=full&geometries=geojson&steps=true`
-        );
-        const data = await res.json();
-        if (data && data.code === 'Ok' && data.routes && data.routes[0]) {
-          const rObj = data.routes[0];
-          const stitchedPath = [];
-          const legDistancesKm = [];
-          let sumLegKm = 0;
+        const legPromises = [];
+        for (let i = 0; i < validStops.length - 1; i++) {
+          const fromStop = validStops[i];
+          const toStop = validStops[i + 1];
+          const fromLat = Number(fromStop.latitude);
+          const fromLng = Number(fromStop.longitude);
+          const toLat = Number(toStop.latitude);
+          const toLng = Number(toStop.longitude);
+          const legKey = `LEG:${fromLat.toFixed(5)},${fromLng.toFixed(5)}->${toLat.toFixed(5)},${toLng.toFixed(5)}`;
+          const legDirectKm = calcHaversineKm(fromLat, fromLng, toLat, toLng);
 
-          if (Array.isArray(rObj.legs) && rObj.legs.length === validStops.length - 1) {
-            rObj.legs.forEach((leg, legIdx) => {
-              const fromStop = validStops[legIdx];
-              const toStop = validStops[legIdx + 1];
-              const legDirectKm = calcHaversineKm(
-                Number(fromStop.latitude),
-                Number(fromStop.longitude),
-                Number(toStop.latitude),
-                Number(toStop.longitude)
-              );
-              const legKm = Math.max(
-                Number(legDirectKm.toFixed(2)),
-                Number(((leg.distance || 0) / 1000).toFixed(2))
-              );
-              legDistancesKm.push(legKm);
-              sumLegKm += legKm;
-
-              const legCoords = [];
-              if (Array.isArray(leg.steps) && leg.steps.length > 0) {
-                leg.steps.forEach((step) => {
-                  if (step.geometry && Array.isArray(step.geometry.coordinates)) {
-                    step.geometry.coordinates.forEach(([lng, lat]) => {
-                      legCoords.push([Number(lat), Number(lng)]);
-                    });
+          if (roadPathCache.has(legKey)) {
+            legPromises.push(Promise.resolve(roadPathCache.get(legKey)));
+          } else {
+            const legQuery = `${fromLng.toFixed(5)},${fromLat.toFixed(5)};${toLng.toFixed(5)},${toLat.toFixed(5)}`;
+            legPromises.push(
+              fetch(
+                `https://router.project-osrm.org/route/v1/driving/${legQuery}?overview=full&geometries=geojson&steps=false`
+              )
+                .then((res) => res.json())
+                .then((data) => {
+                  if (data && data.code === 'Ok' && data.routes && data.routes[0]) {
+                    const rObj = data.routes[0];
+                    const rawCoords = rObj.geometry.coordinates.map(([lng, lat]) => [
+                      Number(lat),
+                      Number(lng)
+                    ]);
+                    const legLatLngs = clampRoadPathToDestination(rawCoords, fromStop, toStop);
+                    const legKm = Math.max(
+                      Number(legDirectKm.toFixed(2)),
+                      Number((rObj.distance / 1000).toFixed(2))
+                    );
+                    const legDurationSec = Number(rObj.duration || 0);
+                    const result = { legLatLngs, legKm, legDurationSec };
+                    roadPathCache.set(legKey, result);
+                    return result;
                   }
-                });
-              }
-              const anchoredLeg =
-                legCoords.length >= 2
-                  ? clampRoadPathToDestination(legCoords, fromStop, toStop)
-                  : [
-                      [Number(fromStop.latitude), Number(fromStop.longitude)],
-                      [Number(toStop.latitude), Number(toStop.longitude)]
-                    ];
-
-              if (legIdx === 0) {
-                stitchedPath.push(...anchoredLeg);
-              } else {
-                stitchedPath.push(...anchoredLeg.slice(1));
-              }
-            });
+                  throw new Error('OSRM leg fallback');
+                })
+                .catch(() => {
+                  const fallbackLeg = {
+                    legLatLngs: [
+                      [fromLat, fromLng],
+                      [toLat, toLng]
+                    ],
+                    legKm: Math.max(0.2, Number((legDirectKm * 1.24).toFixed(2))),
+                    legDurationSec: Math.round(((legDirectKm * 1.24) / 26) * 3600)
+                  };
+                  return fallbackLeg;
+                })
+            );
           }
+        }
 
-          const finalPath =
-            stitchedPath.length >= 2
-              ? stitchedPath
-              : clampRoadPathToDestination(
-                  rObj.geometry.coordinates.map(([lng, lat]) => [Number(lat), Number(lng)]),
-                  validStops[0],
-                  validStops[validStops.length - 1]
-                );
+        const resolvedLegs = await Promise.all(legPromises);
+        if (isCancelled || !mapInstanceRef.current) return;
 
+        const combinedLatLngs = [];
+        const legDistancesKm = [];
+        let totalExactKm = 0;
+        let totalDurationSec = 0;
+
+        resolvedLegs.forEach((legRes, idx) => {
+          const pts = legRes.legLatLngs || [];
+          const km = Number((legRes.legKm || 0).toFixed(2));
+          legDistancesKm.push(km);
+          totalExactKm += km;
+          totalDurationSec += Number(legRes.legDurationSec || 0);
+          if (idx === 0) {
+            combinedLatLngs.push(...pts);
+          } else {
+            combinedLatLngs.push(...pts.slice(1));
+          }
+        });
+
+        if (combinedLatLngs.length >= 2) {
           const exactKm = Math.max(
             Number(fallbackSumKm.toFixed(2)),
-            Number((sumLegKm > 0 ? sumLegKm : rObj.distance / 1000).toFixed(2))
+            Number(totalExactKm.toFixed(2))
           );
           const exactMins = Math.max(
             3,
-            Math.round(rObj.duration > 60 ? rObj.duration / 60 : (exactKm / 26) * 60)
+            Math.round(totalDurationSec > 60 ? totalDurationSec / 60 : (exactKm / 26) * 60)
           );
-          if (!isCancelled && mapInstanceRef.current && finalPath.length >= 2) {
-            roadPathCache.set(stopsSignature, {
-              latlngs: finalPath,
-              distanceKm: exactKm,
-              durationMins: exactMins,
-              legDistancesKm: legDistancesKm.length > 0 ? legDistancesKm : fallbackLegDistances
-            });
-            applyRoadGeometry(
-              finalPath,
-              exactKm,
-              exactMins,
-              legDistancesKm.length > 0 ? legDistancesKm : fallbackLegDistances,
-              true
-            );
-            return;
-          }
+          roadPathCache.set(stopsSignature, {
+            latlngs: combinedLatLngs,
+            distanceKm: exactKm,
+            durationMins: exactMins,
+            legDistancesKm
+          });
+          applyRoadGeometry(combinedLatLngs, exactKm, exactMins, legDistancesKm, true);
         }
-      } catch {
-        // If single multi-waypoint request fails, try sequential leg-by-leg
-      }
-
-      // Sequential leg-by-leg fallback
-      const combinedLatLngs = [];
-      const legDistancesKm = [];
-      let totalExactKm = 0;
-      for (let i = 0; i < validStops.length - 1; i++) {
-        if (isCancelled) return;
-        const fromStop = validStops[i];
-        const toStop = validStops[i + 1];
-        const fromLat = Number(fromStop.latitude);
-        const fromLng = Number(fromStop.longitude);
-        const toLat = Number(toStop.latitude);
-        const toLng = Number(toStop.longitude);
-        const legDirectKm = calcHaversineKm(fromLat, fromLng, toLat, toLng);
-        let legLatLngs = [
-          [fromLat, fromLng],
-          [toLat, toLng]
-        ];
-        let legKm = Math.max(0.2, Number((legDirectKm * 1.24).toFixed(2)));
-
-        try {
-          const legQuery = `${fromLng.toFixed(5)},${fromLat.toFixed(5)};${toLng.toFixed(5)},${toLat.toFixed(5)}`;
-          const res = await fetch(
-            `https://router.project-osrm.org/route/v1/driving/${legQuery}?overview=full&geometries=geojson&steps=false`
-          );
-          const data = await res.json();
-          if (data && data.code === 'Ok' && data.routes && data.routes[0]) {
-            const rObj = data.routes[0];
-            const rawCoords = rObj.geometry.coordinates.map(([lng, lat]) => [Number(lat), Number(lng)]);
-            legLatLngs = clampRoadPathToDestination(rawCoords, fromStop, toStop);
-            legKm = Math.max(legDirectKm, Number((rObj.distance / 1000).toFixed(2)));
-          }
-        } catch {}
-
-        legDistancesKm.push(Number(legKm.toFixed(2)));
-        totalExactKm += legKm;
-        if (i === 0) {
-          combinedLatLngs.push(...legLatLngs);
-        } else {
-          combinedLatLngs.push(...legLatLngs.slice(1));
-        }
-      }
-
-      if (!isCancelled && mapInstanceRef.current && combinedLatLngs.length >= 2) {
-        const exactKm = Math.max(0.5, Number(totalExactKm.toFixed(2)));
-        const exactMins = Math.max(3, Math.round((exactKm / 26) * 60));
-        roadPathCache.set(stopsSignature, {
-          latlngs: combinedLatLngs,
-          distanceKm: exactKm,
-          durationMins: exactMins,
-          legDistancesKm
-        });
-        applyRoadGeometry(combinedLatLngs, exactKm, exactMins, legDistancesKm, true);
+      } catch (err) {
+        console.warn('Multi-stop route calculation fallback:', err);
       }
     };
 

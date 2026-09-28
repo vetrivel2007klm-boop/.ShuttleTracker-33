@@ -18,10 +18,17 @@ router.post('/login', async (req, res) => {
       });
     }
 
+    if (expectedRole === 'admin' && (!organization_name || !String(organization_name).trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please enter your Organization Name.'
+      });
+    }
+
     let user = await db.findUserByEmail(email.trim());
 
-    // Support creating / provisioning a dedicated Organization Admin account when logging in as Admin with a new organization email
-    if (!user && expectedRole === 'admin' && organization_name && String(organization_name).trim().length >= 3) {
+    // Support creating / provisioning a dedicated Organization Admin account when logging in as Admin with a new organization email & password
+    if (!user && expectedRole === 'admin' && organization_name && String(organization_name).trim().length >= 2) {
       const cleanOrg = String(organization_name).trim();
       const password_hash = await bcrypt.hash(String(password).trim(), 10);
       const adminName = email
@@ -833,6 +840,9 @@ router.get('/me', authenticate, async (req, res) => {
       };
     }
     const { password_hash, ...safeUserData } = user;
+    if (req.user?.organization_name) {
+      safeUserData.organization_name = req.user.organization_name;
+    }
     return res.status(200).json({
       success: true,
       user: safeUserData

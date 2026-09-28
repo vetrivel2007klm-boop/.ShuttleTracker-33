@@ -227,6 +227,33 @@ const KNOWN_LOCATIONS = {
   'crescent university': { lat: 12.8755, lng: 80.0835 },
   'tagore engineering college': { lat: 12.8635, lng: 80.1395 },
   'loyola college': { lat: 13.0625, lng: 80.2337 },
+  'erumaiyur': { lat: 12.9545, lng: 80.0665 },
+  'erumaiyur bus stop': { lat: 12.9545, lng: 80.0665 },
+  'kishkinta theme park': { lat: 12.9441, lng: 80.0686 },
+  'darkas': { lat: 12.9525, lng: 80.0695 },
+  'dharkas': { lat: 12.9525, lng: 80.0695 },
+  'sai leo nagar': { lat: 12.9602, lng: 80.0569 },
+  'poonthandalam': { lat: 12.9635, lng: 80.0525 },
+  'palanthandalam': { lat: 12.9652, lng: 80.0785 },
+  'naduveerapattu': { lat: 12.9415, lng: 80.0385 },
+  'thirumudivakkam': { lat: 12.9683, lng: 80.0961 },
+  'tirumudivakkam': { lat: 12.9683, lng: 80.0961 },
+  'thiruneermalai': { lat: 12.9625, lng: 80.1145 },
+  'tiruneermalai': { lat: 12.9625, lng: 80.1145 },
+  'guduvanchery': { lat: 12.8439, lng: 80.0597 },
+  'kolapakkam': { lat: 12.8782, lng: 80.1152 },
+  'vengambakkam': { lat: 12.8852, lng: 80.1435 },
+  'agaramthen': { lat: 12.8758, lng: 80.1485 },
+  'rathinamangalam': { lat: 12.8595, lng: 80.1512 },
+  'kandigai': { lat: 12.8458, lng: 80.1552 },
+  'mambakkam': { lat: 12.8325, lng: 80.1685 },
+  'pudupakkam': { lat: 12.8115, lng: 80.1955 },
+  'polachery': { lat: 12.8215, lng: 80.1815 },
+  'semmancheri': { lat: 12.8665, lng: 80.2245 },
+  'thaiyur': { lat: 12.7712, lng: 80.2125 },
+  'ottiyambakkam': { lat: 12.8765, lng: 80.1985 },
+  'walajabad': { lat: 12.7912, lng: 79.8215 },
+  'sunguvarchatram': { lat: 12.9365, lng: 79.8655 },
   'mudichur road': { lat: 12.9188, lng: 80.0865 },
   'shanmugam road': { lat: 12.9268, lng: 80.1125 },
   'gandhi road': { lat: 12.9255, lng: 80.1088 },
@@ -265,7 +292,7 @@ function calculateDistanceKm(lat1, lon1, lat2, lon2) {
 
 async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 80.0569, routeCorridor = null) {
   if (!placeName || typeof placeName !== 'string') {
-    return { lat: fallbackLat, lng: fallbackLng };
+    return { lat: fallbackLat, lng: fallbackLng, isFallback: true };
   }
   const clean = placeName.trim().toLowerCase().replace(/\s+/g, ' ');
   const primaryPart = clean.split(',')[0].trim();
@@ -288,17 +315,14 @@ async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 8
       : fallbackLng || 80.0569
   );
 
-  // Regional sanity check (150 km around the route region) so real stops anywhere in the city/district are NEVER rejected
+  // Regional sanity check (200 km around the route region) so real stops anywhere in the city/district are NEVER rejected
   const isWithinRegion = (lat, lng) => {
     if (!hasCorridor) return true;
     const distFromCenter = calculateDistanceKm(refLat, refLng, lat, lng);
-    return distFromCenter <= 150;
+    return distFromCenter <= 200;
   };
 
-  // 1. Check exact match in KNOWN_LOCATIONS by full string or primary stop name
-  if (KNOWN_LOCATIONS[clean] && isWithinRegion(KNOWN_LOCATIONS[clean].lat, KNOWN_LOCATIONS[clean].lng)) {
-    return { ...KNOWN_LOCATIONS[clean] };
-  }
+  // 1. Check exact match in KNOWN_LOCATIONS by primary stop name first, then full string
   if (
     primaryPart &&
     KNOWN_LOCATIONS[primaryPart] &&
@@ -306,65 +330,68 @@ async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 8
   ) {
     return { ...KNOWN_LOCATIONS[primaryPart] };
   }
+  if (KNOWN_LOCATIONS[clean] && isWithinRegion(KNOWN_LOCATIONS[clean].lat, KNOWN_LOCATIONS[clean].lng)) {
+    return { ...KNOWN_LOCATIONS[clean] };
+  }
 
-  // 2. Check specific whole-word landmark match in KNOWN_LOCATIONS (longest key first, excluding broad city names)
-  const broadCityKeys = new Set(['chennai', 'coimbatore', 'madurai', 'trichy', 'salem']);
+  // 2. Check specific whole-word match in KNOWN_LOCATIONS on primaryPart ONLY (excluding broad/generic words)
+  const excludedSubstringKeys = new Set([
+    'chennai',
+    'coimbatore',
+    'madurai',
+    'trichy',
+    'salem',
+    'main gate',
+    'academic block',
+    'library',
+    'sports ground',
+    'sports arena',
+    'gate 2 terminal',
+    'engineering hall',
+    'science complex',
+    'student dining hall',
+    'metro station link',
+    'hostel complex',
+    'lakshmi nagar',
+    'bharathi nagar',
+    'gandhi road',
+    'shanmugam road',
+    'gst road',
+    'outer ring road'
+  ]);
   const sortedEntries = Object.entries(KNOWN_LOCATIONS).sort((a, b) => b[0].length - a[0].length);
   for (const [key, coords] of sortedEntries) {
-    if (key.length >= 3 && !broadCityKeys.has(key)) {
+    if (key.length >= 4 && !excludedSubstringKeys.has(key)) {
       const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const wordRegex = new RegExp(`\\b${escapedKey}\\b`, 'i');
-      if (
-        (wordRegex.test(primaryPart) || wordRegex.test(clean)) &&
-        isWithinRegion(coords.lat, coords.lng)
-      ) {
+      if (wordRegex.test(primaryPart) && isWithinRegion(coords.lat, coords.lng)) {
         return { ...coords };
       }
     }
   }
 
-  // Determine regional context for live geocoding (Chennai / Tamil Nadu)
-  const isChennaiRegion = refLat >= 12.3 && refLat <= 13.6 && refLng >= 79.4 && refLng <= 80.5;
   const rawPrimary = placeName.split(',')[0].trim();
-  const searchQueryWithContext =
-    isChennaiRegion && !clean.includes('chennai') && !clean.includes('tamil')
-      ? `${rawPrimary}, Chennai, Tamil Nadu, India`
-      : `${placeName.trim()}, Tamil Nadu, India`;
 
-  const minLat = refLat - 0.55;
-  const maxLat = refLat + 0.55;
-  const minLng = refLng - 0.55;
-  const maxLng = refLng + 0.55;
-
-  // 3. Live Google Maps Geocoding API (if key is available)
-  const googleKey =
-    (store && store.settings && store.settings.google_maps_key) ||
-    process.env.GOOGLE_MAPS_API_KEY ||
-    '';
-  if (googleKey) {
+  // 3. Live ArcGIS World Geocoder (works reliably on Render and local without IP rate-limiting)
+  const arcgisQueries = [
+    `${rawPrimary}, Tamil Nadu, India`,
+    `${placeName.trim()}, Tamil Nadu, India`
+  ];
+  for (const qText of arcgisQueries) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3000);
-      const query = encodeURIComponent(searchQueryWithContext);
-      const boundsParam = `${minLat.toFixed(4)},${minLng.toFixed(4)}|${maxLat.toFixed(4)},${maxLng.toFixed(4)}`;
-      const res = await fetch(
-        `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&bounds=${boundsParam}&region=in&key=${encodeURIComponent(googleKey)}`,
-        { signal: controller.signal }
-      );
+      const timeout = setTimeout(() => controller.abort(), 3500);
+      const url = `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&maxLocations=5&countryCode=IND&location=${refLng.toFixed(4)},${refLat.toFixed(4)}&distance=90000&singleLine=${encodeURIComponent(qText)}`;
+      const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timeout);
       if (res.ok) {
         const data = await res.json();
-        if (
-          data &&
-          data.status === 'OK' &&
-          Array.isArray(data.results) &&
-          data.results.length > 0
-        ) {
-          for (const item of data.results) {
-            const loc = item?.geometry?.location;
-            if (!loc) continue;
-            const lat = Number(parseFloat(loc.lat).toFixed(5));
-            const lng = Number(parseFloat(loc.lng).toFixed(5));
+        if (data && Array.isArray(data.candidates) && data.candidates.length > 0) {
+          for (const cand of data.candidates) {
+            const loc = cand?.location;
+            if (!loc || (cand.score !== undefined && Number(cand.score) < 70)) continue;
+            const lat = Number(parseFloat(loc.y).toFixed(5));
+            const lng = Number(parseFloat(loc.x).toFixed(5));
             if (!isNaN(lat) && !isNaN(lng) && isWithinRegion(lat, lng)) {
               const resolved = { lat, lng };
               KNOWN_LOCATIONS[primaryPart || clean] = resolved;
@@ -376,11 +403,36 @@ async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 8
     } catch (_) {}
   }
 
-  // 4. Live OpenStreetMap Nominatim Geocoding (regional search first, then broad Tamil Nadu / India search)
+  // 4. Live Photon OSM Geocoder (Komoot) — fast & cloud-friendly
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(rawPrimary + ', Tamil Nadu')}&lat=${refLat.toFixed(4)}&lon=${refLng.toFixed(4)}&limit=5`;
+    const res = await fetch(photonUrl, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && Array.isArray(data.features) && data.features.length > 0) {
+        for (const feat of data.features) {
+          const coords = feat?.geometry?.coordinates;
+          if (Array.isArray(coords) && coords.length >= 2) {
+            const lng = Number(parseFloat(coords[0]).toFixed(5));
+            const lat = Number(parseFloat(coords[1]).toFixed(5));
+            if (!isNaN(lat) && !isNaN(lng) && isWithinRegion(lat, lng)) {
+              const resolved = { lat, lng };
+              KNOWN_LOCATIONS[primaryPart || clean] = resolved;
+              return { ...resolved };
+            }
+          }
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 5. Live OpenStreetMap Nominatim Geocoding (Tamil Nadu search first so Chengalpattu/Kanchipuram suburbs resolve)
   const nominatimQueries = [
-    `https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=in&viewbox=${minLng.toFixed(4)},${maxLat.toFixed(4)},${maxLng.toFixed(4)},${minLat.toFixed(4)}&q=${encodeURIComponent(searchQueryWithContext)}`,
-    `https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=in&q=${encodeURIComponent(rawPrimary + ', Chennai, Tamil Nadu')}`,
-    `https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=in&q=${encodeURIComponent(placeName.trim() + ', Tamil Nadu')}`
+    `https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=in&q=${encodeURIComponent(rawPrimary + ', Tamil Nadu, India')}`,
+    `https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=in&q=${encodeURIComponent(rawPrimary + ', Chennai, Tamil Nadu')}`
   ];
 
   for (const url of nominatimQueries) {
@@ -409,7 +461,7 @@ async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 8
     } catch (_) {}
   }
 
-  // 5. Fallback if stop name is a custom campus building / gate not in external gazetteers
+  // 6. Fallback if stop name is a custom campus building / gate not in external gazetteers
   if (hasCorridor) {
     const sLat = Number(routeCorridor.startLat);
     const sLng = Number(routeCorridor.startLng);
@@ -418,11 +470,12 @@ async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 8
     const frac = Math.min(0.88, Math.max(0.15, Number(routeCorridor.fraction) || 0.5));
     return {
       lat: Number((sLat + (eLat - sLat) * frac).toFixed(5)),
-      lng: Number((sLng + (eLng - sLng) * frac).toFixed(5))
+      lng: Number((sLng + (eLng - sLng) * frac).toFixed(5)),
+      isFallback: true
     };
   }
 
-  return { lat: fallbackLat, lng: fallbackLng };
+  return { lat: fallbackLat, lng: fallbackLng, isFallback: true };
 }
 
 function parseTimeStrToMinutes(timeStr) {
@@ -1075,9 +1128,12 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
             }
             const orgSetRes = await client.query('SELECT org_key, organization_name, settings_json FROM organization_settings');
             if (orgSetRes.rows && orgSetRes.rows.length > 0) {
+              if (!store.organization_settings) store.organization_settings = {};
               orgSetRes.rows.forEach((row) => {
                 try {
-                  store.org_settings[row.org_key] = JSON.parse(row.settings_json);
+                  const parsed = JSON.parse(row.settings_json);
+                  store.org_settings[row.org_key] = parsed;
+                  store.organization_settings[row.org_key] = parsed;
                 } catch (_) {}
               });
             }
@@ -1085,8 +1141,12 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
 
           const defaultOrgName = store.settings.organization_name || 'Sairam Engineering College';
           const defaultOrgKey = normalizeOrgKey(defaultOrgName);
+          if (!store.organization_settings) store.organization_settings = {};
           if (!store.org_settings[defaultOrgKey]) {
             store.org_settings[defaultOrgKey] = { ...store.settings };
+          }
+          if (!store.organization_settings[defaultOrgKey]) {
+            store.organization_settings[defaultOrgKey] = { ...store.settings };
           }
 
           // Backfill organization_name on existing records that had empty organization_name
@@ -1175,6 +1235,7 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
                   fraction: idx / Math.max(1, rtStops.length - 1)
                 });
                 if (
+                  !resolved.isFallback &&
                   calculateDistanceKm(Number(st.latitude), Number(st.longitude), resolved.lat, resolved.lng) > 0.35
                 ) {
                   st.latitude = resolved.lat;
@@ -1185,6 +1246,7 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
                   [st.latitude, st.longitude, st.sequence_order, st.id]
                 );
               }
+              await db.recalculateRouteMetrics(rt.id);
             }
           }
 
@@ -3267,24 +3329,34 @@ const db = {
 
     const cleanName = String(stopData.name || '').trim();
     const cleanLandmark = String(stopData.landmark || '').trim();
-    const geocodeQuery =
-      cleanLandmark &&
-      cleanLandmark.toLowerCase() !== 'transit stop' &&
-      cleanLandmark.toLowerCase() !== 'starting point' &&
-      cleanLandmark.toLowerCase() !== 'destination terminal' &&
-      !cleanName.toLowerCase().includes(cleanLandmark.toLowerCase())
-        ? `${cleanName}, ${cleanLandmark}`
-        : cleanName;
 
     let coords = { lat: Number(stopData.latitude), lng: Number(stopData.longitude) };
     if (!coords.lat || !coords.lng || isNaN(coords.lat) || isNaN(coords.lng)) {
-      coords = await geocodeLocation(geocodeQuery, startLat, startLng, {
+      coords = await geocodeLocation(cleanName, startLat, startLng, {
         startLat,
         startLng,
         endLat,
         endLng,
         fraction
       });
+      if (
+        coords.isFallback &&
+        cleanLandmark &&
+        cleanLandmark.toLowerCase() !== 'transit stop' &&
+        cleanLandmark.toLowerCase() !== 'starting point' &&
+        cleanLandmark.toLowerCase() !== 'destination terminal'
+      ) {
+        const landmarkCoords = await geocodeLocation(cleanLandmark, startLat, startLng, {
+          startLat,
+          startLng,
+          endLat,
+          endLng,
+          fraction
+        });
+        if (!landmarkCoords.isFallback) {
+          coords = landmarkCoords;
+        }
+      }
     }
 
     const isDestStop =
@@ -4557,13 +4629,30 @@ const db = {
       newSettings.organization_name ||
         orgName ||
         store.settings?.organization_name ||
-        'Sathyabama Institute of Science and Technology'
+        'Sairam Engineering College'
     ).trim();
     const orgKey = normalizeOrgKey(resolvedOrgName);
     if (!store.organization_settings) {
       store.organization_settings = {};
     }
-    const baseSettings = store.organization_settings[orgKey] || store.settings;
+    if (!store.org_settings) {
+      store.org_settings = {};
+    }
+    const existingOrgSettings =
+      store.organization_settings[orgKey] ||
+      store.org_settings[orgKey] ||
+      (matchesOrg(store.settings?.organization_name, resolvedOrgName) ? store.settings : null);
+    const baseSettings = existingOrgSettings || {
+      organization_name: resolvedOrgName,
+      speed_limit: 35,
+      delay_threshold: 5,
+      google_maps_key: store.settings?.google_maps_key || process.env.GOOGLE_MAPS_API_KEY || '',
+      sample_id_card_url: '',
+      sample_id_ocr_text: '',
+      sample_id_format_keywords: [],
+      admin_profile_name: 'System Administrator',
+      admin_profile_email: 'admin@shuttletrack.com'
+    };
 
     const updatedOrgSettings = {
       ...baseSettings,
@@ -4593,6 +4682,7 @@ const db = {
     };
 
     store.organization_settings[orgKey] = updatedOrgSettings;
+    store.org_settings[orgKey] = updatedOrgSettings;
     store.settings = updatedOrgSettings;
 
     if (isPostgresConnected && pool) {
@@ -4606,9 +4696,9 @@ const db = {
           [JSON.stringify(store.settings)]
         );
         await pool.query(
-          `INSERT INTO organization_settings (organization_key, organization_name, settings_json, updated_at)
+          `INSERT INTO organization_settings (org_key, organization_name, settings_json, updated_at)
            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-           ON CONFLICT (organization_key) DO UPDATE
+           ON CONFLICT (org_key) DO UPDATE
              SET organization_name = EXCLUDED.organization_name,
                  settings_json = EXCLUDED.settings_json,
                  updated_at = CURRENT_TIMESTAMP`,

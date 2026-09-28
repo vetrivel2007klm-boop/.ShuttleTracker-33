@@ -23,8 +23,8 @@ import {
 export const AdminSettings = () => {
   const { user } = useAuth();
   const [adminName, setAdminName] = useState(user?.name || 'System Administrator');
-  const [adminEmail, setAdminEmail] = useState(user?.email || 'admin@shuttletrack.io');
-  const [campusName, setCampusName] = useState('Sairam Engineering College');
+  const [adminEmail, setAdminEmail] = useState(user?.email || '');
+  const [campusName, setCampusName] = useState(user?.organization_name || '');
   const [sampleIdCardUrl, setSampleIdCardUrl] = useState('');
   const [sampleKeywords, setSampleKeywords] = useState([]);
   const [speedLimit, setSpeedLimit] = useState('35');
@@ -38,12 +38,24 @@ export const AdminSettings = () => {
   const { addToast } = useToast();
 
   useEffect(() => {
+    if (user?.organization_name) {
+      setCampusName(user.organization_name);
+    }
+    if (user?.email) {
+      setAdminEmail(user.email);
+    }
+    if (user?.name) {
+      setAdminName(user.name);
+    }
+  }, [user]);
+
+  useEffect(() => {
     const fetchSettings = async () => {
       try {
         const res = await api.get('/stats/settings');
         if (res.data?.success && res.data.data) {
           const s = res.data.data;
-          if (s.organization_name) setCampusName(s.organization_name);
+          setCampusName(user?.organization_name || s.organization_name || '');
           if (s.admin_profile_name) setAdminName(s.admin_profile_name);
           if (s.admin_profile_email) setAdminEmail(s.admin_profile_email);
           if (s.sample_id_card_url !== undefined) setSampleIdCardUrl(s.sample_id_card_url || '');
@@ -57,7 +69,7 @@ export const AdminSettings = () => {
       }
     };
     fetchSettings();
-  }, []);
+  }, [user?.organization_name]);
 
   const compressImageToBase64 = (rawDataUrl) =>
     new Promise((resolve) => {
@@ -110,8 +122,9 @@ export const AdminSettings = () => {
       const base64Data = await compressImageToBase64(reader.result);
       setSampleIdCardUrl(base64Data);
       try {
+        const lockedOrg = (user?.organization_name || campusName).trim();
         const res = await api.put('/stats/settings', {
-          organization_name: campusName.trim() || 'Sairam Engineering College',
+          organization_name: lockedOrg,
           admin_profile_name: adminName.trim(),
           admin_profile_email: adminEmail.trim(),
           sample_id_card_url: base64Data,
@@ -144,8 +157,9 @@ export const AdminSettings = () => {
     setSampleIdCardUrl('');
     setSampleKeywords([]);
     try {
+      const lockedOrg = (user?.organization_name || campusName).trim();
       await api.put('/stats/settings', {
-        organization_name: campusName.trim() || 'Sairam Engineering College',
+        organization_name: lockedOrg,
         sample_id_card_url: ''
       });
       addToast({
@@ -158,10 +172,11 @@ export const AdminSettings = () => {
 
   const handleSave = async (e) => {
     e.preventDefault();
-    if (!campusName.trim()) {
+    const lockedOrg = (user?.organization_name || campusName).trim();
+    if (!lockedOrg) {
       addToast({
         title: 'Organization Name Required',
-        message: 'Please enter the official Campus / Organization Name.',
+        message: 'Please log in with a valid Organization Name.',
         type: 'danger'
       });
       return;
@@ -170,7 +185,7 @@ export const AdminSettings = () => {
     setSaving(true);
     try {
       const res = await api.put('/stats/settings', {
-        organization_name: campusName.trim(),
+        organization_name: lockedOrg,
         admin_profile_name: adminName.trim(),
         admin_profile_email: adminEmail.trim(),
         sample_id_card_url: sampleIdCardUrl,
@@ -260,7 +275,7 @@ export const AdminSettings = () => {
             </span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Input
               label="Administrator Name"
               id="adminProfileName"
@@ -269,12 +284,20 @@ export const AdminSettings = () => {
               onChange={(e) => setAdminName(e.target.value)}
             />
             <Input
-              label="Administrator Dispatch Email (Sender Reference)"
+              label="Administrator Dispatch Email"
               id="adminProfileEmail"
               type="email"
               placeholder="admin@shuttletrack.io"
               value={adminEmail}
               onChange={(e) => setAdminEmail(e.target.value)}
+            />
+            <Input
+              label="Organization Name (Locked from Login)"
+              id="adminProfileOrg"
+              value={user?.organization_name || campusName}
+              disabled={true}
+              readOnly={true}
+              className="opacity-85 cursor-not-allowed bg-slate-100 dark:bg-slate-800/80 font-bold"
             />
           </div>
 
@@ -286,7 +309,7 @@ export const AdminSettings = () => {
                   Sample / Format ID Card of Passenger (Required for Passenger Account Creation)
                 </label>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                  First upload your institution's sample passenger ID card format here. When a passenger signs up, their uploaded ID card is verified against this format and <strong className="text-navy-900 dark:text-white">"{campusName}"</strong>.
+                  First upload your institution's sample passenger ID card format here. When a passenger signs up, their uploaded ID card is verified against this format and <strong className="text-navy-900 dark:text-white">"{user?.organization_name || campusName}"</strong>.
                 </p>
               </div>
               <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-xs font-bold shadow-sm transition-all shrink-0">
@@ -316,7 +339,7 @@ export const AdminSettings = () => {
                       <span>Official Passenger ID Format Uploaded & Active</span>
                     </div>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                      Organization Match: <strong className="text-navy-900 dark:text-white">{campusName}</strong>
+                      Organization Match: <strong className="text-navy-900 dark:text-white">{user?.organization_name || campusName}</strong>
                     </p>
                     {sampleKeywords.length > 0 && (
                       <div className="flex flex-wrap gap-1 pt-0.5">
@@ -370,23 +393,23 @@ export const AdminSettings = () => {
             </div>
             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold border border-emerald-200 dark:border-emerald-800">
               <CheckCircle2 className="w-3 h-3" />
-              Enforced on Passenger Sign Up
+              Locked to Logged-In Organization
             </span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <Input
-                label="Campus / Organization Name"
+                label="Campus / Organization Name (Non-Changeable)"
                 id="campus"
                 required
-                placeholder="e.g. Sairam Engineering College"
-                value={campusName}
-                onChange={(e) => setCampusName(e.target.value)}
+                value={user?.organization_name || campusName}
+                disabled={true}
+                readOnly={true}
+                className="opacity-85 cursor-not-allowed bg-slate-100 dark:bg-slate-800/80 font-bold"
               />
               <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
-                Passengers can only create an account when their entered Organization Name and ID Card match{' '}
-                <strong className="text-navy-900 dark:text-white">"{campusName}"</strong> and the Admin Sample ID format.
+                Automatically populated from the Organization Name entered during Admin Login (<strong className="text-navy-900 dark:text-white">"{user?.organization_name || campusName}"</strong>) and locked for this session.
               </p>
             </div>
 
