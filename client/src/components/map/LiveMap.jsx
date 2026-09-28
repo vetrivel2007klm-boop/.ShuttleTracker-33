@@ -501,7 +501,7 @@ const LiveMapInner = ({
     }
   }, [darkMode, mapProvider, showTrafficLayer]);
 
-  // Render Draggable "Drop Location on Map" Pin & Live Preview Connection
+  // Render Clean Draggable "Drop Location on Map" Pin (No yellow dotted rays)
   useEffect(() => {
     if (!mapInstanceRef.current) return;
     const map = mapInstanceRef.current;
@@ -528,15 +528,14 @@ const LiveMapInner = ({
     const pinLabel = dropPinLocation.label || 'Drop Location (Drag Me)';
 
     const dropIconHtml = `
-      <div class="relative w-9 h-9 flex items-center justify-center cursor-grab active:cursor-grabbing">
-        <div class="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-md bg-amber-500 text-slate-950 text-[9px] font-black uppercase tracking-wider shadow-lg whitespace-nowrap border border-white pointer-events-none">
+      <div class="relative w-8 h-8 flex items-center justify-center cursor-grab active:cursor-grabbing">
+        <div class="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-md bg-brand-600 text-white text-[9px] font-black uppercase tracking-wider shadow-md whitespace-nowrap border border-white pointer-events-none">
           📍 ${pinLabel}
         </div>
-        <span class="animate-ping absolute inline-flex h-8 w-8 rounded-full bg-amber-400 opacity-60"></span>
-        <div class="relative w-8 h-8 rounded-full border-2 border-white bg-amber-500 text-slate-950 shadow-xl flex items-center justify-center font-black text-sm ring-4 ring-amber-500/40">
+        <div class="relative w-7 h-7 rounded-full border-2 border-white bg-brand-600 text-white shadow-lg flex items-center justify-center font-black text-xs ring-2 ring-brand-500/30">
           📍
         </div>
-        <div class="absolute top-full mt-1 left-1/2 -translate-x-1/2 bg-slate-900/95 text-amber-300 text-[9px] px-2 py-0.5 rounded shadow-md pointer-events-none whitespace-nowrap font-mono font-bold border border-amber-500/50">
+        <div class="absolute top-full mt-1 left-1/2 -translate-x-1/2 bg-slate-900/95 text-white text-[9px] px-2 py-0.5 rounded shadow-md pointer-events-none whitespace-nowrap font-mono font-bold border border-slate-700">
           ${pinLat.toFixed(5)}, ${pinLng.toFixed(5)}
         </div>
       </div>
@@ -545,8 +544,8 @@ const LiveMapInner = ({
     const dropIcon = L.divIcon({
       className: 'custom-drop-pin-icon',
       html: dropIconHtml,
-      iconSize: [36, 36],
-      iconAnchor: [18, 18]
+      iconSize: [32, 32],
+      iconAnchor: [16, 16]
     });
 
     const marker = L.marker([pinLat, pinLng], {
@@ -554,52 +553,6 @@ const LiveMapInner = ({
       draggable: true,
       zIndexOffset: 1500
     }).addTo(map);
-
-    const drawPreviewConnection = (lat, lng) => {
-      if (dropPinPreviewLayerRef.current) {
-        dropPinPreviewLayerRef.current.remove();
-        dropPinPreviewLayerRef.current = null;
-      }
-      const validStops = (activeStops || []).filter((s) => s && s.latitude && s.longitude);
-      if (validStops.length >= 2) {
-        const prevStop = validStops[validStops.length - 2];
-        const destStop = validStops[validStops.length - 1];
-        const previewPts = [
-          [Number(prevStop.latitude), Number(prevStop.longitude)],
-          [lat, lng],
-          [Number(destStop.latitude), Number(destStop.longitude)]
-        ];
-        dropPinPreviewLayerRef.current = L.polyline(previewPts, {
-          color: '#F59E0B',
-          weight: 3.5,
-          dashArray: '7, 7',
-          opacity: 0.95
-        }).addTo(map);
-      } else if (validStops.length === 1) {
-        const startStop = validStops[0];
-        dropPinPreviewLayerRef.current = L.polyline(
-          [
-            [Number(startStop.latitude), Number(startStop.longitude)],
-            [lat, lng]
-          ],
-          {
-            color: '#F59E0B',
-            weight: 3.5,
-            dashArray: '7, 7',
-            opacity: 0.95
-          }
-        ).addTo(map);
-      }
-    };
-
-    drawPreviewConnection(pinLat, pinLng);
-
-    marker.on('drag', (e) => {
-      const pos = e.target.getLatLng();
-      if (pos) {
-        drawPreviewConnection(pos.lat, pos.lng);
-      }
-    });
 
     marker.on('dragend', (e) => {
       const pos = e.target.getLatLng();
@@ -609,7 +562,7 @@ const LiveMapInner = ({
     });
 
     dropPinMarkerRef.current = marker;
-  }, [dropPinLocation, stopsSignature]);
+  }, [dropPinLocation]);
 
   // Render Secondary/Other Routes in Distinct Colors (Purple, Teal, Orange, Pink)
   useEffect(() => {

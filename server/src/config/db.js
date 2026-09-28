@@ -4932,7 +4932,9 @@ const db = {
       averageWaitTime: '4.8 min',
       fleetHealth: '98.5%'
     };
-  }
+  },
+
+  geocodeLocation
 };
 
 module.exports = db;

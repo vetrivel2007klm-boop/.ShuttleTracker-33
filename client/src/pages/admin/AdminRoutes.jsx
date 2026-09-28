@@ -111,18 +111,55 @@ export const AdminRoutes = () => {
     setDropPinLocation(null);
   };
 
-  // Activate "Drop Location on Map" draggable pin along the current route corridor
+  // When user does NOT press Drop Pin button and directly enters a Stop Name,
+  // automatically resolve its latitude & longitude based on the Stop Name
+  useEffect(() => {
+    if (dropPinLocation) return;
+    const cleanName = (stopForm.name || '').trim();
+    if (cleanName.length < 2) {
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.get('/routes/geocode/lookup', {
+          params: { q: cleanName, route_id: selectedRoute?.id }
+        });
+        if (res.data?.success && res.data.latitude && res.data.longitude) {
+          setStopForm((prev) => ({
+            ...prev,
+            latitude: res.data.latitude,
+            longitude: res.data.longitude
+          }));
+        }
+      } catch (_) {}
+    }, 320);
+    return () => clearTimeout(timer);
+  }, [stopForm.name, dropPinLocation, selectedRoute?.id]);
+
+  // Activate "Drop Pin" draggable marker along the current route corridor
   const handleActivateDropLocation = () => {
     const rStops = selectedRoute?.stops || [];
-    let defaultLat = 12.9592;
-    let defaultLng = 80.0597;
+    let defaultLat =
+      stopForm.latitude !== '' && Number.isFinite(Number(stopForm.latitude))
+        ? Number(stopForm.latitude)
+        : 12.9592;
+    let defaultLng =
+      stopForm.longitude !== '' && Number.isFinite(Number(stopForm.longitude))
+        ? Number(stopForm.longitude)
+        : 80.0597;
 
-    if (rStops.length >= 2) {
+    if (
+      (stopForm.latitude === '' || !Number.isFinite(Number(stopForm.latitude))) &&
+      rStops.length >= 2
+    ) {
       const prevStop = rStops[rStops.length - 2];
       const destStop = rStops[rStops.length - 1];
       defaultLat = Number(((Number(prevStop.latitude) + Number(destStop.latitude)) / 2).toFixed(5));
       defaultLng = Number(((Number(prevStop.longitude) + Number(destStop.longitude)) / 2).toFixed(5));
-    } else if (rStops.length === 1) {
+    } else if (
+      (stopForm.latitude === '' || !Number.isFinite(Number(stopForm.latitude))) &&
+      rStops.length === 1
+    ) {
       defaultLat = Number((Number(rStops[0].latitude) + 0.005).toFixed(5));
       defaultLng = Number((Number(rStops[0].longitude) + 0.005).toFixed(5));
     }
@@ -130,7 +167,7 @@ export const AdminRoutes = () => {
     const pinObj = {
       lat: defaultLat,
       lng: defaultLng,
-      label: stopForm.name?.trim() || 'Drag Pin to Stop Location'
+      label: stopForm.name?.trim() || 'Marked Stop Position'
     };
     setDropPinLocation(pinObj);
     setStopForm((prev) => ({
@@ -139,8 +176,8 @@ export const AdminRoutes = () => {
       longitude: defaultLng
     }));
     addToast({
-      title: '📍 Drop Location Pin Active on Map',
-      message: 'Drag the glowing amber pin on the map (or click anywhere on the map) to assign the exact stop location.',
+      title: '📍 Drop Pin Placed on Map',
+      message: 'Place or drag the pin to your desired location on the map, then enter the Stop Name and optional Landmark.',
       type: 'info'
     });
   };
@@ -151,7 +188,7 @@ export const AdminRoutes = () => {
       ...(prev || {}),
       lat,
       lng,
-      label: stopForm.name?.trim() || 'Dropped Stop Location'
+      label: stopForm.name?.trim() || 'Marked Stop Position'
     }));
     setStopForm((prev) => ({
       ...prev,
@@ -637,7 +674,7 @@ export const AdminRoutes = () => {
                 )}
               </Card>
 
-              {/* Add Stop Form with "Drop Location on Map (Drag to Locate)" Button */}
+              {/* Add Stop Form: Supports BOTH Drop Pin on Map AND Direct Stop Name + Latitude/Longitude */}
               <Card className="p-5 space-y-4 border border-slate-200 dark:border-slate-800 shadow-premium relative z-10">
                 <div className="pb-3 border-b border-slate-100 dark:border-slate-800">
                   <div className="flex items-center justify-between gap-2">
@@ -650,31 +687,39 @@ export const AdminRoutes = () => {
                       onClick={dropPinLocation ? handleClearDropLocation : handleActivateDropLocation}
                       className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold flex items-center gap-1 border transition ${
                         dropPinLocation
-                          ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-sm'
-                          : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700 hover:bg-amber-500 hover:text-slate-950'
+                          ? 'bg-brand-600 text-white border-brand-500 shadow-sm'
+                          : 'bg-brand-50 dark:bg-slate-800 text-brand-600 dark:text-blue-400 border-brand-200 dark:border-slate-700 hover:bg-brand-600 hover:text-white'
                       }`}
                     >
                       <Crosshair className="w-3.5 h-3.5" />
-                      <span>{dropPinLocation ? 'Clear Dropped Pin' : 'Drop Location on Map'}</span>
+                      <span>{dropPinLocation ? 'Clear Drop Pin' : '📍 Drop Pin on Map'}</span>
                     </button>
                   </div>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                    Type a Stop Name to auto-locate along the shortest road path, OR click <b>"Drop Location on Map"</b> and drag the pin on the map to assign your exact custom location.
+                    {dropPinLocation
+                      ? '📍 Drop Pin Mode: Place/drag the pin on the map, then enter the Stop Name and optional Landmark.'
+                      : 'Direct Mode: Enter the Stop Name directly (Latitude & Longitude auto-set from Stop Name) and optional Landmark.'}
                   </p>
                 </div>
 
                 <form onSubmit={handleAddStop} className="space-y-3.5">
                   <Input
-                    label="Stop Name / Location"
+                    label="Stop Name / Marked Position Name"
                     id="stopName"
                     required
                     placeholder="e.g. Chromepet / Erumaiyur / Camp Road"
                     value={stopForm.name}
                     onChange={(e) => {
                       const val = e.target.value;
-                      setStopForm({ ...stopForm, name: val });
+                      setStopForm((prev) => ({
+                        ...prev,
+                        name: val,
+                        ...(val.trim() === '' && !dropPinLocation ? { latitude: '', longitude: '' } : {})
+                      }));
                       if (dropPinLocation) {
-                        setDropPinLocation((prev) => (prev ? { ...prev, label: val || 'Drag Pin to Stop Location' } : null));
+                        setDropPinLocation((prev) =>
+                          prev ? { ...prev, label: val || 'Marked Stop Position' } : null
+                        );
                       }
                     }}
                   />
@@ -688,47 +733,70 @@ export const AdminRoutes = () => {
                     onChange={(e) => setStopForm({ ...stopForm, landmark: e.target.value })}
                   />
 
-                  {/* Drop Location on Map Interactive Control Box */}
-                  <div className="p-3 rounded-xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/70 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] font-extrabold text-amber-900 dark:text-amber-300 flex items-center gap-1.5">
-                        <MapPin className="w-3.5 h-3.5 text-amber-600" />
-                        <span>
-                          {dropPinLocation
-                            ? 'Dropped Map Location Assigned (Drag Pin on Map to Adjust)'
-                            : 'Want to pick the exact spot on the map by dragging?'}
-                        </span>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={dropPinLocation ? handleClearDropLocation : handleActivateDropLocation}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition ${
-                          dropPinLocation
-                            ? 'bg-rose-600 text-white hover:bg-rose-700'
-                            : 'bg-amber-500 text-slate-950 hover:bg-amber-400 shadow-sm'
-                        }`}
-                      >
-                        {dropPinLocation ? 'Reset to Auto' : '📍 Drop Location Pin'}
-                      </button>
-                    </div>
+                  {/* Latitude & Longitude Fields (Auto-set from Stop Name OR from Dropped Pin) */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      label={dropPinLocation ? 'Marked Pin Latitude' : 'Latitude (Auto / Custom)'}
+                      id="stopLat"
+                      type="number"
+                      step="0.00001"
+                      required={false}
+                      placeholder="Auto from Stop Name"
+                      value={stopForm.latitude}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setStopForm({ ...stopForm, latitude: val });
+                        if (dropPinLocation && val !== '' && !isNaN(Number(val))) {
+                          setDropPinLocation((prev) => (prev ? { ...prev, lat: Number(val) } : null));
+                        }
+                      }}
+                    />
+                    <Input
+                      label={dropPinLocation ? 'Marked Pin Longitude' : 'Longitude (Auto / Custom)'}
+                      id="stopLng"
+                      type="number"
+                      step="0.00001"
+                      required={false}
+                      placeholder="Auto from Stop Name"
+                      value={stopForm.longitude}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setStopForm({ ...stopForm, longitude: val });
+                        if (dropPinLocation && val !== '' && !isNaN(Number(val))) {
+                          setDropPinLocation((prev) => (prev ? { ...prev, lng: Number(val) } : null));
+                        }
+                      }}
+                    />
+                  </div>
 
-                    {dropPinLocation && (
-                      <div className="grid grid-cols-2 gap-2 pt-1">
-                        <div className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-[11px] font-mono text-slate-700 dark:text-slate-200">
-                          Lat: <b>{Number(stopForm.latitude).toFixed(5)}</b>
-                        </div>
-                        <div className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-[11px] font-mono text-slate-700 dark:text-slate-200">
-                          Lng: <b>{Number(stopForm.longitude).toFixed(5)}</b>
-                        </div>
-                      </div>
-                    )}
+                  {/* Drop Pin Toggle Bar */}
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                      <MapPin className="w-3.5 h-3.5 text-brand-500 shrink-0" />
+                      <span>
+                        {dropPinLocation
+                          ? 'Using Dropped Pin Location on Map'
+                          : 'Using Stop Name, Latitude & Longitude'}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={dropPinLocation ? handleClearDropLocation : handleActivateDropLocation}
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition shrink-0 ${
+                        dropPinLocation
+                          ? 'bg-rose-600 text-white hover:bg-rose-700'
+                          : 'bg-brand-600 text-white hover:bg-brand-500 shadow-sm'
+                      }`}
+                    >
+                      {dropPinLocation ? 'Use Stop Name Auto' : '📍 Drop Pin Button'}
+                    </button>
                   </div>
 
                   <Button type="submit" disabled={submittingStop} icon={Plus} className="w-full">
                     {submittingStop
                       ? 'Adding Stop & Connecting Shortest Path...'
                       : dropPinLocation
-                      ? `Add Stop at Dropped Map Location (${Number(stopForm.latitude).toFixed(3)}, ${Number(stopForm.longitude).toFixed(3)})`
+                      ? `Add Stop at Marked Pin (${Number(stopForm.latitude).toFixed(4)}, ${Number(stopForm.longitude).toFixed(4)})`
                       : `Add Stop to Bus ${selectedBus.code} Route`}
                   </Button>
                 </form>

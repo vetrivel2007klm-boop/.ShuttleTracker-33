@@ -22,6 +22,46 @@ router.get('/', optionalAuthenticate, async (req, res) => {
   }
 });
 
+// GET /api/routes/geocode/lookup?q=... - Resolve latitude & longitude from Stop Name
+router.get('/geocode/lookup', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (!q) {
+      return res.json({ success: false, message: 'Stop name query required' });
+    }
+    const routeId = req.query.route_id ? Number(req.query.route_id) : null;
+    let corridor = null;
+    if (routeId) {
+      const route = await db.getRouteById(routeId);
+      if (route && route.stops && route.stops.length >= 2) {
+        const s0 = route.stops[0];
+        const sEnd = route.stops[route.stops.length - 1];
+        corridor = {
+          startLat: Number(s0.latitude),
+          startLng: Number(s0.longitude),
+          endLat: Number(sEnd.latitude),
+          endLng: Number(sEnd.longitude),
+          fraction: 0.5
+        };
+      }
+    }
+    const coords = await db.geocodeLocation(
+      q,
+      corridor ? corridor.startLat : 12.9602,
+      corridor ? corridor.startLng : 80.0569,
+      corridor
+    );
+    res.json({
+      success: true,
+      latitude: Number(coords.lat.toFixed(5)),
+      longitude: Number(coords.lng.toFixed(5)),
+      isFallback: Boolean(coords.isFallback)
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to resolve coordinates' });
+  }
+});
+
 // GET /api/routes/:id - Single route with stops
 router.get('/:id', async (req, res) => {
   try {
