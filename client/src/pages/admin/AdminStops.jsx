@@ -208,7 +208,7 @@ export const AdminStops = () => {
         </div>
       </div>
 
-      {/* Interactive Route & Stop Map with Draggable Pins */}
+      {/* Interactive Route & Stop Map with Locked Stop Pins */}
       <Card className="p-0 overflow-hidden border border-slate-200 dark:border-slate-800 shadow-premium">
         <div className="p-3.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900">
           <span className="text-xs font-extrabold text-navy-900 dark:text-white flex items-center gap-2">
@@ -218,7 +218,7 @@ export const AdminStops = () => {
             </span>
           </span>
           <span className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
-            ✋ Drag any stop pin on the map to relocate it
+            🔒 Stop locations are locked once set (Delete only via Delete button)
           </span>
         </div>
         <div className="h-[420px] w-full">
@@ -227,8 +227,7 @@ export const AdminStops = () => {
             shuttles={[]}
             dropPinLocation={dropPinLocation}
             onDropPinChange={handleDropPinMoved}
-            editableStops={true}
-            onStopDragEnd={handleStopDragEnd}
+            editableStops={false}
             showAllFitOnLoad={true}
             className="h-full w-full rounded-none border-none"
           />

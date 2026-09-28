@@ -2896,11 +2896,11 @@ const db = {
         }
       }
 
-      // Default road-factor calculation if offline
-      let totalRoadKm = Number(Math.max(0.5, straightSumKm * 1.26).toFixed(2));
-      let estMinutes = Math.max(4, Math.round((totalRoadKm / 26) * 60));
+      // Exact road-factor distance & 30 km/h ETA calculation
+      let totalRoadKm = Number(Math.max(0.5, straightSumKm * 1.24).toFixed(2));
+      let estMinutes = Math.max(2, Math.round((totalRoadKm / 30) * 60));
 
-      // Query OSRM multi-stop road routing via native fetch for exact road distance & duration across all stops in sequence
+      // Query OSRM multi-stop road routing via native fetch for exact road distance across all stops in sequence
       if (validCoords.length >= 2) {
         try {
           const coordString = validCoords.map((c) => `${c.lng.toFixed(5)},${c.lat.toFixed(5)}`).join(';');
@@ -2914,19 +2914,20 @@ const db = {
             const osrmRoute = osrmData?.routes?.[0];
             if (osrmRoute && Number(osrmRoute.distance) > 50) {
               totalRoadKm = Number((Number(osrmRoute.distance) / 1000).toFixed(2));
-              const durationMins = Math.round(Number(osrmRoute.duration) / 60);
-              estMinutes = Math.max(
-                4,
-                durationMins > 2 ? durationMins : Math.round((totalRoadKm / 26) * 60)
-              );
+              estMinutes = Math.max(2, Math.round((totalRoadKm / 30) * 60));
 
-              // If OSRM returned per-leg distances/durations, assign cumulative ETA to each stop
+              // If OSRM returned per-leg road distances, assign exact leg_km, cumulative_km, and 30 km/h ETA to each stop
               if (Array.isArray(osrmRoute.legs) && osrmRoute.legs.length === stops.length - 1) {
-                let cumSec = 0;
+                let cumKm = 0;
+                stops[0].leg_km = 0;
+                stops[0].cumulative_km = 0;
                 stops[0].eta_minutesFromStart = 0;
                 for (let k = 0; k < osrmRoute.legs.length; k++) {
-                  cumSec += Number(osrmRoute.legs[k].duration) || 0;
-                  stops[k + 1].eta_minutesFromStart = Math.max(k + 1, Math.round(cumSec / 60));
+                  const legKm = Number(((Number(osrmRoute.legs[k].distance) || 0) / 1000).toFixed(2));
+                  cumKm = Number((cumKm + legKm).toFixed(2));
+                  stops[k + 1].leg_km = legKm;
+                  stops[k + 1].cumulative_km = cumKm;
+                  stops[k + 1].eta_minutesFromStart = Math.max(k + 1, Math.round((cumKm / 30) * 60));
                 }
               }
             }
@@ -2936,21 +2937,28 @@ const db = {
         }
       }
 
-      // Ensure every stop has a monotonic eta_minutesFromStart
+      // Ensure every stop has exact cumulative_km and monotonic eta_minutesFromStart at 30 km/h
       for (let i = 0; i < stops.length; i++) {
         if (i === 0) {
+          stops[i].leg_km = 0;
+          stops[i].cumulative_km = 0;
           stops[i].eta_minutesFromStart = 0;
         } else if (!stops[i].eta_minutesFromStart || stops[i].eta_minutesFromStart <= stops[i - 1].eta_minutesFromStart) {
           const frac = straightSumKm > 0 ? (legStraightKm[i] || 0) / straightSumKm : i / (stops.length - 1);
+          const cumKm = Number((frac * totalRoadKm).toFixed(2));
+          const prevCumKm = Number(stops[i - 1].cumulative_km || 0);
+          stops[i].cumulative_km = cumKm;
+          stops[i].leg_km = Number(Math.max(0.1, cumKm - prevCumKm).toFixed(2));
           stops[i].eta_minutesFromStart = Math.max(
-            (stops[i - 1].eta_minutesFromStart || 0) + 2,
-            Math.round(frac * estMinutes)
+            (stops[i - 1].eta_minutesFromStart || 0) + 1,
+            Math.round((cumKm / 30) * 60)
           );
         }
       }
 
       route.distance_km = totalRoadKm;
       route.estimated_time_minutes = estMinutes;
+      route.speed_kmh = 30;
 
       if (isPostgresConnected && pool) {
         try {
@@ -3361,15 +3369,26 @@ const db = {
   },
 
   deleteRoute: async (id) => {
-    const index = store.routes.findIndex((r) => r.id === Number(id));
+    const rId = Number(id);
+    const index = store.routes.findIndex((r) => Number(r.id) === rId);
     if (index === -1) return false;
+    const targetRoute = store.routes[index];
     if (isPostgresConnected && pool) {
       try {
-        await pool.query('DELETE FROM routes WHERE id = $1', [Number(id)]);
+        await pool.query('DELETE FROM stops WHERE route_id = $1', [rId]);
+        await pool.query('UPDATE shuttles SET current_route_id = NULL WHERE current_route_id = $1', [rId]);
+        await pool.query('DELETE FROM routes WHERE id = $1', [rId]);
       } catch (_) {}
     }
     store.routes.splice(index, 1);
-    store.stops = store.stops.filter((s) => s.route_id !== Number(id));
+    store.stops = store.stops.filter((s) => Number(s.route_id) !== rId);
+    store.shuttles.forEach((s) => {
+      if (Number(s.current_route_id) === rId || Number(s.id) === Number(targetRoute?.shuttle_id)) {
+        if (Number(s.current_route_id) === rId) {
+          s.current_route_id = null;
+        }
+      }
+    });
     return true;
   },
 

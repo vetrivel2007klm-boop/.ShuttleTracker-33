@@ -405,6 +405,14 @@ export const AdminLiveTracking = () => {
               const isSelected = Number(shuttle.id) === Number(selectedShuttleId);
               const isOnTrip = shuttle.status === 'on_trip';
               const isScheduledNow = Boolean(shuttle.is_scheduled_time_now);
+              const sRoute = routes.find(
+                (r) =>
+                  Number(r.id) === Number(shuttle.current_route_id) ||
+                  Number(r.shuttle_id) === Number(shuttle.id)
+              );
+              const sDist = Number(sRoute?.distance_km || shuttle.distance_km || 4.5).toFixed(2);
+              const sSpeed = Number(shuttle.speed) >= 15 ? Math.round(Number(shuttle.speed)) : 30;
+              const sEta = Math.max(2, Math.round((Number(sDist) / sSpeed) * 60));
 
               return (
                 <div
@@ -455,7 +463,7 @@ export const AdminLiveTracking = () => {
                       <span className="truncate">{shuttle.destination || 'Destination'}</span>
                     </div>
                     <span className="font-extrabold text-emerald-400 shrink-0 text-[11px]">
-                      {isOnTrip ? `${shuttle.eta_minutes || 4} min` : 'Offline'}
+                      {sSpeed} km/h • {sDist} km • {sEta}m
                     </span>
                   </div>
 

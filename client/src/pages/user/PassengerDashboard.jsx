@@ -13,7 +13,8 @@ import {
   CheckCircle2,
   Siren,
   AlertTriangle,
-  ArrowRight
+  ArrowRight,
+  Clock
 } from 'lucide-react';
 
 // Haversine helper to compute distance covered in km from starting point
@@ -181,6 +182,8 @@ export const PassengerDashboard = () => {
   const startingPlace =
     matchedRoute?.start_point || currentShuttle?.start_point || activeStops[0]?.name || 'Starting Point';
 
+  const [mapRouteKm, setMapRouteKm] = useState(null);
+
   // Calculate live distance covered from starting place
   const computedDistanceCovered =
     currentShuttle?.distance_covered_km !== undefined
@@ -194,7 +197,15 @@ export const PassengerDashboard = () => {
         ).toFixed(2)
       : '1.20';
 
-  const vehicleSpeed = Math.round(Number(currentShuttle?.speed ?? 24));
+  const vehicleSpeed =
+    Number(currentShuttle?.speed) >= 15 ? Math.round(Number(currentShuttle.speed)) : 30;
+  const totalRouteKm = Number(
+    mapRouteKm || matchedRoute?.distance_km || currentShuttle?.distance_km || 4.5
+  ).toFixed(2);
+  const exactRouteEtaMins = Math.max(
+    2,
+    Math.round((Number(totalRouteKm) / vehicleSpeed) * 60)
+  );
 
   const emergencyStorageKey = `shuttle_emergency_${user?.id || user?.email || 'guest'}_${passengerBusCode}`;
   let localStoredEmergency = null;
@@ -457,8 +468,8 @@ export const PassengerDashboard = () => {
         </div>
       )}
 
-      {/* Top Row: Bus Speed + Distance Covered from Starting Place + Emergency (with X out of 10 counter) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-stretch">
+      {/* Top Row: Bus Speed + Route Distance & Covered KM + Exact ETA Time Estimate + Emergency (with X out of 10 counter) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 items-stretch">
         {/* 1. Bus Speed Card */}
         <Card className="p-5 flex flex-col justify-between border border-slate-200 dark:border-slate-800 shadow-subtle">
           <div className="flex items-center justify-between">
@@ -479,16 +490,16 @@ export const PassengerDashboard = () => {
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              Bus {currentShuttle?.code || passengerBusCode}
+              Bus {currentShuttle?.code || passengerBusCode} Cruising Speed
             </p>
           </div>
         </Card>
 
-        {/* 2. Distance Covered from Starting Place Card */}
+        {/* 2. Route Distance & Covered KM Card */}
         <Card className="p-5 flex flex-col justify-between border border-slate-200 dark:border-slate-800 shadow-subtle">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Distance Covered from Starting Place
+              Route Distance (KM)
             </span>
             <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
               <Route className="w-5 h-5" />
@@ -497,19 +508,44 @@ export const PassengerDashboard = () => {
           <div className="mt-3">
             <div className="flex items-baseline gap-2">
               <span className="text-4xl font-black text-emerald-600 dark:text-emerald-400">
-                {computedDistanceCovered}
+                {totalRouteKm}
               </span>
               <span className="text-sm font-bold text-slate-500 dark:text-slate-400">
                 km
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              From {startingPlace}
+              Covered: <b>{computedDistanceCovered} km</b> from {startingPlace}
             </p>
           </div>
         </Card>
 
-        {/* 3. Emergency Card with Live Shared Counter (X out of 10) for Same-Bus Passengers */}
+        {/* 3. Exact ETA Time Estimate Card */}
+        <Card className="p-5 flex flex-col justify-between border border-slate-200 dark:border-slate-800 shadow-subtle">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              ETA Time Estimate
+            </span>
+            <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-brand-600 dark:text-blue-400 flex items-center justify-center">
+              <Clock className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="mt-3">
+            <div className="flex items-baseline gap-2">
+              <span className="text-4xl font-black text-brand-600 dark:text-blue-400">
+                {exactRouteEtaMins}
+              </span>
+              <span className="text-sm font-bold text-slate-500 dark:text-slate-400">
+                mins
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              {totalRouteKm} km @ {vehicleSpeed} km/h
+            </p>
+          </div>
+        </Card>
+
+        {/* 4. Emergency Card with Live Shared Counter (X out of 10) for Same-Bus Passengers */}
         <Card className="p-5 flex flex-col justify-between border border-rose-200 dark:border-rose-900/60 shadow-subtle">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400">
@@ -546,7 +582,7 @@ export const PassengerDashboard = () => {
             <h3 className="text-sm font-black text-navy-900 dark:text-white flex items-center gap-2">
               <Route className="w-4 h-4 text-brand-500" />
               <span>
-                Live Connected Route Map — Bus {currentShuttle?.code || passengerBusCode} ({activeStops.length} Stops • {matchedRoute?.distance_km || currentShuttle?.distance_km || '4.5'} km)
+                Live Connected Route Map — Bus {currentShuttle?.code || passengerBusCode} ({activeStops.length} Stops • {totalRouteKm} km • ETA {exactRouteEtaMins} mins)
               </span>
             </h3>
             {activeStops.length > 0 && (
@@ -573,7 +609,7 @@ export const PassengerDashboard = () => {
             )}
           </div>
           <span className="px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-xs font-extrabold border border-emerald-200 dark:border-emerald-800">
-            Shortest Road Path Connected
+            Speed: {vehicleSpeed} km/h • Distance: {totalRouteKm} km • ETA: {exactRouteEtaMins} mins
           </span>
         </div>
 
@@ -582,6 +618,11 @@ export const PassengerDashboard = () => {
             shuttles={currentShuttle ? [currentShuttle] : []}
             stops={activeStops}
             selectedShuttleId={currentShuttle?.id || selectedShuttleId}
+            onRouteCalculated={({ distanceKm }) => {
+              if (distanceKm) {
+                setMapRouteKm(distanceKm);
+              }
+            }}
             showAllFitOnLoad={true}
             className="h-full w-full min-h-[500px]"
           />

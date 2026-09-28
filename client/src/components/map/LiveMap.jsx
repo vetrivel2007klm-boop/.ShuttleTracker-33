@@ -727,7 +727,7 @@ const LiveMapInner = ({
 
       // Pin circle is 28x28 anchored at [14, 14] so the pin center sits on the EXACT GPS coordinate
       const stopIconHtml = `
-        <div class="relative w-7 h-7 flex items-center justify-center ${editableStops ? 'cursor-grab active:cursor-grabbing' : ''}">
+        <div class="relative w-7 h-7 flex items-center justify-center">
           ${roleTag}
           <div class="w-7 h-7 rounded-full border-2 ${pinBg} shadow-lg flex items-center justify-center font-extrabold text-xs">
             ${isEnd ? '🏁' : index + 1}
@@ -751,9 +751,10 @@ const LiveMapInner = ({
         popupAnchor: [0, -14]
       });
 
+      // Already-set stops and route endpoints are LOCKED in place (draggable: false) and can only be removed via Delete button
       const stopMarker = L.marker([Number(stop.latitude), Number(stop.longitude)], {
         icon,
-        draggable: Boolean(editableStops)
+        draggable: false
       })
         .addTo(map)
         .bindPopup(`
@@ -767,26 +768,8 @@ const LiveMapInner = ({
                 : ''
             }
             <span style="color: #64748B; font-size:10px; font-family:monospace; display:block; margin-top:2px;">GPS: ${Number(stop.latitude).toFixed(5)}, ${Number(stop.longitude).toFixed(5)}</span>
-            ${
-              editableStops
-                ? `<span style="color: #D97706; font-size:10px; font-weight:700; display:block; margin-top:4px;">✋ Drag this pin to relocate on map</span>`
-                : ''
-            }
           </div>
         `);
-
-      if (editableStops) {
-        stopMarker.on('dragend', (evt) => {
-          const pos = evt.target.getLatLng();
-          if (pos && onStopDragEndRef.current) {
-            onStopDragEndRef.current(
-              stop,
-              Number(pos.lat.toFixed(5)),
-              Number(pos.lng.toFixed(5))
-            );
-          }
-        });
-      }
 
       stopMarkersRef.current.push(stopMarker);
     });
@@ -832,7 +815,7 @@ const LiveMapInner = ({
       fallbackLegDistances.push(Math.max(0.2, Number((legDirect * 1.24).toFixed(2))));
     }
     const fallbackRoadKm = Math.max(0.8, Number((fallbackSumKm * 1.24).toFixed(2)));
-    const fallbackMins = Math.max(2, Math.round((fallbackRoadKm / 26) * 60));
+    const fallbackMins = Math.max(2, Math.round((fallbackRoadKm / 30) * 60));
 
     if (roadPathCache.has(stopsSignature)) {
       const cached = roadPathCache.get(stopsSignature);
@@ -895,7 +878,7 @@ const LiveMapInner = ({
                       Number(legDirectKm.toFixed(2)),
                       Number((rObj.distance / 1000).toFixed(2))
                     );
-                    const legDurationSec = Number(rObj.duration || 0);
+                    const legDurationSec = Math.round((legKm / 30) * 3600);
                     const result = { legLatLngs, legKm, legDurationSec };
                     roadPathCache.set(legKey, result);
                     return result;
@@ -903,13 +886,14 @@ const LiveMapInner = ({
                   throw new Error('OSRM leg fallback');
                 })
                 .catch(() => {
+                  const fallbackKm = Math.max(0.2, Number((legDirectKm * 1.24).toFixed(2)));
                   const fallbackLeg = {
                     legLatLngs: [
                       [fromLat, fromLng],
                       [toLat, toLng]
                     ],
-                    legKm: Math.max(0.2, Number((legDirectKm * 1.24).toFixed(2))),
-                    legDurationSec: Math.round(((legDirectKm * 1.24) / 26) * 3600)
+                    legKm: fallbackKm,
+                    legDurationSec: Math.round((fallbackKm / 30) * 3600)
                   };
                   return fallbackLeg;
                 })
@@ -923,14 +907,12 @@ const LiveMapInner = ({
         const combinedLatLngs = [];
         const legDistancesKm = [];
         let totalExactKm = 0;
-        let totalDurationSec = 0;
 
         resolvedLegs.forEach((legRes, idx) => {
           const pts = legRes.legLatLngs || [];
           const km = Number((legRes.legKm || 0).toFixed(2));
           legDistancesKm.push(km);
           totalExactKm += km;
-          totalDurationSec += Number(legRes.legDurationSec || 0);
           if (idx === 0) {
             combinedLatLngs.push(...pts);
           } else {
@@ -943,10 +925,8 @@ const LiveMapInner = ({
             Number(fallbackSumKm.toFixed(2)),
             Number(totalExactKm.toFixed(2))
           );
-          const exactMins = Math.max(
-            3,
-            Math.round(totalDurationSec > 60 ? totalDurationSec / 60 : (exactKm / 26) * 60)
-          );
+          // Exact ETA based on 30 km/h shuttle cruising speed: ETA (mins) = round((distance_km / 30) * 60)
+          const exactMins = Math.max(2, Math.round((exactKm / 30) * 60));
           roadPathCache.set(stopsSignature, {
             latlngs: combinedLatLngs,
             distanceKm: exactKm,
@@ -965,7 +945,7 @@ const LiveMapInner = ({
     return () => {
       isCancelled = true;
     };
-  }, [stopsSignature, editableStops]);
+  }, [stopsSignature]);
 
   // Update Shuttle Markers immediately on every GPS / socket tick with zero delay
   useEffect(() => {
@@ -990,9 +970,18 @@ const LiveMapInner = ({
       const isArrived =
         String(shuttle.next_stop_name || '').includes('Arrived') ||
         String(shuttle.next_stop_name || '').includes('Destination Reached');
-      const speedVal = isArrived ? 0 : Math.max(18, Math.round(Number(shuttle.speed) || 24));
-      const etaVal = isArrived ? 0 : Math.max(1, Math.round(Number(shuttle.eta_minutes) || 3));
-      const distVal = isArrived ? '0.0' : Number(shuttle.distance_km || 1.2).toFixed(1);
+      const speedVal = isArrived
+        ? 0
+        : Number(shuttle.speed) >= 15
+        ? Math.round(Number(shuttle.speed))
+        : 30;
+      const exactTotalKm = Number(
+        roadRouteMeta.distanceKm || shuttle.distance_km || 4.5
+      );
+      const distVal = isArrived ? '0.00' : exactTotalKm.toFixed(2);
+      const etaVal = isArrived
+        ? 0
+        : Math.max(2, Math.round((exactTotalKm / (speedVal || 30)) * 60));
 
       const statusColor =
         shuttle.status === 'delayed'
@@ -1003,17 +992,17 @@ const LiveMapInner = ({
           ? '#10B981'
           : '#2563EB';
 
-      const badgeText = isArrived ? `🏁 Arrived` : `${speedVal} km/h • ${etaVal}m`;
+      const badgeText = isArrived ? `🏁 Arrived` : `${speedVal} km/h • ${distVal} km • ${etaVal}m`;
 
       const popupContent = `
-        <div style="font-family: inherit; font-size: 12px; line-height: 1.5; color: #0F172A; min-width: 210px;">
+        <div style="font-family: inherit; font-size: 12px; line-height: 1.5; color: #0F172A; min-width: 220px;">
           <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
             <strong style="font-size:14px; color:#1E3A8A;">🚍 ${shuttle.code} — ${shuttle.name || shuttle.vehicle_number || 'Shuttle'}</strong>
           </div>
           <div style="font-size:11px; color:#475569;">
             <div><strong>Route:</strong> ${shuttle.start_point || 'Start'} ➔ ${shuttle.destination || 'Destination'}</div>
             <div><strong>Driver:</strong> ${shuttle.driver_name || 'Assigned Operator'}</div>
-            <div><strong>Next Stop:</strong> <span style="color:#2563EB; font-weight:700;">${shuttle.next_stop_name || 'En Route'}</span></div>
+            <div><strong>Next Stop:</strong> <span style="color:#2563EB; font-weight:700;">${shuttle.next_stop_name || activeStops[1]?.name || 'En Route'}</span></div>
             <div style="margin-top:4px; padding-top:4px; border-top:1px solid #E2E8F0; display:flex; justify-content:space-between; font-weight:700; color:#0F172A;">
               <span>⚡ ${speedVal} km/h</span>
               <span style="color:#059669;">${isArrived ? '🏁 At Destination' : `⏱ ETA: ${etaVal} min (${distVal} km)`}</span>
@@ -1099,7 +1088,7 @@ const LiveMapInner = ({
       hasInitialFittedRef.current = true;
       setTimeout(() => handleFitAllFleet(), 250);
     }
-  }, [shuttles, selectedShuttleId, followSelectedBus, showAllFitOnLoad]);
+  }, [shuttles, selectedShuttleId, followSelectedBus, showAllFitOnLoad, roadRouteMeta.distanceKm]);
 
   // Fly to bus ONLY when user explicitly triggers focusTrigger > 0 (or when no route stops exist)
   // This ensures initial load in Passenger & Admin views fits the full connected route path!
@@ -1132,26 +1121,24 @@ const LiveMapInner = ({
   const hudSpeed = hudShuttle
     ? isHudArrived
       ? 0
-      : Math.max(18, Math.round(Number(hudShuttle.speed) || 24))
-    : 0;
+      : Number(hudShuttle.speed) >= 15
+      ? Math.round(Number(hudShuttle.speed))
+      : 30
+    : 30;
+  const hudTotalRoadKm = Number(
+    roadRouteMeta.distanceKm || hudShuttle?.distance_km || hudShuttle?.total_route_km || 4.5
+  ).toFixed(2);
+  const hudTotalMins = Math.max(2, Math.round((Number(hudTotalRoadKm) / (hudSpeed || 30)) * 60));
+  const hudNextDist = hudShuttle
+    ? isHudArrived
+      ? '0.00'
+      : Number(roadRouteMeta.legDistancesKm?.[0] || hudTotalRoadKm).toFixed(2)
+    : '0.00';
   const hudEta = hudShuttle
     ? isHudArrived
       ? 0
-      : Math.max(1, Math.round(Number(hudShuttle.eta_minutes) || 3))
+      : Math.max(1, Math.round((Number(hudNextDist) / (hudSpeed || 30)) * 60))
     : 0;
-  const hudNextDist = hudShuttle
-    ? isHudArrived
-      ? '0.0'
-      : Number(hudShuttle.distance_km || 1.2).toFixed(1)
-    : '0.0';
-  const hudTotalRoadKm =
-    roadRouteMeta.distanceKm ||
-    (hudShuttle?.total_route_km ? Number(hudShuttle.total_route_km).toFixed(1) : '4.2');
-  const hudTotalMins =
-    roadRouteMeta.durationMins ||
-    (hudShuttle?.destination_eta_minutes
-      ? Math.max(hudEta, Number(hudShuttle.destination_eta_minutes))
-      : Math.max(hudEta + 4, Math.round((Number(hudTotalRoadKm) / 25) * 60)));
 
   const tripProgressPct = useMemo(() => {
     if (isHudArrived) return 100;

@@ -99,10 +99,14 @@ export const AdminRoutes = () => {
     : null;
 
   const exactDistanceKm = Number(
-    mapMetrics.distanceKm || selectedRoute?.distance_km || 0
+    mapMetrics.distanceKm || selectedRoute?.distance_km || selectedBus?.distance_km || 0
   ).toFixed(2);
+  const exactSpeedKmh =
+    Number(selectedBus?.speed) >= 15 ? Math.round(Number(selectedBus.speed)) : 30;
   const exactDurationMins =
-    mapMetrics.durationMins || selectedRoute?.estimated_time_minutes || 0;
+    Number(exactDistanceKm) > 0
+      ? Math.max(2, Math.round((Number(exactDistanceKm) / exactSpeedKmh) * 60))
+      : mapMetrics.durationMins || selectedRoute?.estimated_time_minutes || 0;
 
   const handleSelectBus = (busId) => {
     setSelectedBusId(Number(busId));
@@ -380,6 +384,24 @@ export const AdminRoutes = () => {
     }
   };
 
+  const handleDeleteRoute = async (routeId, routeName) => {
+    const targetRouteId = routeId || selectedRoute?.id;
+    if (!targetRouteId) return;
+    try {
+      await api.delete(`/routes/${targetRouteId}`);
+      setMapMetrics({ distanceKm: null, durationMins: null, legDistancesKm: [] });
+      setDropPinLocation(null);
+      addToast({
+        title: 'Route Deleted',
+        message: `"${routeName || selectedRoute?.name || 'Route'}" deleted for Bus ${selectedBus?.code}. You can now set a new route.`,
+        type: 'info'
+      });
+      await fetchData(selectedBus?.id);
+    } catch (err) {
+      addToast({ title: 'Error', message: 'Failed to delete route', type: 'danger' });
+    }
+  };
+
   // Helper to compute exact road leg distance between consecutive stops (prefers OSRM leg distance from map)
   const calcStopLegKm = (s1, s2, legIdx = null) => {
     if (
@@ -388,6 +410,9 @@ export const AdminRoutes = () => {
       mapMetrics.legDistancesKm[legIdx] !== undefined
     ) {
       return Number(mapMetrics.legDistancesKm[legIdx]).toFixed(2);
+    }
+    if (s2?.leg_km !== undefined && Number(s2.leg_km) > 0) {
+      return Number(s2.leg_km).toFixed(2);
     }
     if (!s1 || !s2 || !s1.latitude || !s1.longitude || !s2.latitude || !s2.longitude) return '0.00';
     const R = 6371;
@@ -412,33 +437,26 @@ export const AdminRoutes = () => {
             Bus Route & Stop Landmark Configuration
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Select an Assigned Bus Route below to view its exact shortest multi-stop road path, drag stop pins or use "Drop Location on Map", and calculate exact road distance.
+            Once a route or stop location is set on the map, it is locked in place and can only be removed using the Delete button.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={dropPinLocation ? handleClearDropLocation : handleActivateDropLocation}
-            className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 border transition shadow-sm ${
-              dropPinLocation
-                ? 'bg-amber-500 text-slate-950 border-amber-400 ring-2 ring-amber-400/40'
-                : 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-800 hover:bg-amber-500 hover:text-slate-950'
-            }`}
-          >
-            <Crosshair className="w-4 h-4" />
-            <span>
-              {dropPinLocation
-                ? `📍 Pin Active (${Number(dropPinLocation.lat).toFixed(4)}, ${Number(dropPinLocation.lng).toFixed(4)})`
-                : '📍 Drop Location on Map (Drag to Locate)'}
-            </span>
-          </button>
-
-          <Button onClick={openConfigureRouteModal} icon={selectedRoute ? Edit2 : Plus} size="sm" className="shrink-0">
-            {selectedRoute
-              ? `Update Route for Bus ${selectedBus?.code || ''}`
-              : `Add Route for Bus ${selectedBus?.code || ''}`}
-          </Button>
+          {selectedRoute ? (
+            <Button
+              variant="danger"
+              size="sm"
+              icon={Trash2}
+              onClick={() => handleDeleteRoute(selectedRoute.id, selectedRoute.name)}
+              className="shrink-0"
+            >
+              Delete Route for Bus {selectedBus?.code || ''}
+            </Button>
+          ) : (
+            <Button onClick={openConfigureRouteModal} icon={Plus} size="sm" className="shrink-0">
+              Set Route for Bus {selectedBus?.code || ''}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -451,7 +469,7 @@ export const AdminRoutes = () => {
               <span>Assigned Bus Routes ({shuttles.length} Active Buses)</span>
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Click any assigned bus card below to inspect or edit its route, intermediate stops, and live map distance.
+              Click any assigned bus card below to inspect its locked route, intermediate stops, exact road distance, speed, and ETA.
             </p>
           </div>
           {selectedBus && (
@@ -469,14 +487,13 @@ export const AdminRoutes = () => {
                 (r) => Number(r.shuttle_id) === Number(s.id) || Number(r.id) === Number(s.current_route_id)
               ) || null;
             const rStops = busRoute?.stops || s.stops || [];
-            const rDist =
-              isSelected && exactDistanceKm
+            const rDist = Number(
+              isSelected && Number(exactDistanceKm) > 0
                 ? exactDistanceKm
-                : busRoute?.distance_km || s.distance_km || 4.2;
-            const rTime =
-              isSelected && exactDurationMins
-                ? exactDurationMins
-                : busRoute?.estimated_time_minutes || s.eta_minutes || 15;
+                : busRoute?.distance_km || s.distance_km || 4.2
+            ).toFixed(2);
+            const rSpeed = Number(s.speed) >= 15 ? Math.round(Number(s.speed)) : 30;
+            const rTime = Math.max(2, Math.round((Number(rDist) / rSpeed) * 60));
 
             return (
               <div
@@ -502,16 +519,33 @@ export const AdminRoutes = () => {
                       </span>
                       <div className="min-w-0">
                         <h4 className="text-xs font-extrabold text-navy-900 dark:text-white truncate">
-                          {busRoute?.name || `${s.start_point || 'Start'} - ${s.destination || 'Destination'}`}
+                          {busRoute
+                            ? busRoute.name
+                            : `No Route Set (${s.start_point || 'Start'} - ${s.destination || 'Destination'})`}
                         </h4>
                         <span className="text-[11px] text-slate-500 dark:text-slate-400 block truncate">
                           Driver: <b className="text-slate-700 dark:text-slate-200">{s.driver_name || 'Assigned Driver'}</b>
                         </span>
                       </div>
                     </div>
-                    <span className="px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 font-extrabold text-[11px] shrink-0">
-                      {rDist} km
-                    </span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 font-extrabold text-[11px]">
+                        {rDist} km
+                      </span>
+                      {busRoute && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteRoute(busRoute.id, busRoute.name);
+                          }}
+                          className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition"
+                          title="Delete Route"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {/* Start -> Destination Bar */}
@@ -543,9 +577,9 @@ export const AdminRoutes = () => {
                 </div>
 
                 <div className="pt-2 border-t border-slate-200/70 dark:border-slate-700/70 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-bold">
-                  <span>{rStops.length} Stops Configured</span>
+                  <span>{rStops.length} Stops • {rSpeed} km/h</span>
                   <span className="text-brand-600 dark:text-blue-400">
-                    Est. Time: ~{rTime} min
+                    ETA: {rTime} mins
                   </span>
                 </div>
               </div>
@@ -554,7 +588,7 @@ export const AdminRoutes = () => {
         </div>
       </Card>
 
-      {/* SECTION 2: 12-Column Configuration & Isolated Interactive Route Map */}
+      {/* SECTION 2: 12-Column Configuration & Isolated Interactive Route Map (Equal Height, Zero Blank Space) */}
       {!selectedBus ? (
         <EmptyState
           icon="route"
@@ -563,9 +597,9 @@ export const AdminRoutes = () => {
         />
       ) : (
         <>
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
             {/* Left Column (5 cols): Selected Assigned Bus Route Details + Add Stop Form */}
-            <div className="lg:col-span-5 space-y-6">
+            <div className="lg:col-span-5 flex flex-col justify-between gap-6">
               {/* Selected Bus Route Overview Card */}
               <Card className="p-5 space-y-4 border border-slate-200 dark:border-slate-800 shadow-premium">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
@@ -578,18 +612,32 @@ export const AdminRoutes = () => {
                         {selectedRoute?.code || `RT-${selectedBus.code}`} • {selectedBus.vehicle_number} • Driver: {selectedBus.driver_name || 'Assigned'}
                       </span>
                       <h3 className="text-base font-black text-navy-900 dark:text-white">
-                        {selectedRoute?.name || `${selectedBus.start_point} - ${selectedBus.destination} Express`}
+                        {selectedRoute
+                          ? selectedRoute.name
+                          : `Route Deleted — Set New Route for Bus ${selectedBus.code}`}
                       </h3>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={openConfigureRouteModal}
-                    className="px-3 py-1.5 rounded-xl bg-brand-50 dark:bg-brand-950/60 text-brand-600 dark:text-blue-400 border border-brand-200 dark:border-brand-800 text-xs font-bold hover:bg-brand-600 hover:text-white transition flex items-center gap-1"
-                  >
-                    <Edit2 className="w-3.5 h-3.5" />
-                    <span>Edit Route</span>
-                  </button>
+                  {selectedRoute ? (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteRoute(selectedRoute.id, selectedRoute.name)}
+                      className="px-3 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 text-xs font-bold hover:bg-rose-600 hover:text-white transition flex items-center gap-1"
+                      title="Route is locked once set. Delete route to set a new route."
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Route</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={openConfigureRouteModal}
+                      className="px-3 py-1.5 rounded-xl bg-brand-600 text-white text-xs font-bold hover:bg-brand-500 transition flex items-center gap-1 shadow-sm"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Set Route</span>
+                    </button>
+                  )}
                 </div>
 
                 {/* Start -> Destination Banner */}
@@ -613,7 +661,7 @@ export const AdminRoutes = () => {
                 {selectedRoute?.stops?.length > 0 && (
                   <div className="p-3.5 rounded-xl bg-blue-50/70 dark:bg-slate-800/80 border border-blue-200/70 dark:border-slate-700">
                     <span className="text-[10px] font-extrabold uppercase tracking-wider text-brand-600 dark:text-blue-400 block mb-2">
-                      Assigned Shortest Connected Path ({selectedRoute.stops.length} Stops):
+                      Assigned Locked Shortest Path ({selectedRoute.stops.length} Stops):
                     </span>
                     <div className="flex flex-wrap items-center gap-1.5 text-xs font-bold text-navy-900 dark:text-white">
                       {selectedRoute.stops.map((st, idx) => (
@@ -638,17 +686,17 @@ export const AdminRoutes = () => {
                   </div>
                 )}
 
-                {/* Route Metadata Grid (Synced with Exact Map Road Distance & Time) */}
+                {/* Route Metadata Grid (Exact Speed, Distance & ETA Time Estimate) */}
                 <div className="grid grid-cols-3 gap-3 text-center">
                   <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-800">
-                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Total Stops</span>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Bus Speed</span>
                     <span className="text-sm font-black text-navy-900 dark:text-white">
-                      {selectedRoute?.stops?.length || 0} Stops
+                      {exactSpeedKmh} km/h
                     </span>
                   </div>
                   <div className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-800/60">
                     <span className="text-[10px] font-bold uppercase text-emerald-700 dark:text-emerald-400 block">
-                      Exact Map Distance
+                      Exact Distance
                     </span>
                     <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">
                       {exactDistanceKm} km
@@ -656,10 +704,10 @@ export const AdminRoutes = () => {
                   </div>
                   <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/70 dark:border-blue-800/60">
                     <span className="text-[10px] font-bold uppercase text-brand-600 dark:text-blue-400 block">
-                      Est. Road Time
+                      ETA Estimate
                     </span>
                     <span className="text-sm font-black text-brand-600 dark:text-blue-400">
-                      ~{exactDurationMins} min
+                      {exactDurationMins} mins
                     </span>
                   </div>
                 </div>
@@ -674,8 +722,8 @@ export const AdminRoutes = () => {
                 )}
               </Card>
 
-              {/* Add Stop Form: Supports BOTH Drop Pin on Map AND Direct Stop Name + Latitude/Longitude */}
-              <Card className="p-5 space-y-4 border border-slate-200 dark:border-slate-800 shadow-premium relative z-10">
+              {/* Add Stop Form: ONLY ONE Drop Pin Button right next to "Add Intermediate Stop for Bus {code}" */}
+              <Card className="p-5 space-y-4 border border-slate-200 dark:border-slate-800 shadow-premium relative z-10 flex-1 flex flex-col justify-between">
                 <div className="pb-3 border-b border-slate-100 dark:border-slate-800">
                   <div className="flex items-center justify-between gap-2">
                     <h3 className="text-sm font-extrabold text-navy-900 dark:text-white flex items-center gap-2">
@@ -685,7 +733,7 @@ export const AdminRoutes = () => {
                     <button
                       type="button"
                       onClick={dropPinLocation ? handleClearDropLocation : handleActivateDropLocation}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold flex items-center gap-1 border transition ${
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold flex items-center gap-1 border transition shrink-0 ${
                         dropPinLocation
                           ? 'bg-brand-600 text-white border-brand-500 shadow-sm'
                           : 'bg-brand-50 dark:bg-slate-800 text-brand-600 dark:text-blue-400 border-brand-200 dark:border-slate-700 hover:bg-brand-600 hover:text-white'
@@ -769,29 +817,6 @@ export const AdminRoutes = () => {
                     />
                   </div>
 
-                  {/* Drop Pin Toggle Bar */}
-                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
-                      <MapPin className="w-3.5 h-3.5 text-brand-500 shrink-0" />
-                      <span>
-                        {dropPinLocation
-                          ? 'Using Dropped Pin Location on Map'
-                          : 'Using Stop Name, Latitude & Longitude'}
-                      </span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={dropPinLocation ? handleClearDropLocation : handleActivateDropLocation}
-                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition shrink-0 ${
-                        dropPinLocation
-                          ? 'bg-rose-600 text-white hover:bg-rose-700'
-                          : 'bg-brand-600 text-white hover:bg-brand-500 shadow-sm'
-                      }`}
-                    >
-                      {dropPinLocation ? 'Use Stop Name Auto' : '📍 Drop Pin Button'}
-                    </button>
-                  </div>
-
                   <Button type="submit" disabled={submittingStop} icon={Plus} className="w-full">
                     {submittingStop
                       ? 'Adding Stop & Connecting Shortest Path...'
@@ -803,13 +828,13 @@ export const AdminRoutes = () => {
               </Card>
             </div>
 
-            {/* Right Column (7 cols): Dedicated Isolated Interactive Google Map Card */}
-            <div className="lg:col-span-7 relative z-0">
+            {/* Right Column (7 cols): Dedicated Isolated Interactive Google Map Card (Stretches to match Left Column height with zero blank space) */}
+            <div className="lg:col-span-7 relative z-0 flex flex-col">
               <Card
-                className="p-0 overflow-hidden shadow-premium border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 isolate"
+                className="flex-1 h-full flex flex-col justify-between p-0 overflow-hidden shadow-premium border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 isolate"
                 style={{ isolation: 'isolate' }}
               >
-                <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900 relative z-10">
+                <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900 relative z-10 shrink-0">
                   <div>
                     <h3 className="text-sm font-extrabold text-navy-900 dark:text-white flex items-center gap-2">
                       <Navigation2 className="w-4 h-4 text-brand-500" />
@@ -818,30 +843,21 @@ export const AdminRoutes = () => {
                       </span>
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                      Shortest connected road path from <b>{selectedRoute?.start_point || selectedBus.start_point}</b> through all stops to <b>{selectedRoute?.end_point || selectedBus.destination}</b>. <b>Tip:</b> You can drag any stop pin on the map to relocate it!
+                      Shortest connected road path from <b>{selectedRoute?.start_point || selectedBus.start_point}</b> through all stops to <b>{selectedRoute?.end_point || selectedBus.destination}</b>. Already-set stops are locked in place and can only be deleted via the Delete button.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={dropPinLocation ? handleClearDropLocation : handleActivateDropLocation}
-                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-extrabold border transition ${
-                        dropPinLocation
-                          ? 'bg-amber-500 text-slate-950 border-amber-400'
-                          : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800 hover:bg-amber-500 hover:text-slate-950'
-                      }`}
-                    >
-                      <Crosshair className="w-3.5 h-3.5" />
-                      <span>{dropPinLocation ? 'Dragging Pin Active (Click to Clear)' : '📍 Drop Location on Map'}</span>
-                    </button>
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 text-[11px] font-bold border border-emerald-200 dark:border-emerald-800">
                       <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>Shortest Road Distance: {exactDistanceKm} km (~{exactDurationMins} min)</span>
+                      <span>
+                        Speed: {exactSpeedKmh} km/h • Distance: {exactDistanceKm} km • ETA: {exactDurationMins} mins
+                      </span>
                     </span>
                   </div>
                 </div>
 
-                <div className="h-[520px] w-full overflow-hidden relative z-0 isolate">
+                {/* Map Canvas stretches vertically (`flex-1 min-h-[520px]`) so there is zero blank space below */}
+                <div className="flex-1 min-h-[520px] w-full overflow-hidden relative z-0 isolate">
                   <LiveMap
                     stops={selectedRoute?.stops || []}
                     shuttles={selectedBus.status === 'on_trip' ? [selectedBus] : []}
@@ -849,11 +865,77 @@ export const AdminRoutes = () => {
                     onRouteCalculated={handleRouteCalculatedFromMap}
                     dropPinLocation={dropPinLocation}
                     onDropPinChange={handleDropPinMoved}
-                    editableStops={true}
-                    onStopDragEnd={handleStopDragEnd}
+                    editableStops={false}
                     showAllFitOnLoad={true}
                     className="h-full w-full rounded-none border-none"
                   />
+                </div>
+
+                {/* Bottom Route Telemetry & Stop-by-Stop ETA Footer (Covers bottom area cleanly with zero blank space) */}
+                <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-900/95 space-y-3 shrink-0">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div className="px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Bus Speed</span>
+                      <span className="text-xs font-black text-navy-900 dark:text-white">
+                        {exactSpeedKmh} km/h
+                      </span>
+                    </div>
+                    <div className="px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                      <span className="text-[10px] font-bold uppercase text-emerald-600 dark:text-emerald-400 block">
+                        Total Distance
+                      </span>
+                      <span className="text-xs font-black text-emerald-600 dark:text-emerald-400">
+                        {exactDistanceKm} km
+                      </span>
+                    </div>
+                    <div className="px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                      <span className="text-[10px] font-bold uppercase text-brand-600 dark:text-blue-400 block">
+                        Total ETA Estimate
+                      </span>
+                      <span className="text-xs font-black text-brand-600 dark:text-blue-400">
+                        {exactDurationMins} mins
+                      </span>
+                    </div>
+                    <div className="px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                      <span className="text-[10px] font-bold uppercase text-amber-600 dark:text-amber-400 block">
+                        Pin Lock Status
+                      </span>
+                      <span className="text-xs font-black text-amber-600 dark:text-amber-400">
+                        🔒 Locked (Delete Only)
+                      </span>
+                    </div>
+                  </div>
+
+                  {selectedRoute?.stops?.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      {(() => {
+                        let cumKm = 0;
+                        return selectedRoute.stops.map((st, idx) => {
+                          const prev = idx > 0 ? selectedRoute.stops[idx - 1] : null;
+                          const leg = prev ? Number(calcStopLegKm(prev, st, idx - 1)) : 0;
+                          cumKm = Number((cumKm + leg).toFixed(2));
+                          const stopEta =
+                            idx === 0
+                              ? 0
+                              : Math.max(idx, Math.round((cumKm / exactSpeedKmh) * 60));
+                          return (
+                            <React.Fragment key={st.id || idx}>
+                              <span className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[10px] font-bold text-navy-900 dark:text-white inline-flex items-center gap-1.5">
+                                <b className="text-brand-600 dark:text-blue-400">#{idx + 1}</b>
+                                <span>{st.name}</span>
+                                <span className="text-emerald-600 dark:text-emerald-400 font-mono">
+                                  ({cumKm.toFixed(2)} km • {stopEta}m)
+                                </span>
+                              </span>
+                              {idx < selectedRoute.stops.length - 1 && (
+                                <span className="text-[10px] text-slate-400 font-black">➔</span>
+                              )}
+                            </React.Fragment>
+                          );
+                        });
+                      })()}
+                    </div>
+                  )}
                 </div>
               </Card>
             </div>
@@ -870,22 +952,25 @@ export const AdminRoutes = () => {
                   </span>
                 </h4>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  Start: <b className="text-emerald-600 dark:text-emerald-400">{selectedRoute?.start_point || selectedBus.start_point}</b> ➔ Final Destination: <b className="text-rose-600 dark:text-rose-400">{selectedRoute?.end_point || selectedBus.destination}</b> • Exact Total Road Distance Calculated from Map: <b className="text-brand-600 dark:text-blue-400">{exactDistanceKm} km</b> (~{exactDurationMins} min)
+                  Start: <b className="text-emerald-600 dark:text-emerald-400">{selectedRoute?.start_point || selectedBus.start_point}</b> ➔ Final Destination: <b className="text-rose-600 dark:text-rose-400">{selectedRoute?.end_point || selectedBus.destination}</b> • Speed: <b className="text-navy-900 dark:text-white">{exactSpeedKmh} km/h</b> • Distance: <b className="text-emerald-600 dark:text-emerald-400">{exactDistanceKm} km</b> • Total ETA: <b className="text-brand-600 dark:text-blue-400">{exactDurationMins} mins</b>
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <span className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-navy-900 dark:text-white text-xs font-extrabold border border-slate-200 dark:border-slate-700">
+                  Speed: {exactSpeedKmh} km/h
+                </span>
                 <span className="px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-xs font-extrabold border border-emerald-200 dark:border-emerald-800">
-                  Total Map Distance: {exactDistanceKm} km
+                  Distance: {exactDistanceKm} km
                 </span>
                 <span className="px-3 py-1.5 rounded-xl bg-brand-50 dark:bg-slate-800 text-brand-600 dark:text-blue-400 text-xs font-extrabold border border-brand-200 dark:border-slate-700">
-                  {selectedRoute?.stops?.length || 0} Ordered Stops
+                  ETA: {exactDurationMins} mins ({selectedRoute?.stops?.length || 0} Stops)
                 </span>
               </div>
             </div>
 
             {!selectedRoute?.stops || selectedRoute.stops.length === 0 ? (
               <div className="py-8 text-center text-xs text-slate-400">
-                No stops configured yet for Bus {selectedBus.code}. Use the form above to add stops.
+                No stops configured yet for Bus {selectedBus.code}. Set a route or use the form above to add stops.
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -897,6 +982,10 @@ export const AdminRoutes = () => {
                     const prevStop = index > 0 ? selectedRoute.stops[index - 1] : null;
                     const legKm = prevStop ? Number(calcStopLegKm(prevStop, stop, index - 1)) : 0;
                     cumulativeKm = Number((cumulativeKm + legKm).toFixed(2));
+                    const stopEtaMins =
+                      index === 0
+                        ? 0
+                        : Math.max(index, Math.round((cumulativeKm / exactSpeedKmh) * 60));
                     const hasLandmark =
                       stop.landmark &&
                       stop.landmark !== 'Starting Point' &&
@@ -949,11 +1038,11 @@ export const AdminRoutes = () => {
                               </span>
                               {index > 0 ? (
                                 <span className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-sans font-bold text-brand-600 dark:text-blue-400">
-                                  +{legKm.toFixed(2)} km (Total: {cumulativeKm.toFixed(2)} km)
+                                  +{legKm.toFixed(2)} km • Total: {cumulativeKm.toFixed(2)} km • ETA: {stopEtaMins} mins
                                 </span>
                               ) : (
                                 <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 font-sans font-bold text-emerald-700 dark:text-emerald-300">
-                                  0.00 km (Origin)
+                                  0.00 km (Origin • 0 mins)
                                 </span>
                               )}
                             </div>
@@ -964,7 +1053,7 @@ export const AdminRoutes = () => {
                           type="button"
                           onClick={() => handleDeleteStop(stop.id, stop.name)}
                           className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition shrink-0"
-                          title="Remove Stop"
+                          title="Delete Stop"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>

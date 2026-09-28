@@ -166,7 +166,12 @@ router.delete('/:id', authenticate, authorize('admin'), async (req, res) => {
     if (!deleted) {
       return res.status(404).json({ success: false, message: 'Route not found.' });
     }
-    res.json({ success: true, message: 'Route deleted successfully.' });
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('route:updated', { deletedId: Number(req.params.id) });
+      io.emit('shuttle:updated', { routeDeletedId: Number(req.params.id) });
+    }
+    res.json({ success: true, message: 'Route deleted successfully. You can now set a new route.' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to delete route.' });
   }
