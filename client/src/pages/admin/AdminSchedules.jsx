@@ -48,41 +48,93 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return Number((R * c).toFixed(2));
 }
 
-// Helper to add GPS-calculated minutes to a departure time string like "08:30 AM" or "14:15"
-function calculateExactArrivalTime(departureStr, durationMinutes = 0) {
-  if (!departureStr) return '—';
-  try {
-    const clean = departureStr.trim().toUpperCase();
-    const match12 = clean.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
-    let hours = 0;
-    let mins = 0;
+// Parse any time string ("08:30 AM", "8.30 pm", "23:13:00", "11:15 P", "11 PM", "11:5 AM", etc.) into minutes since midnight
+function parseAnyTimeToMinutes(timeStr) {
+  if (!timeStr) return null;
+  const clean = String(timeStr)
+    .trim()
+    .toUpperCase()
+    .replace(/[.;,]/g, ':')
+    .replace(/\s+/g, ' ');
+  if (!clean) return null;
 
-    if (match12) {
-      hours = parseInt(match12[1], 10);
-      mins = parseInt(match12[2], 10);
-      const period = match12[3];
+  // 1. Match HH:MM(:SS) with AM/PM/A/P (also allows trailing colon while typing e.g. "11:15 PM")
+  const match12 = clean.match(/^(\d{1,2})\s*:\s*(\d{0,2})(?::\d{0,2})?\s*(AM|PM|A|P)$/);
+  if (match12) {
+    let hours = parseInt(match12[1], 10);
+    const mins = match12[2] ? Math.min(59, Math.max(0, parseInt(match12[2], 10))) : 0;
+    const period = match12[3].startsWith('P') ? 'PM' : 'AM';
+    if (period === 'PM' && hours < 12) hours += 12;
+    if (period === 'AM' && hours === 12) hours = 0;
+    return ((hours % 24) * 60) + mins;
+  }
+
+  // 2. Match Hour-only with AM/PM/A/P (e.g. "11 PM", "8 AM", "11P")
+  const matchHour12 = clean.match(/^(\d{1,2})\s*(AM|PM|A|P)$/);
+  if (matchHour12) {
+    let hours = parseInt(matchHour12[1], 10);
+    const period = matchHour12[2].startsWith('P') ? 'PM' : 'AM';
+    if (period === 'PM' && hours < 12) hours += 12;
+    if (period === 'AM' && hours === 12) hours = 0;
+    return (hours % 24) * 60;
+  }
+
+  // 3. Match 3 or 4 digits with optional AM/PM (e.g. "830 AM", "1115 PM", "1115")
+  const matchCompact = clean.match(/^(\d{1,2})(\d{2})\s*(AM|PM|A|P)?$/);
+  if (matchCompact) {
+    let hours = parseInt(matchCompact[1], 10);
+    const mins = Math.min(59, Math.max(0, parseInt(matchCompact[2], 10)));
+    const pRaw = matchCompact[3] || '';
+    if (pRaw) {
+      const period = pRaw.startsWith('P') ? 'PM' : 'AM';
       if (period === 'PM' && hours < 12) hours += 12;
       if (period === 'AM' && hours === 12) hours = 0;
-    } else {
-      const match24 = clean.match(/^(\d{1,2}):(\d{2})/);
-      if (match24) {
-        hours = parseInt(match24[1], 10);
-        mins = parseInt(match24[2], 10);
-      } else {
-        return departureStr;
-      }
     }
-
-    const totalMinutes = hours * 60 + mins + Math.max(0, Math.round(Number(durationMinutes) || 0));
-    const arrHours24 = Math.floor(totalMinutes / 60) % 24;
-    const arrMins = totalMinutes % 60;
-    const period = arrHours24 >= 12 ? 'PM' : 'AM';
-    const arrHours12 = arrHours24 % 12 === 0 ? 12 : arrHours24 % 12;
-
-    return `${String(arrHours12).padStart(2, '0')}:${String(arrMins).padStart(2, '0')} ${period}`;
-  } catch (_) {
-    return departureStr;
+    return ((hours % 24) * 60) + mins;
   }
+
+  // 4. Match 24-hour or partial HH:MM(:SS) (e.g. "23:13:00", "08:30", "11:5", "11:")
+  const match24 = clean.match(/^(\d{1,2})\s*:\s*(\d{0,2})(?::\d{0,2})?$/);
+  if (match24) {
+    const hours = parseInt(match24[1], 10) % 24;
+    const mins = match24[2] ? Math.min(59, Math.max(0, parseInt(match24[2], 10))) : 0;
+    return hours * 60 + mins;
+  }
+
+  // 5. Match plain hour while typing (e.g. "8" or "11")
+  const matchPlainHour = clean.match(/^(\d{1,2})$/);
+  if (matchPlainHour) {
+    const hours = parseInt(matchPlainHour[1], 10) % 24;
+    return hours * 60;
+  }
+
+  return null;
+}
+
+function formatMinutesAs12Hr(totalMinutes) {
+  if (totalMinutes === null || totalMinutes === undefined || !Number.isFinite(Number(totalMinutes))) {
+    return '—';
+  }
+  const normalized = ((Math.round(Number(totalMinutes)) % 1440) + 1440) % 1440;
+  const arrHours24 = Math.floor(normalized / 60) % 24;
+  const arrMins = normalized % 60;
+  const period = arrHours24 >= 12 ? 'PM' : 'AM';
+  const arrHours12 = arrHours24 % 12 === 0 ? 12 : arrHours24 % 12;
+  return `${String(arrHours12).padStart(2, '0')}:${String(arrMins).padStart(2, '0')} ${period}`;
+}
+
+function formatTime12Hr(timeStr) {
+  const mins = parseAnyTimeToMinutes(timeStr);
+  if (mins === null) return String(timeStr || '').trim() || '—';
+  return formatMinutesAs12Hr(mins);
+}
+
+// Helper to add GPS-calculated minutes to a departure time string like "08:30 AM", "11.15 PM", or "23:13:00"
+function calculateExactArrivalTime(departureStr, durationMinutes = 0) {
+  const baseMins = parseAnyTimeToMinutes(departureStr);
+  if (baseMins === null) return '—';
+  const addMins = Math.max(1, Math.round(Number(durationMinutes) || 0));
+  return formatMinutesAs12Hr(baseMins + addMins);
 }
 
 export const AdminSchedules = () => {
@@ -171,17 +223,41 @@ export const AdminSchedules = () => {
     shuttles.find((s) => Number(s.id) === Number(formData.shuttle_id)) || shuttles[0] || null;
   const selectedRouteObj =
     routes.find((r) => Number(r.id) === Number(formData.route_id)) ||
-    routes.find((r) => Number(r.shuttle_id) === Number(selectedBusObj?.id)) ||
+    routes.find(
+      (r) =>
+        Number(r.shuttle_id) === Number(selectedBusObj?.id) ||
+        Number(r.id) === Number(selectedBusObj?.current_route_id)
+    ) ||
     routes[0] ||
     null;
 
+  // Compute GPS distance from stops if needed
+  const modalStops = selectedRouteObj?.stops || selectedBusObj?.stops || [];
+  let modalStopsGpsKm = 0;
+  for (let i = 1; i < modalStops.length; i++) {
+    const seg = haversineKm(
+      modalStops[i - 1].latitude,
+      modalStops[i - 1].longitude,
+      modalStops[i].latitude,
+      modalStops[i].longitude
+    );
+    if (seg !== null) modalStopsGpsKm += seg * 1.24;
+  }
+
   const selectedRouteDistKm = Number(
-    selectedRouteObj?.distance_km || selectedBusObj?.distance_km || 0
+    Number(
+      selectedRouteObj?.distance_km ||
+        selectedBusObj?.distance_km ||
+        (modalStopsGpsKm > 0 ? modalStopsGpsKm : 0)
+    ).toFixed(2)
   );
-  const calculatedDuration =
-    selectedRouteDistKm > 0
-      ? Math.max(1, Math.round((selectedRouteDistKm / 25) * 60))
-      : Number(selectedRouteObj?.estimated_time_minutes) || 0;
+  const calculatedDuration = Math.max(
+    1,
+    Number(selectedRouteObj?.estimated_time_minutes) ||
+      (selectedRouteDistKm > 0 ? Math.round((selectedRouteDistKm / 25) * 60) : 0) ||
+      Number(selectedBusObj?.eta_minutes) ||
+      15
+  );
   const exactArrivalPreview = calculateExactArrivalTime(formData.departure_time, calculatedDuration);
 
   const openScheduleModal = () => {
@@ -204,16 +280,18 @@ export const AdminSchedules = () => {
   const handleCreateSchedule = async (e) => {
     e.preventDefault();
     try {
+      const normalizedDeparture = formatTime12Hr(formData.departure_time);
+      const computedArrival = calculateExactArrivalTime(normalizedDeparture, calculatedDuration);
       const routeStart = selectedRouteObj?.start_point || selectedBusObj?.start_point || '';
       const routeDest = selectedRouteObj?.end_point || selectedBusObj?.destination || '';
       const res = await api.post('/stats/schedules', {
-        shuttle_id: Number(formData.shuttle_id),
-        route_id: Number(formData.route_id),
+        shuttle_id: Number(formData.shuttle_id || selectedBusObj?.id),
+        route_id: Number(formData.route_id || selectedRouteObj?.id),
         route_name:
           selectedRouteObj?.name ||
           (routeStart && routeDest ? `${routeStart} - ${routeDest}` : 'Assigned Route'),
-        departure_time: formData.departure_time,
-        arrival_time: exactArrivalPreview,
+        departure_time: normalizedDeparture,
+        arrival_time: computedArrival,
         days: formData.days
       });
 
@@ -223,7 +301,7 @@ export const AdminSchedules = () => {
 
       addToast({
         title: 'Schedule Set • Driver Notified Once via Login & Email',
-        message: `Notified ${selectedBusObj?.driver_name || 'Assigned Driver'} (Bus ${selectedBusObj?.code || 'S01'}): "${formData.departure_time} – ${exactArrivalPreview} • Your schedule time is on, ready to ride safely!"`,
+        message: `Notified ${selectedBusObj?.driver_name || 'Assigned Driver'} (Bus ${selectedBusObj?.code || 'S01'}): "${normalizedDeparture} – ${computedArrival} • Your schedule time is on, ready to ride safely!"`,
         type: 'success'
       });
       setIsModalOpen(false);
@@ -352,10 +430,12 @@ export const AdminSchedules = () => {
                     ? Math.max(0, Math.round(Number(liveLoc?.speed ?? item.speed ?? matchedBus?.speed ?? 0)))
                     : 0;
 
-                  const routeDurationFromGps =
-                    routeDistKm > 0
-                      ? Math.max(1, Math.round((routeDistKm / 25) * 60))
-                      : Number(item.estimated_time_minutes || matchedRoute?.estimated_time_minutes || 0);
+                  const routeDurationFromGps = Math.max(
+                    1,
+                    Number(item.estimated_time_minutes) ||
+                      Number(matchedRoute?.estimated_time_minutes) ||
+                      (routeDistKm > 0 ? Math.round((routeDistKm / 25) * 60) : 15)
+                  );
 
                   let gpsEtaMinutes = 0;
                   if (hasArrived) {
@@ -372,8 +452,14 @@ export const AdminSchedules = () => {
                     gpsEtaMinutes = routeDurationFromGps;
                   }
 
+                  const formattedDeparture = formatTime12Hr(item.departure_time);
+                  const rawFormattedArrival = item.arrival_time ? formatTime12Hr(item.arrival_time) : '';
                   const scheduledArrival =
-                    item.arrival_time || calculateExactArrivalTime(item.departure_time, routeDurationFromGps);
+                    rawFormattedArrival &&
+                    rawFormattedArrival !== '—' &&
+                    rawFormattedArrival !== formattedDeparture
+                      ? rawFormattedArrival
+                      : calculateExactArrivalTime(formattedDeparture, routeDurationFromGps);
 
                   const liveGpsArrivalTime =
                     isOnTrip && gpsEtaMinutes > 0
@@ -452,7 +538,7 @@ export const AdminSchedules = () => {
                       <td className="py-4 px-5 align-middle whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 font-mono font-bold text-slate-900 dark:text-white">
                           <Clock className="w-3 h-3 text-slate-400" />
-                          {item.departure_time}
+                          {formattedDeparture}
                         </span>
                       </td>
 
@@ -538,7 +624,7 @@ export const AdminSchedules = () => {
                               <span>Trip Not Started (Not Arrived)</span>
                             </span>
                             <div className="text-[10px] text-slate-400 mt-1 font-medium">
-                              Scheduled at {item.departure_time} • {routeDistKm} km route
+                              Scheduled at {formattedDeparture} • {routeDistKm} km route
                             </div>
                           </div>
                         )}
@@ -612,7 +698,13 @@ export const AdminSchedules = () => {
             value={formData.shuttle_id}
             onChange={(e) => {
               const sId = Number(e.target.value);
-              const matchedRoute = routes.find((r) => Number(r.shuttle_id) === sId);
+              const busObj = shuttles.find((s) => Number(s.id) === sId);
+              const matchedRoute =
+                routes.find(
+                  (r) =>
+                    Number(r.shuttle_id) === sId ||
+                    Number(r.id) === Number(busObj?.current_route_id)
+                ) || routes[0];
               setFormData({
                 ...formData,
                 shuttle_id: sId,
@@ -629,22 +721,54 @@ export const AdminSchedules = () => {
             label="Select Assigned Route"
             id="schedRoute"
             value={formData.route_id}
-            onChange={(e) => setFormData({ ...formData, route_id: e.target.value })}
+            onChange={(e) => setFormData({ ...formData, route_id: Number(e.target.value) })}
             options={routes.map((r) => ({
               label: `${r.code}: ${r.start_point} ➔ ${r.end_point} (${r.distance_km} km • ~${r.estimated_time_minutes} min)`,
               value: r.id
             }))}
           />
 
-          <div className="grid grid-cols-2 gap-4">
-            <Input
-              label="Exact Departure Time"
-              id="depTime"
-              required
-              placeholder="e.g. 08:30 AM"
-              value={formData.departure_time}
-              onChange={(e) => setFormData({ ...formData, departure_time: e.target.value })}
-            />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <Input
+                label="Exact Departure Time"
+                id="depTime"
+                required
+                placeholder="e.g. 08:30 AM or 11:15 PM"
+                value={formData.departure_time}
+                onChange={(e) => setFormData({ ...formData, departure_time: e.target.value })}
+              />
+              <div className="flex items-center gap-2 mt-1.5">
+                {['AM', 'PM'].map((period) => {
+                  const isCurrent = String(formData.departure_time || '')
+                    .toUpperCase()
+                    .includes(period);
+                  return (
+                    <button
+                      key={period}
+                      type="button"
+                      onClick={() => {
+                        const base = String(formData.departure_time || '08:30')
+                          .replace(/\s*(AM|PM|A|P)\s*$/i, '')
+                          .trim();
+                        setFormData({ ...formData, departure_time: `${base} ${period}` });
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold border transition ${
+                        isCurrent
+                          ? 'bg-brand-600 text-white border-brand-600'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                      }`}
+                    >
+                      {period}
+                    </button>
+                  );
+                })}
+                <span className="text-[10px] text-slate-400">
+                  Route: {selectedRouteDistKm} km (~{calculatedDuration} min)
+                </span>
+              </div>
+            </div>
+
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
                 Auto-Calculated Scheduled Arrival
@@ -655,6 +779,9 @@ export const AdminSchedules = () => {
                   (+{calculatedDuration}m)
                 </span>
               </div>
+              <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1.5 font-semibold">
+                {formatTime12Hr(formData.departure_time)} + {calculatedDuration} mins = {exactArrivalPreview}
+              </p>
             </div>
           </div>
 

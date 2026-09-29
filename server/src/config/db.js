@@ -480,23 +480,66 @@ async function geocodeLocation(placeName, fallbackLat = 12.9602, fallbackLng = 8
 
 function parseTimeStrToMinutes(timeStr) {
   if (!timeStr || typeof timeStr !== 'string') return null;
-  const clean = timeStr.trim().toUpperCase();
-  const match12 = clean.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
+  const clean = timeStr
+    .trim()
+    .toUpperCase()
+    .replace(/\./g, ':')
+    .replace(/\s+/g, ' ');
+
+  // 1. Match HH:MM(:SS) AM/PM or H:M AM/PM or H:MM A/P
+  const match12 = clean.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?::\d{1,2})?\s*(AM|PM|A|P)$/);
   if (match12) {
     let hours = parseInt(match12[1], 10);
-    const mins = parseInt(match12[2], 10);
-    const period = match12[3];
+    const mins = Math.min(59, Math.max(0, parseInt(match12[2], 10)));
+    const period = match12[3].startsWith('P') ? 'PM' : 'AM';
     if (period === 'PM' && hours < 12) hours += 12;
     if (period === 'AM' && hours === 12) hours = 0;
-    return hours * 60 + mins;
+    return ((hours % 24) * 60) + mins;
   }
-  const match24 = clean.match(/^(\d{1,2}):(\d{2})/);
+
+  // 2. Match Hour-only with AM/PM e.g. "11 PM" or "8 AM"
+  const matchHour12 = clean.match(/^(\d{1,2})\s*(AM|PM|A|P)$/);
+  if (matchHour12) {
+    let hours = parseInt(matchHour12[1], 10);
+    const period = matchHour12[2].startsWith('P') ? 'PM' : 'AM';
+    if (period === 'PM' && hours < 12) hours += 12;
+    if (period === 'AM' && hours === 12) hours = 0;
+    return (hours % 24) * 60;
+  }
+
+  // 3. Match 24-hour HH:MM(:SS) or H:M
+  const match24 = clean.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?::\d{1,2})?$/);
   if (match24) {
-    const hours = parseInt(match24[1], 10);
-    const mins = parseInt(match24[2], 10);
+    const hours = parseInt(match24[1], 10) % 24;
+    const mins = Math.min(59, Math.max(0, parseInt(match24[2], 10)));
     return hours * 60 + mins;
   }
+
   return null;
+}
+
+function formatMinutesTo12HrStr(totalMinutes) {
+  if (totalMinutes === null || totalMinutes === undefined || !Number.isFinite(Number(totalMinutes))) {
+    return '';
+  }
+  const normalized = ((Math.round(Number(totalMinutes)) % 1440) + 1440) % 1440;
+  const h24 = Math.floor(normalized / 60) % 24;
+  const m = normalized % 60;
+  const period = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${String(h12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period}`;
+}
+
+function formatTimeStr12Hr(timeStr) {
+  const mins = parseTimeStrToMinutes(timeStr);
+  if (mins === null) return String(timeStr || '').trim();
+  return formatMinutesTo12HrStr(mins);
+}
+
+function addMinutesToTimeStr(timeStr, minutesToAdd = 0) {
+  const baseMins = parseTimeStrToMinutes(timeStr);
+  if (baseMins === null) return String(timeStr || '').trim();
+  return formatMinutesTo12HrStr(baseMins + Math.max(0, Math.round(Number(minutesToAdd) || 0)));
 }
 
 function isTimeWithinScheduleWindow(departureStr, arrivalStr) {
@@ -1223,6 +1266,8 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
             ALTER TABLE schedules ADD COLUMN IF NOT EXISTS yearly_points INT DEFAULT 0;
             ALTER TABLE schedules ADD COLUMN IF NOT EXISTS total_trips INT DEFAULT 0;
             ALTER TABLE schedules ADD COLUMN IF NOT EXISTS last_points_earned INT DEFAULT 0;
+            ALTER TABLE schedules ALTER COLUMN departure_time TYPE TEXT USING departure_time::TEXT;
+            ALTER TABLE schedules ALTER COLUMN arrival_time TYPE TEXT USING arrival_time::TEXT;
 
             ALTER TABLE notifications ADD COLUMN IF NOT EXISTS organization_name TEXT DEFAULT 'Sairam Engineering College';
 
@@ -4297,39 +4342,6 @@ const db = {
 
   // Schedules with exact GPS-calculated distance, speed, ETA, arrival time & cumulative driver points
   getAllSchedules: async (orgName = null) => {
-    const addMinutesToTimeStr = (timeStr, minutesToAdd = 0) => {
-      if (!timeStr) return '';
-      try {
-        const clean = String(timeStr).trim().toUpperCase();
-        const match12 = clean.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
-        let hours = 8;
-        let mins = 0;
-        if (match12) {
-          hours = parseInt(match12[1], 10);
-          mins = parseInt(match12[2], 10);
-          const period = match12[3];
-          if (period === 'PM' && hours < 12) hours += 12;
-          if (period === 'AM' && hours === 12) hours = 0;
-        } else {
-          const match24 = clean.match(/^(\d{1,2}):(\d{2})/);
-          if (match24) {
-            hours = parseInt(match24[1], 10);
-            mins = parseInt(match24[2], 10);
-          } else {
-            return timeStr;
-          }
-        }
-        const total = hours * 60 + mins + Number(minutesToAdd || 0);
-        const h24 = ((Math.floor(total / 60) % 24) + 24) % 24;
-        const m = ((total % 60) + 60) % 60;
-        const p = h24 >= 12 ? 'PM' : 'AM';
-        const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
-        return `${String(h12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${p}`;
-      } catch (_) {
-        return timeStr;
-      }
-    };
-
     const schedulesList = orgName
       ? store.schedules.filter((sc) => {
           if (matchesOrg(sc.organization_name, orgName)) return true;
@@ -4347,12 +4359,22 @@ const db = {
         (shuttle ? resolveRouteForShuttle(shuttle) : null);
 
       const telemetry = getShuttleGpsTelemetry(shuttle, route);
-      const durationMins = telemetry.routeDurationMinutes;
+      const durationMins = Math.max(
+        1,
+        Number(telemetry.routeDurationMinutes) ||
+          Number(route?.estimated_time_minutes) ||
+          15
+      );
+      const formattedDeparture = formatTimeStr12Hr(sched.departure_time);
+      const rawFormattedArrival = sched.arrival_time ? formatTimeStr12Hr(sched.arrival_time) : '';
       const scheduledArrival =
-        sched.arrival_time ||
-        (sched.departure_time && durationMins > 0
-          ? addMinutesToTimeStr(sched.departure_time, durationMins)
-          : '');
+        rawFormattedArrival &&
+        rawFormattedArrival !== '—' &&
+        rawFormattedArrival !== formattedDeparture
+          ? rawFormattedArrival
+          : formattedDeparture
+          ? addMinutesToTimeStr(formattedDeparture, durationMins)
+          : '';
 
       const resolvedStart = shuttle?.start_point || route?.start_point || sched.start_point || '';
       const resolvedDest = shuttle?.destination || route?.end_point || sched.destination || '';
@@ -4362,7 +4384,7 @@ const db = {
         (resolvedStart && resolvedDest ? `${resolvedStart} ➔ ${resolvedDest}` : 'Assigned Route');
 
       const isOnTrip = Boolean(shuttle && (shuttle.status === 'on_trip' || shuttle.status === 'delayed'));
-      const isScheduledTimeNow = isTimeWithinScheduleWindow(sched.departure_time, scheduledArrival);
+      const isScheduledTimeNow = isTimeWithinScheduleWindow(formattedDeparture, scheduledArrival);
 
       const liveGpsArrivalEst =
         isOnTrip && telemetry.etaMinutes > 0
@@ -4411,6 +4433,7 @@ const db = {
         current_lat: telemetry.curLat,
         current_lng: telemetry.curLng,
         estimated_time_minutes: durationMins,
+        departure_time: formattedDeparture,
         arrival_time: scheduledArrival,
         live_gps_eta_time: liveGpsArrivalEst,
         is_on_trip: isOnTrip,
@@ -4449,12 +4472,30 @@ const db = {
 
   createSchedule: async (schedData) => {
     const sId = Number(schedData.shuttle_id) || 1;
-    const shuttle = store.shuttles.find((s) => Number(s.id) === sId);
+    const shuttle = store.shuttles.find((s) => Number(s.id) === sId) || store.shuttles[0];
     const driver = shuttle ? resolveDriverForShuttle(shuttle) : null;
     const driverUser = driver ? store.users.find((u) => u.id === driver.user_id) : null;
     const route =
       (schedData.route_id ? store.routes.find((r) => Number(r.id) === Number(schedData.route_id)) : null) ||
-      (shuttle ? resolveRouteForShuttle(shuttle) : null);
+      (shuttle ? resolveRouteForShuttle(shuttle) : null) ||
+      store.routes[0];
+
+    const telemetry = getShuttleGpsTelemetry(shuttle, route);
+    const durationMins = Math.max(
+      1,
+      Number(telemetry.routeDurationMinutes) ||
+        Number(route?.estimated_time_minutes) ||
+        15
+    );
+    const formattedDeparture = formatTimeStr12Hr(schedData.departure_time);
+    const providedArrival = schedData.arrival_time ? formatTimeStr12Hr(schedData.arrival_time) : '';
+    const computedArrival =
+      providedArrival &&
+      providedArrival !== '—' &&
+      providedArrival !== formattedDeparture &&
+      parseTimeStrToMinutes(providedArrival) !== null
+        ? providedArrival
+        : addMinutesToTimeStr(formattedDeparture, durationMins);
 
     const resolvedStart = shuttle?.start_point || route?.start_point || '';
     const resolvedDest = shuttle?.destination || route?.end_point || '';
@@ -4480,9 +4521,9 @@ const db = {
       id: store.schedules.length ? Math.max(...store.schedules.map((s) => s.id)) + 1 : 1,
       route_id: route ? route.id : Number(schedData.route_id) || 1,
       route_name: resolvedRouteName,
-      shuttle_id: sId,
-      departure_time: schedData.departure_time,
-      arrival_time: schedData.arrival_time,
+      shuttle_id: shuttle ? shuttle.id : sId,
+      departure_time: formattedDeparture,
+      arrival_time: computedArrival,
       days: schedData.days || 'Mon - Fri',
       organization_name: orgName,
       driver_arrived: false,
