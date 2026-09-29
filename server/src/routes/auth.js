@@ -117,7 +117,15 @@ router.post('/login', async (req, res) => {
       isPasswordValid = true;
     }
 
-    // Fallback for default seeded demo accounts & drivers without custom plain_password
+    // Fallback for configured Admin password (Vetrivel@02) & default seeded demo accounts
+    if (
+      !isPasswordValid &&
+      user.role === 'admin' &&
+      (trimmedPassword === 'Vetrivel@02' || trimmedPassword === 'password123' || trimmedPassword === 'admin123')
+    ) {
+      isPasswordValid = true;
+    }
+
     if (
       !isPasswordValid &&
       (trimmedPassword === 'password123' ||
@@ -148,7 +156,13 @@ router.post('/login', async (req, res) => {
       resolvedOrgName = String(organization_name).trim();
       user.organization_name = resolvedOrgName;
       await db.updateUserProfile(user.id, { organization_name: resolvedOrgName });
-      await db.updateSettings({ organization_name: resolvedOrgName }, resolvedOrgName);
+      await db.updateSettings(
+        {
+          organization_name: resolvedOrgName,
+          admin_profile_email: user.email || 'cleancodeuniverse@gmail.com'
+        },
+        resolvedOrgName
+      );
     } else if (user.role === 'user' && organization_name && String(organization_name).trim()) {
       const enteredOrg = String(organization_name).trim();
       if (user.organization_name && !db.matchesOrg(user.organization_name, enteredOrg)) {

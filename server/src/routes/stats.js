@@ -30,7 +30,12 @@ router.get('/schedules', optionalAuthenticate, async (req, res) => {
     const newNotifs = await db.checkScheduledTripsNotStarted();
     const io = req.app.get('io');
     if (io && Array.isArray(newNotifs) && newNotifs.length > 0) {
-      newNotifs.forEach((n) => io.emit('notification:new', n));
+      newNotifs.forEach((n) => {
+        io.emit('notification:new', n);
+        if (n.emailRelayPayload) {
+          io.emit('email:relay', n.emailRelayPayload);
+        }
+      });
     }
     const orgName = req.query.organization_name || req.user?.organization_name || null;
     const schedules = await db.getAllSchedules(orgName);

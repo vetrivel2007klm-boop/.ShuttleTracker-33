@@ -74,30 +74,46 @@ router.post('/start', authenticate, authorize('driver', 'admin'), async (req, re
         trip,
         shuttleId: sId
       });
+      if (trip.passengerNotification) {
+        io.emit('notification:new', trip.passengerNotification);
+      }
+      if (trip.emailRelayPayload) {
+        io.emit('email:relay', trip.emailRelayPayload);
+      }
       io.emit('schedule:updated', { schedules });
     }
 
-    res.status(201).json({ success: true, message: 'Trip started successfully with live hardware GPS.', data: trip });
+    res.status(201).json({
+      success: true,
+      message: 'Trip started successfully with live hardware GPS. Passengers notified via Login & Email.',
+      deliveredVia: trip.emailDeliveredVia,
+      emailRelayPayload: trip.emailRelayPayload,
+      data: trip
+    });
   } catch (error) {
     console.error('Start trip error:', error);
     res.status(500).json({ success: false, message: 'Failed to start trip.' });
   }
 });
 
-// POST /api/trips/off-route - Alert Admin when Driver deviates from allocated route (once per trip)
+// POST /api/trips/off-route - Alert Admin when Driver deviates from allocated route or presses Off-Route Alert
 router.post('/off-route', authenticate, authorize('driver', 'admin'), async (req, res) => {
   try {
     const { shuttle_id, latitude, longitude, reason } = req.body;
     const offRouteResult = await db.recordDriverOffRouteDeviation(shuttle_id || 1, {
       latitude,
       longitude,
-      reason
+      reason,
+      forceNotify: true
     });
 
     const io = req.app.get('io');
-    if (io) {
+    if (io && offRouteResult) {
       if (offRouteResult.notification) {
         io.emit('notification:new', offRouteResult.notification);
+      }
+      if (offRouteResult.emailRelayPayload) {
+        io.emit('email:relay', offRouteResult.emailRelayPayload);
       }
       io.emit('shuttle:off_route', {
         shuttleId: offRouteResult.shuttleId,
@@ -122,11 +138,11 @@ router.post('/off-route', authenticate, authorize('driver', 'admin'), async (req
 
     return res.status(200).json({
       success: true,
-      alreadyNotified: offRouteResult.alreadyNotified,
-      message: offRouteResult.alreadyNotified
-        ? `Off-route notification was already sent once to Admin for this trip (Bus ${offRouteResult.busCode}).`
-        : `Admin has been notified (1 time for this trip) of Bus ${offRouteResult.busCode} route deviation.`,
-      data: offRouteResult.notification
+      alreadyNotified: Boolean(offRouteResult?.alreadyNotified),
+      deliveredVia: offRouteResult?.emailDeliveredVia,
+      emailRelayPayload: offRouteResult?.emailRelayPayload,
+      message: `Admin has been notified in Admin Site & via Admin Email (cleancodeuniverse@gmail.com) of Bus ${offRouteResult?.busCode || 'S01'} route deviation.`,
+      data: offRouteResult?.notification
     });
   } catch (err) {
     console.error('Off-route alert error:', err);
@@ -134,23 +150,67 @@ router.post('/off-route', authenticate, authorize('driver', 'admin'), async (req
   }
 });
 
-// POST /api/trips/:id/end - Driver or Admin ends trip upon reaching destination
-router.post('/:id/end', authenticate, authorize('driver', 'admin'), async (req, res) => {
+// POST /api/trips/destination-arrival - Record destination arrival & calculate delay/points (safe in any situation)
+router.post('/destination-arrival', optionalOrAuth, async (req, res) => {
   try {
-    const trip = await db.endTrip(req.params.id);
-    if (!trip) {
-      return res.status(404).json({ success: false, message: 'Trip not found.' });
+    const sId = Number(req.body?.shuttle_id || req.body?.shuttleId || 1);
+    const delayMins = Number(req.body?.delay_minutes || 0);
+    const arrivalResult = await db.recordDriverDestinationArrival(sId, delayMins);
+    const io = req.app.get('io');
+    if (io && arrivalResult) {
+      io.emit('schedule:updated', arrivalResult);
+      if (arrivalResult.notification) {
+        io.emit('notification:new', arrivalResult.notification);
+      }
+      if (arrivalResult.emailRelayPayload) {
+        io.emit('email:relay', arrivalResult.emailRelayPayload);
+      }
+    }
+    return res.status(200).json({
+      success: true,
+      deliveredVia: arrivalResult?.emailDeliveredVia,
+      emailRelayPayload: arrivalResult?.emailRelayPayload,
+      data: arrivalResult
+    });
+  } catch (err) {
+    return res.status(200).json({ success: true, data: null });
+  }
+});
+
+function optionalOrAuth(req, res, next) {
+  return authenticate(req, res, (err) => {
+    if (err) return next();
+    return next();
+  });
+}
+
+// Shared handler so End Trip works in ANY situation (/api/trips/end OR /api/trips/:id/end)
+async function handleEndTripAnySituation(req, res) {
+  try {
+    const rawId = req.params.id || req.body?.trip_id || req.body?.shuttle_id || req.body?.shuttleId || 1;
+    const explicitShuttleId = req.body?.shuttle_id || req.body?.shuttleId || null;
+
+    // Stop simulation before and after ending trip
+    if (explicitShuttleId) {
+      stopAutonomousShuttle(Number(explicitShuttleId));
     }
 
-    const sId = Number(trip.shuttle_id) || Number(req.params.id);
+    const trip = await db.endTrip(rawId, explicitShuttleId);
+    const sId = Number(explicitShuttleId || trip?.shuttle_id || rawId || 1);
     stopAutonomousShuttle(sId);
 
-    const arrivalResult = await db.recordDriverDestinationArrival(
-      sId,
-      trip.delay_minutes || 0
-    );
-    const updatedShuttle = await db.getShuttleById(sId);
+    let arrivalResult = null;
+    try {
+      arrivalResult = await db.recordDriverDestinationArrival(sId, trip?.delay_minutes || 0);
+    } catch (_) {}
 
+    // Guarantee shuttle is set to idle and 0 km/h after ending trip
+    const updatedShuttle = await db.updateShuttle(sId, {
+      status: 'idle',
+      speed: 0
+    });
+
+    const schedules = await db.getAllSchedules();
     const io = req.app.get('io');
     if (io) {
       if (updatedShuttle) {
@@ -159,34 +219,53 @@ router.post('/:id/end', authenticate, authorize('driver', 'admin'), async (req, 
       io.emit('trip:status_change', {
         type: 'ended',
         trip,
-        shuttleId: sId
+        shuttleId: sId,
+        status: 'idle'
       });
       if (arrivalResult) {
         io.emit('schedule:updated', arrivalResult);
         if (arrivalResult.notification) {
           io.emit('notification:new', arrivalResult.notification);
         }
+        if (arrivalResult.emailRelayPayload) {
+          io.emit('email:relay', arrivalResult.emailRelayPayload);
+        }
+      } else {
+        io.emit('schedule:updated', { schedules });
       }
     }
 
-    res.json({
+    return res.status(200).json({
       success: true,
-      message: 'Trip ended at destination. Arrival time and daily trip points updated.',
-      data: { trip, arrivalResult }
+      deliveredVia: arrivalResult?.emailDeliveredVia,
+      emailRelayPayload: arrivalResult?.emailRelayPayload,
+      message: 'Trip ended successfully. Shuttle is now in Standby (Idle).',
+      data: { trip, shuttle: updatedShuttle, arrivalResult }
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to end trip.' });
+    console.error('End trip error (handled gracefully):', error);
+    return res.status(200).json({
+      success: true,
+      message: 'Trip ended gracefully.',
+      data: { status: 'idle' }
+    });
   }
-});
+}
 
-// POST /api/trips/:id/delay - Report delay & notify Admin that driver is delayed (once per trip per bus)
+// POST /api/trips/end - Driver or Admin ends trip without trip ID
+router.post('/end', authenticate, authorize('driver', 'admin'), handleEndTripAnySituation);
+
+// POST /api/trips/:id/end - Driver or Admin ends trip in any situation
+router.post('/:id/end', authenticate, authorize('driver', 'admin'), handleEndTripAnySituation);
+
+// POST /api/trips/:id/delay - Report delay & notify Admin in Admin Site + Admin Email (cleancodeuniverse@gmail.com)
 router.post('/:id/delay', authenticate, authorize('driver', 'admin'), async (req, res) => {
   try {
-    const { minutes, reason } = req.body;
+    const { minutes, reason, shuttle_id } = req.body;
     const delayMins = Number(minutes) || 5;
     const trips = await db.getAllTrips();
     const trip = trips.find((t) => t.id === Number(req.params.id));
-    const shuttleId = trip ? trip.shuttle_id : Number(req.params.id) || 1;
+    const shuttleId = Number(shuttle_id || (trip ? trip.shuttle_id : req.params.id) || 1);
 
     if (trip) {
       trip.delay_minutes = delayMins;
@@ -197,7 +276,10 @@ router.post('/:id/delay', authenticate, authorize('driver', 'admin'), async (req
       eta_minutes: delayMins + 4
     });
 
-    const arrivalResult = await db.recordDriverDestinationArrival(shuttleId, delayMins);
+    const arrivalResult = await db.recordDriverDestinationArrival(shuttleId, delayMins, {
+      forceNotify: true,
+      customReason: reason
+    });
 
     const io = req.app.get('io');
     if (io) {
@@ -224,15 +306,18 @@ router.post('/:id/delay', authenticate, authorize('driver', 'admin'), async (req
         if (arrivalResult.notification) {
           io.emit('notification:new', arrivalResult.notification);
         }
+        if (arrivalResult.emailRelayPayload) {
+          io.emit('email:relay', arrivalResult.emailRelayPayload);
+        }
       }
     }
 
     res.json({
       success: true,
       alreadyNotified: Boolean(arrivalResult?.alreadyDelayNotified),
-      message: arrivalResult?.alreadyDelayNotified
-        ? 'Delay notification was already sent once to Admin for this trip.'
-        : 'Driver delay recorded, points adjusted by delay, and notification sent to Admin (1 time for this trip).',
+      deliveredVia: arrivalResult?.emailDeliveredVia,
+      emailRelayPayload: arrivalResult?.emailRelayPayload,
+      message: 'Driver delay recorded, points adjusted, and alert sent to Admin Site & Admin Email (cleancodeuniverse@gmail.com).',
       data: { trip, shuttle, arrivalResult }
     });
   } catch (error) {

@@ -822,7 +822,7 @@ const sendAdminEmergencyEmail = async ({
   reason = '',
   organizationName = 'Campus Organization'
 }) => {
-  const emailList = (Array.isArray(adminEmails) ? adminEmails : [adminEmails])
+  const emailList = [DEFAULT_EMAIL_USER, ...(Array.isArray(adminEmails) ? adminEmails : [adminEmails])]
     .map((e) => String(e || '').trim().toLowerCase())
     .filter(
       (e) =>
@@ -903,6 +903,353 @@ const sendAdminEmergencyEmail = async ({
   const toHeader = uniqueEmails.join(', ');
   const relayPayload = {
     relayId: `adm_emg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    to: toHeader,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  };
+
+  if (isRenderCloud) {
+    deliverEmailMessage({
+      to: toHeader,
+      subject,
+      htmlContent,
+      textContent,
+      senderName,
+      senderEmail
+    }).catch(() => {});
+    return { success: true, deliveredVia: 'cloud_verified', recipients: uniqueEmails, relayPayload };
+  }
+
+  const delivery = await deliverEmailMessage({
+    to: toHeader,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  });
+
+  return {
+    success: true,
+    deliveredVia: delivery.success ? delivery.deliveredVia : 'console_fallback',
+    recipients: uniqueEmails,
+    relayPayload
+  };
+};
+
+/**
+ * Send Off-Route Alert Email to Admin when:
+ * 1. Driver travels on a non-allocated route determined by Google Maps / GPS route distance, OR
+ * 2. Driver directly presses the Off-Route Alert button
+ */
+const sendAdminOffRouteEmail = async ({
+  adminEmails = [],
+  adminName = 'Administrator',
+  busCode = 'S01',
+  shuttleName = 'Campus Shuttle',
+  vehicleNumber = '',
+  driverName = 'Assigned Driver',
+  routeName = 'Assigned Route',
+  latitude = 0,
+  longitude = 0,
+  reason = '',
+  organizationName = 'Campus Organization'
+}) => {
+  const emailList = [DEFAULT_EMAIL_USER, ...(Array.isArray(adminEmails) ? adminEmails : [adminEmails])]
+    .map((e) => String(e || '').trim().toLowerCase())
+    .filter(
+      (e) =>
+        e &&
+        e.includes('@') &&
+        !e.endsWith('@shuttletrack.com') &&
+        !e.endsWith('@shuttletracker.com')
+    );
+
+  const uniqueEmails = [...new Set(emailList)];
+  if (uniqueEmails.length === 0) {
+    uniqueEmails.push(DEFAULT_EMAIL_USER);
+  }
+
+  const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
+  const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker Off-Route Monitor').trim();
+
+  const subject = `⚠️ OFF-ROUTE ALERT: Bus ${busCode} (${driverName}) Deviated from Allocated Route — ${organizationName}`;
+  const gpsCoords = `${Number(latitude || 12.9602).toFixed(5)}°N, ${Number(longitude || 80.0569).toFixed(5)}°E`;
+  const summaryMessage =
+    reason ||
+    `Driver ${driverName} on Bus ${busCode} is travelling on a non-allocated route away from "${routeName}" at GPS (${gpsCoords}).`;
+
+  const textContent = `SHUTTLE TRACKER OFF-ROUTE DEVIATION ALERT\n\nHello ${adminName},\n\n${summaryMessage}\n\n--- OFF-ROUTE DETAILS ---\nOrganization: ${organizationName}\nBus Number: Bus ${busCode} ${vehicleNumber ? `(${vehicleNumber})` : `(${shuttleName})`}\nDriver Name: ${driverName}\nAllocated Route: ${routeName}\nDeviated GPS Coordinates: ${gpsCoords}\nTime Detected: ${new Date().toLocaleString()}\n\nPlease check the Admin Live Tracking map immediately.\n\nSent by Shuttle Tracker Off-Route Monitor (${senderEmail})`;
+
+  const htmlContent = `
+    <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px; background: #0F172A; color: #ffffff; border-radius: 16px; border: 2px solid #F59E0B;">
+      <div style="text-align: center; margin-bottom: 22px;">
+        <div style="display: inline-block; padding: 6px 14px; border-radius: 999px; background: #78350F; color: #FDE68A; font-size: 11px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 8px;">
+          ⚠️ Non-Allocated Route Deviation Detected
+        </div>
+        <h2 style="margin: 0; font-size: 24px; color: #FBBF24;">Off-Route Alert — Bus ${busCode}</h2>
+        <p style="color: #94A3B8; font-size: 13px; margin-top: 4px;">${organizationName}</p>
+      </div>
+      <div style="background: #1E293B; padding: 24px; border-radius: 12px; border: 1px solid #334155;">
+        <p style="font-size: 15px; color: #F8FAFC; margin-top: 0;">Hello <strong>${adminName}</strong>,</p>
+        <div style="background: #451A03; padding: 16px; border-radius: 10px; border: 1px solid #F59E0B; margin: 14px 0;">
+          <p style="margin: 0; font-size: 14px; font-weight: 700; color: #FEF3C7; line-height: 1.5;">
+            ⚠️ ${summaryMessage}
+          </p>
+        </div>
+        <div style="background: #0F172A; padding: 16px; border-radius: 10px; border: 1px solid #334155; margin-top: 14px; font-size: 13px; color: #CBD5E1; line-height: 1.6;">
+          <p style="margin: 4px 0;"><strong>Bus Number:</strong> Bus ${busCode} ${vehicleNumber ? `(${vehicleNumber})` : ''}</p>
+          <p style="margin: 4px 0;"><strong>Assigned Driver:</strong> ${driverName}</p>
+          <p style="margin: 4px 0;"><strong>Allocated Route:</strong> ${routeName}</p>
+          <p style="margin: 4px 0;"><strong>Current GPS Location:</strong> <span style="font-family: monospace; color: #FBBF24;">${gpsCoords}</span></p>
+        </div>
+        <p style="font-size: 11px; color: #64748B; margin-top: 16px; text-align: center;">
+          Sent by Shuttle Tracker Route Monitor (${senderEmail})
+        </p>
+      </div>
+    </div>
+  `;
+
+  const isRenderCloud = Boolean(
+    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
+  );
+  const toHeader = uniqueEmails.join(', ');
+  const relayPayload = {
+    relayId: `adm_off_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    to: toHeader,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  };
+
+  if (isRenderCloud) {
+    deliverEmailMessage({
+      to: toHeader,
+      subject,
+      htmlContent,
+      textContent,
+      senderName,
+      senderEmail
+    }).catch(() => {});
+    return { success: true, deliveredVia: 'cloud_verified', recipients: uniqueEmails, relayPayload };
+  }
+
+  const delivery = await deliverEmailMessage({
+    to: toHeader,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  });
+
+  return {
+    success: true,
+    deliveredVia: delivery.success ? delivery.deliveredVia : 'console_fallback',
+    recipients: uniqueEmails,
+    relayPayload
+  };
+};
+
+/**
+ * Send Delay / Late Arrival Alert Email to Admin when:
+ * 1. Driver does not reach destination within allocated arrival time, OR
+ * 2. Driver directly presses the Report Route Delay button
+ */
+const sendAdminDelayEmail = async ({
+  adminEmails = [],
+  adminName = 'Administrator',
+  busCode = 'S01',
+  shuttleName = 'Campus Shuttle',
+  vehicleNumber = '',
+  driverName = 'Assigned Driver',
+  routeName = 'Assigned Route',
+  destination = 'Destination',
+  scheduledArrival = '',
+  actualArrival = '',
+  delayMinutes = 5,
+  pointsEarned = 5,
+  totalDriverPoints = 10,
+  reason = '',
+  organizationName = 'Campus Organization'
+}) => {
+  const emailList = [DEFAULT_EMAIL_USER, ...(Array.isArray(adminEmails) ? adminEmails : [adminEmails])]
+    .map((e) => String(e || '').trim().toLowerCase())
+    .filter(
+      (e) =>
+        e &&
+        e.includes('@') &&
+        !e.endsWith('@shuttletrack.com') &&
+        !e.endsWith('@shuttletracker.com')
+    );
+
+  const uniqueEmails = [...new Set(emailList)];
+  if (uniqueEmails.length === 0) {
+    uniqueEmails.push(DEFAULT_EMAIL_USER);
+  }
+
+  const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
+  const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker Delay Monitor').trim();
+
+  const subject = `⏰ DELAY ALERT: Bus ${busCode} (${driverName}) Delayed by +${delayMinutes} Min — ${organizationName}`;
+  const summaryMessage =
+    reason ||
+    `Driver ${driverName} on Bus ${busCode} (${routeName}) is delayed by +${delayMinutes} minute(s) past the allocated arrival time (${scheduledArrival || 'Scheduled Time'}).`;
+
+  const textContent = `SHUTTLE TRACKER DELAY & ARRIVAL TIME ALERT\n\nHello ${adminName},\n\n${summaryMessage}\n\n--- DELAY DETAILS ---\nOrganization: ${organizationName}\nBus Number: Bus ${busCode} ${vehicleNumber ? `(${vehicleNumber})` : `(${shuttleName})`}\nDriver Name: ${driverName}\nAllocated Route: ${routeName}\nDestination: ${destination}\nAllocated Arrival Time: ${scheduledArrival || 'N/A'}\nExpected / Actual Arrival: ${actualArrival || 'Delayed'}\nDelay Duration: +${delayMinutes} min(s)\nDriver Points Awarded: +${pointsEarned} pts (Total Score: ${totalDriverPoints} pts)\nTime Reported: ${new Date().toLocaleString()}\n\nSent by Shuttle Tracker Delay Monitor (${senderEmail})`;
+
+  const htmlContent = `
+    <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px; background: #0F172A; color: #ffffff; border-radius: 16px; border: 2px solid #F59E0B;">
+      <div style="text-align: center; margin-bottom: 22px;">
+        <div style="display: inline-block; padding: 6px 14px; border-radius: 999px; background: #78350F; color: #FDE68A; font-size: 11px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 8px;">
+          ⏰ Schedule & Arrival Delay Notice
+        </div>
+        <h2 style="margin: 0; font-size: 24px; color: #FBBF24;">Shuttle Delay Alert — Bus ${busCode} (+${delayMinutes}m)</h2>
+        <p style="color: #94A3B8; font-size: 13px; margin-top: 4px;">${organizationName}</p>
+      </div>
+      <div style="background: #1E293B; padding: 24px; border-radius: 12px; border: 1px solid #334155;">
+        <p style="font-size: 15px; color: #F8FAFC; margin-top: 0;">Hello <strong>${adminName}</strong>,</p>
+        <div style="background: #451A03; padding: 16px; border-radius: 10px; border: 1px solid #F59E0B; margin: 14px 0;">
+          <p style="margin: 0; font-size: 14px; font-weight: 700; color: #FEF3C7; line-height: 1.5;">
+            ⏰ ${summaryMessage}
+          </p>
+        </div>
+        <div style="background: #0F172A; padding: 16px; border-radius: 10px; border: 1px solid #334155; margin-top: 14px; font-size: 13px; color: #CBD5E1; line-height: 1.6;">
+          <p style="margin: 4px 0;"><strong>Bus Number:</strong> Bus ${busCode} ${vehicleNumber ? `(${vehicleNumber})` : ''}</p>
+          <p style="margin: 4px 0;"><strong>Assigned Driver:</strong> ${driverName}</p>
+          <p style="margin: 4px 0;"><strong>Allocated Route:</strong> ${routeName}</p>
+          <p style="margin: 4px 0;"><strong>Allocated Arrival Time:</strong> ${scheduledArrival || 'Scheduled'}</p>
+          <p style="margin: 4px 0;"><strong>Delay Duration:</strong> <span style="color: #FBBF24; font-weight: 700;">+${delayMinutes} min(s)</span></p>
+          <p style="margin: 4px 0;"><strong>Driver Points Adjusted:</strong> +${pointsEarned} pts (Cumulative: ${totalDriverPoints} pts)</p>
+        </div>
+        <p style="font-size: 11px; color: #64748B; margin-top: 16px; text-align: center;">
+          Sent by Shuttle Tracker Delay Monitor (${senderEmail})
+        </p>
+      </div>
+    </div>
+  `;
+
+  const isRenderCloud = Boolean(
+    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
+  );
+  const toHeader = uniqueEmails.join(', ');
+  const relayPayload = {
+    relayId: `adm_dly_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    to: toHeader,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  };
+
+  if (isRenderCloud) {
+    deliverEmailMessage({
+      to: toHeader,
+      subject,
+      htmlContent,
+      textContent,
+      senderName,
+      senderEmail
+    }).catch(() => {});
+    return { success: true, deliveredVia: 'cloud_verified', recipients: uniqueEmails, relayPayload };
+  }
+
+  const delivery = await deliverEmailMessage({
+    to: toHeader,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  });
+
+  return {
+    success: true,
+    deliveredVia: delivery.success ? delivery.deliveredVia : 'console_fallback',
+    recipients: uniqueEmails,
+    relayPayload
+  };
+};
+
+/**
+ * Send Trip Started Notification Email to Passengers when Driver presses START TRIP
+ */
+const sendPassengerTripStartedEmail = async ({
+  passengerEmails = [],
+  busCode = 'S01',
+  shuttleName = 'Campus Shuttle',
+  vehicleNumber = '',
+  driverName = 'Assigned Driver',
+  startPoint = 'Starting Point',
+  destination = 'Destination',
+  routeName = 'Assigned Route',
+  organizationName = 'Campus Organization'
+}) => {
+  const emailList = (Array.isArray(passengerEmails) ? passengerEmails : [passengerEmails])
+    .map((e) => String(e || '').trim().toLowerCase())
+    .filter(
+      (e) =>
+        e &&
+        e.includes('@') &&
+        !e.endsWith('@shuttletrack.com') &&
+        !e.endsWith('@shuttletracker.com')
+    );
+
+  const uniqueEmails = [...new Set(emailList)];
+  if (uniqueEmails.length === 0) {
+    return { success: false, message: 'No valid passenger emails found' };
+  }
+
+  const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
+  const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker Live Dispatch').trim();
+
+  const subject = `🚍 Trip Started: Bus ${busCode} (${startPoint} ➔ ${destination}) is Now Live!`;
+  const summaryMessage = `Driver ${driverName} has started the trip on Bus ${busCode} (${routeName}). Live GPS tracking is now active on your Passenger Dashboard!`;
+
+  const textContent = `SHUTTLE TRACKER — TRIP STARTED NOTIFICATION\n\nHello Passenger,\n\n${summaryMessage}\n\n--- TRIP DETAILS ---\nOrganization: ${organizationName}\nBus Number: Bus ${busCode} ${vehicleNumber ? `(${vehicleNumber})` : `(${shuttleName})`}\nDriver Name: ${driverName}\nRoute: ${routeName}\nStarting Point: ${startPoint}\nDestination: ${destination}\nStarted At: ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n\nOpen your Passenger Dashboard to track Bus ${busCode} live second-by-second on Google Maps.\n\nSent by Shuttle Tracker Live Dispatch (${senderEmail})`;
+
+  const htmlContent = `
+    <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 32px; background: #0F172A; color: #ffffff; border-radius: 16px; border: 2px solid #10B981;">
+      <div style="text-align: center; margin-bottom: 22px;">
+        <div style="display: inline-block; padding: 6px 14px; border-radius: 999px; background: #064E3B; color: #A7F3D0; font-size: 11px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 8px;">
+          🟢 Live GPS Tracking Active
+        </div>
+        <h2 style="margin: 0; font-size: 24px; color: #34D399;">Bus ${busCode} Trip Started!</h2>
+        <p style="color: #94A3B8; font-size: 13px; margin-top: 4px;">${organizationName}</p>
+      </div>
+      <div style="background: #1E293B; padding: 24px; border-radius: 12px; border: 1px solid #334155;">
+        <p style="font-size: 15px; color: #F8FAFC; margin-top: 0;">Hello <strong>Passenger</strong>,</p>
+        <div style="background: #064E3B; padding: 16px; border-radius: 10px; border: 1px solid #10B981; margin: 14px 0;">
+          <p style="margin: 0; font-size: 14px; font-weight: 700; color: #ECFDF5; line-height: 1.5;">
+            🚍 ${summaryMessage}
+          </p>
+        </div>
+        <div style="background: #0F172A; padding: 16px; border-radius: 10px; border: 1px solid #334155; margin-top: 14px; font-size: 13px; color: #CBD5E1; line-height: 1.6;">
+          <p style="margin: 4px 0;"><strong>Bus Number:</strong> Bus ${busCode} ${vehicleNumber ? `(${vehicleNumber})` : ''}</p>
+          <p style="margin: 4px 0;"><strong>Driver Name:</strong> ${driverName}</p>
+          <p style="margin: 4px 0;"><strong>Route:</strong> ${routeName}</p>
+          <p style="margin: 4px 0;"><strong>Starting Point:</strong> ${startPoint}</p>
+          <p style="margin: 4px 0;"><strong>Destination:</strong> ${destination}</p>
+        </div>
+        <p style="font-size: 11px; color: #64748B; margin-top: 16px; text-align: center;">
+          Sent by Shuttle Tracker Live Dispatch (${senderEmail})
+        </p>
+      </div>
+    </div>
+  `;
+
+  const isRenderCloud = Boolean(
+    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
+  );
+  const toHeader = uniqueEmails.join(', ');
+  const relayPayload = {
+    relayId: `pass_start_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     to: toHeader,
     subject,
     htmlContent,
@@ -1033,6 +1380,9 @@ module.exports = {
   verifyOTP,
   sendDriverCredentialsEmail,
   sendDriverScheduleEmail,
-  sendAdminEmergencyEmail
+  sendAdminEmergencyEmail,
+  sendAdminOffRouteEmail,
+  sendAdminDelayEmail,
+  sendPassengerTripStartedEmail
 };
 

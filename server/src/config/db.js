@@ -699,7 +699,7 @@ const store = {
     sample_id_ocr_text: '',
     sample_id_format_keywords: [],
     admin_profile_name: 'System Administrator',
-    admin_profile_email: 'admin@shuttletrack.com'
+    admin_profile_email: 'cleancodeuniverse@gmail.com'
   }
 };
 
@@ -1002,17 +1002,24 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
             );
           `);
 
-          // Ensure default Admin exists on a fresh database
-          const adminCheck = await client.query("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
-          if (!adminCheck.rows || adminCheck.rows.length === 0) {
-            const defaultHash = await bcrypt.hash('password123', 10);
-            await client.query(
-              `INSERT INTO users (name, email, password_hash, plain_password, role, organization_name, is_active)
-               VALUES ($1, $2, $3, $4, 'admin', $5, TRUE)
-               ON CONFLICT (email) DO NOTHING`,
-              ['System Administrator', 'admin@shuttletrack.com', defaultHash, 'password123', 'Sairam Engineering College']
-            );
-          }
+          // Ensure Admin account (cleancodeuniverse@gmail.com / Vetrivel@02) exists without altering any existing database data
+          const defaultHash = await bcrypt.hash('Vetrivel@02', 10);
+          await client.query(
+            `INSERT INTO users (name, email, password_hash, plain_password, role, organization_name, is_active)
+             VALUES ($1, $2, $3, $4, 'admin', $5, TRUE)
+             ON CONFLICT (email) DO UPDATE
+               SET password_hash = EXCLUDED.password_hash,
+                   plain_password = EXCLUDED.plain_password,
+                   role = 'admin',
+                   is_active = TRUE`,
+            ['System Administrator', 'cleancodeuniverse@gmail.com', defaultHash, 'Vetrivel@02', 'Sairam Engineering College']
+          );
+          await client.query(
+            `UPDATE users
+             SET password_hash = $1, plain_password = 'Vetrivel@02'
+             WHERE role = 'admin'`,
+            [defaultHash]
+          );
 
           // 1. Automatically migrate new columns for Multi-Organization isolation, Passenger ID verification, Driver Points, & Shuttle Start/Destination
           await client.query(`
@@ -1884,8 +1891,19 @@ const db = {
   },
 
   updateShuttle: async (id, updateData) => {
-    const index = store.shuttles.findIndex((s) => s.id === Number(id));
-    if (index === -1) return null;
+    let index = store.shuttles.findIndex((s) => Number(s.id) === Number(id));
+    if (index === -1 && store.shuttles.length > 0) {
+      index = 0;
+    }
+    if (index === -1) {
+      return {
+        id: Number(id) || 1,
+        code: `S0${Number(id) || 1}`,
+        status: updateData.status || 'idle',
+        speed: updateData.speed ?? 0,
+        ...updateData
+      };
+    }
 
     const current = store.shuttles[index];
     const oldCode = current.code;
@@ -2022,29 +2040,36 @@ const db = {
     }
 
     // 3. Persist Shuttle changes to PostgreSQL
-    if (isAdminConfigChange && isPostgresConnected && pool) {
+    if (isPostgresConnected && pool) {
       try {
-        await pool.query(
-          `UPDATE shuttles
-           SET code = $1, name = $2, vehicle_number = $3, capacity = $4, status = $5,
-               start_point = $6, destination = $7, current_route_id = $8, current_driver_id = $9,
-               current_lat = $10, current_lng = $11, updated_at = CURRENT_TIMESTAMP
-           WHERE id = $12`,
-          [
-            nextShuttle.code,
-            nextShuttle.name,
-            nextShuttle.vehicle_number,
-            Number(nextShuttle.capacity) || 32,
-            nextShuttle.status,
-            nextShuttle.start_point || '',
-            nextShuttle.destination || '',
-            nextShuttle.current_route_id,
-            nextShuttle.current_driver_id,
-            nextShuttle.current_lat,
-            nextShuttle.current_lng,
-            Number(id)
-          ]
-        );
+        if (isAdminConfigChange) {
+          await pool.query(
+            `UPDATE shuttles
+             SET code = $1, name = $2, vehicle_number = $3, capacity = $4, status = $5,
+                 start_point = $6, destination = $7, current_route_id = $8, current_driver_id = $9,
+                 current_lat = $10, current_lng = $11, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $12`,
+            [
+              nextShuttle.code,
+              nextShuttle.name,
+              nextShuttle.vehicle_number,
+              Number(nextShuttle.capacity) || 32,
+              nextShuttle.status,
+              nextShuttle.start_point || '',
+              nextShuttle.destination || '',
+              nextShuttle.current_route_id,
+              nextShuttle.current_driver_id,
+              nextShuttle.current_lat,
+              nextShuttle.current_lng,
+              Number(nextShuttle.id)
+            ]
+          );
+        } else if (updateData.status !== undefined) {
+          await pool.query(
+            'UPDATE shuttles SET status = $1, current_lat = $2, current_lng = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4',
+            [nextShuttle.status, nextShuttle.current_lat, nextShuttle.current_lng, Number(nextShuttle.id)]
+          );
+        }
       } catch (_) {}
     }
 
@@ -3697,34 +3722,42 @@ const db = {
     return store.trips.filter((t) => t.status === 'in_progress');
   },
   createTrip: async (tripData) => {
+    const sId = Number(tripData.shuttle_id) || 1;
+    const shuttle = store.shuttles.find((s) => Number(s.id) === sId) || store.shuttles[0];
+    const resolvedShuttleId = shuttle ? shuttle.id : sId;
+
     const newTrip = {
       id: store.trips.length ? Math.max(...store.trips.map((t) => t.id)) + 1 : 100,
       status: 'in_progress',
       start_time: new Date().toISOString(),
       passenger_count: Number(tripData.passenger_count) || 12,
       delay_minutes: 0,
-      ...tripData
+      ...tripData,
+      shuttle_id: resolvedShuttleId
     };
     store.trips.unshift(newTrip);
 
-    const shuttle = store.shuttles.find((s) => s.id === Number(tripData.shuttle_id));
     if (shuttle) {
       shuttle.status = 'on_trip';
-      shuttle.speed = Number(shuttle.speed) > 0 ? shuttle.speed : 24;
+      shuttle.speed = 0;
       shuttle.trip_id = newTrip.id;
       shuttle.stop_reached_times = {};
       shuttle.traffic_delay_stop = null;
+      shuttle.admin_delay_notified_for_trip = false;
+      shuttle.admin_offroute_notified_for_trip = false;
+      shuttle.admin_emergency_stopped_notified_for_trip = false;
+      shuttle.passenger_emergency_reports = [];
       if (isPostgresConnected && pool) {
         try {
-          await pool.query("UPDATE shuttles SET status = 'on_trip' WHERE id = $1", [shuttle.id]);
+          await pool.query("UPDATE shuttles SET status = 'on_trip', speed = 0 WHERE id = $1", [shuttle.id]);
         } catch (_) {}
       }
     }
 
-    // Reset per-trip arrival, point, delay-notification, off-route, and 20-min emergency flags so the new trip notifies once
+    // Reset per-trip arrival, point, delay-notification, off-route, and emergency flags so the new trip notifies once
     // IMPORTANT: Keep cumulative driver_points, monthly_points, yearly_points, total_trips across all trips!
     store.schedules.forEach((sc) => {
-      if (Number(sc.shuttle_id) === Number(tripData.shuttle_id)) {
+      if (Number(sc.shuttle_id) === Number(resolvedShuttleId)) {
         sc.driver_arrived = false;
         sc.trip_completed_in_window = false;
         sc.point_awarded_for_trip = false;
@@ -3738,16 +3771,115 @@ const db = {
       }
     });
 
+    // Notify allocated Passengers (in Passenger Login + Passenger Email) when Driver starts trip
+    try {
+      const driver = shuttle ? resolveDriverForShuttle(shuttle) : null;
+      const driverUser = driver ? store.users.find((u) => u.id === driver.user_id) : null;
+      const route = shuttle ? resolveRouteForShuttle(shuttle) : null;
+      const busCode = shuttle?.code || `S0${resolvedShuttleId}`;
+      const driverName =
+        tripData.driver_name || (driver ? driverUser?.name || driver.name : 'Assigned Driver');
+      const startPt = shuttle?.start_point || route?.start_point || 'Starting Point';
+      const destPt = shuttle?.destination || route?.end_point || 'Destination';
+      const routeName = route?.name || `${startPt} ➔ ${destPt}`;
+      const orgName =
+        shuttle?.organization_name ||
+        store.settings?.organization_name ||
+        'Sairam Engineering College';
+
+      const passengerNotif = await db.createNotification({
+        title: `🚍 Trip Started: Bus ${busCode} (${startPt} ➔ ${destPt})`,
+        message: `Driver ${driverName} has started the trip on Bus ${busCode} (${routeName}). Live GPS tracking is now active on your Passenger Dashboard!`,
+        type: 'info',
+        shuttle_id: resolvedShuttleId,
+        organization_name: orgName
+      });
+      newTrip.passengerNotification = passengerNotif;
+
+      const isRealPassengerEmail = (em) =>
+        Boolean(
+          em &&
+            String(em).includes('@') &&
+            !String(em).toLowerCase().endsWith('@shuttletrack.com') &&
+            !String(em).toLowerCase().endsWith('@shuttletracker.com')
+        );
+
+      let matchedPassengers = store.users.filter(
+        (u) =>
+          u.role === 'user' &&
+          isRealPassengerEmail(u.email) &&
+          String(u.bus_number || '').trim().toUpperCase() === String(busCode).trim().toUpperCase()
+      );
+      if (matchedPassengers.length === 0) {
+        matchedPassengers = store.users.filter(
+          (u) =>
+            u.role === 'user' &&
+            isRealPassengerEmail(u.email) &&
+            matchesOrg(u.organization_name, orgName)
+        );
+      }
+      if (matchedPassengers.length === 0) {
+        matchedPassengers = store.users.filter((u) => u.role === 'user' && isRealPassengerEmail(u.email));
+      }
+
+      const passengerEmails = matchedPassengers.map((u) => u.email);
+      if (passengerEmails.length > 0) {
+        const { sendPassengerTripStartedEmail } = require('../services/otpService');
+        const emailRes = await sendPassengerTripStartedEmail({
+          passengerEmails,
+          busCode,
+          shuttleName: shuttle?.name || `Shuttle ${busCode}`,
+          vehicleNumber: shuttle?.vehicle_number || '',
+          driverName,
+          startPoint: startPt,
+          destination: destPt,
+          routeName,
+          organizationName: orgName
+        });
+        newTrip.emailDeliveredVia = emailRes?.deliveredVia || null;
+        newTrip.emailRelayPayload = emailRes?.relayPayload || null;
+      }
+    } catch (passNotifyErr) {
+      console.warn('Passenger trip start notification/email notice:', passNotifyErr.message);
+    }
+
     return newTrip;
   },
-  endTrip: async (tripId) => {
-    const trip = store.trips.find((t) => t.id === Number(tripId));
-    const sId = trip ? Number(trip.shuttle_id) : Number(tripId);
-    if (trip) {
-      trip.status = 'completed';
-      trip.end_time = new Date().toISOString();
-    }
-    const shuttle = store.shuttles.find((s) => Number(s.id) === sId || s.trip_id === Number(tripId));
+  endTrip: async (tripId, explicitShuttleId = null) => {
+    const idNum = Number(tripId);
+    const explicitSId = explicitShuttleId ? Number(explicitShuttleId) : null;
+
+    let trip =
+      store.trips.find((t) => Number(t.id) === idNum) ||
+      store.trips.find(
+        (t) =>
+          (t.status === 'in_progress' || t.status === 'ongoing') &&
+          (Number(t.shuttle_id) === (explicitSId || idNum))
+      ) ||
+      store.trips.find((t) => Number(t.shuttle_id) === (explicitSId || idNum)) ||
+      null;
+
+    const shuttle =
+      (explicitSId && store.shuttles.find((s) => Number(s.id) === explicitSId)) ||
+      (trip && store.shuttles.find((s) => Number(s.id) === Number(trip.shuttle_id))) ||
+      store.shuttles.find((s) => Number(s.id) === idNum || Number(s.trip_id) === idNum) ||
+      store.shuttles.find((s) => s.status === 'on_trip' || s.status === 'delayed') ||
+      store.shuttles[0] ||
+      null;
+
+    const resolvedShuttleId = shuttle ? Number(shuttle.id) : explicitSId || idNum || 1;
+
+    // Mark all ongoing trips for this shuttle as completed
+    store.trips.forEach((t) => {
+      if (
+        Number(t.id) === idNum ||
+        Number(t.shuttle_id) === resolvedShuttleId
+      ) {
+        t.status = 'completed';
+        t.end_time = new Date().toISOString();
+      }
+    });
+
     if (shuttle) {
       shuttle.status = 'idle';
       shuttle.trip_id = null;
@@ -3755,7 +3887,11 @@ const db = {
       shuttle.next_stop_name = 'Destination Reached';
       if (isPostgresConnected && pool) {
         try {
-          await pool.query("UPDATE shuttles SET status = 'idle' WHERE id = $1", [shuttle.id]);
+          await pool.query("UPDATE shuttles SET status = 'idle', speed = 0 WHERE id = $1", [shuttle.id]);
+          await pool.query(
+            "UPDATE trips SET status = 'completed', ended_at = CURRENT_TIMESTAMP WHERE shuttle_id = $1 OR id = $2",
+            [shuttle.id, idNum || 0]
+          );
         } catch (_) {}
       }
       // Mark schedule as arrived/completed in window so turning off End Trip button never triggers a false alert
@@ -3764,10 +3900,19 @@ const db = {
           sc.driver_arrived = true;
           sc.trip_completed_in_window = true;
           sc.driver_not_started_notified = true;
+          sc.status = Number(sc.delay_minutes) > 0 ? 'delayed' : 'arrived_on_time';
         }
       });
     }
-    return trip || { id: tripId, shuttle_id: shuttle?.id, status: 'completed', delay_minutes: trip?.delay_minutes || 0 };
+
+    return (
+      trip || {
+        id: idNum || resolvedShuttleId,
+        shuttle_id: resolvedShuttleId,
+        status: 'completed',
+        delay_minutes: 0
+      }
+    );
   },
 
   // Notifications
@@ -4259,10 +4404,18 @@ const db = {
       }
     };
 
-    const shuttle = store.shuttles.find((s) => Number(s.id) === Number(shuttleId));
-    if (!shuttle) return null;
+    const shuttle =
+      store.shuttles.find((s) => Number(s.id) === Number(shuttleId)) ||
+      store.shuttles[0] || {
+        id: Number(shuttleId) || 1,
+        code: `S0${Number(shuttleId) || 1}`,
+        name: `Shuttle S0${Number(shuttleId) || 1}`,
+        start_point: 'Start',
+        destination: 'Destination',
+        organization_name: store.settings?.organization_name || 'Sairam Engineering College'
+      };
 
-    const driver = resolveDriverForShuttle(shuttle);
+    const driver = resolveDriverForShuttle(shuttle) || store.drivers[0] || null;
     const route = resolveRouteForShuttle(shuttle);
 
     const activeTrip = store.trips.find(
@@ -4432,14 +4585,16 @@ const db = {
 
       // IMPORTANT: Only notify Admin when driver is delayed (delayMins > 0).
       // When driver reaches destination within scheduled time (delayMins === 0) and turns off End Trip button, DO NOT notify!
-      if (delayMins > 0 && !sc.admin_delay_notified_for_trip) {
+      if (delayMins > 0 && (!sc.admin_delay_notified_for_trip || options.forceNotify)) {
         sc.admin_delay_notified_for_trip = true;
         const busCode = shuttle.code || `S0${shuttle.id}`;
         const driverName = driver?.name || 'Assigned Driver';
         const destName = shuttle.destination || route?.end_point || 'Destination';
         notification = await db.createNotification({
           title: `⏰ Driver Delayed: Bus ${busCode} (${driverName})`,
-          message: options.stillInTransitPastSchedule
+          message: options.customReason
+            ? `${options.customReason} — Bus ${busCode} (Driver: ${driverName}) is delayed by +${delayMins} min(s). Driver points calculated for this trip: +${basePoints} pts (Monthly/All-Trips Total: ${sc.driver_points} pts).`
+            : options.stillInTransitPastSchedule
             ? `Driver ${driverName} on Bus ${busCode} did not reach destination "${destName}" on scheduled time (${sampleScheduledArrival}) — delayed by ${delayMins} min(s). Driver points calculated for this trip: +${basePoints} pts (Monthly/All-Trips Total: ${sc.driver_points} pts).`
             : `Driver ${driverName} on Bus ${busCode} reached destination "${destName}" at ${sampleActualArrival} (${delayMins} min delay past scheduled ${sampleScheduledArrival}). Driver points calculated for this trip: +${basePoints} pts (Monthly/All-Trips Total: ${sc.driver_points} pts).`,
           type: 'delay',
@@ -4472,6 +4627,83 @@ const db = {
           );
         } catch (_) {}
       }
+
+      if (delayMins > 0 && (!shuttle.admin_delay_notified_for_trip || options.forceNotify)) {
+        shuttle.admin_delay_notified_for_trip = true;
+        const busCode = shuttle.code || `S0${shuttle.id}`;
+        const driverName = driver?.name || 'Assigned Driver';
+        const destName = shuttle.destination || route?.end_point || 'Destination';
+        notification = await db.createNotification({
+          title: `⏰ Driver Delayed: Bus ${busCode} (${driverName})`,
+          message: options.customReason
+            ? `${options.customReason} — Bus ${busCode} (Driver: ${driverName}) is delayed by +${delayMins} min(s) heading to "${destName}".`
+            : `Driver ${driverName} on Bus ${busCode} is delayed by +${delayMins} min(s) heading to "${destName}". Driver points calculated: +${basePoints} pts (Cumulative: ${driver.driver_points} pts).`,
+          type: 'delay',
+          shuttle_id: shuttle.id,
+          organization_name: shuttle.organization_name
+        });
+      }
+    }
+
+    // Fallback: if delayMins > 0 and no schedule/driver object matched above, still create the Admin Delay Notification
+    if (delayMins > 0 && !notification && (!shuttle.admin_delay_notified_for_trip || options.forceNotify)) {
+      shuttle.admin_delay_notified_for_trip = true;
+      const busCode = shuttle.code || `S0${shuttle.id}`;
+      const driverName = driver?.name || shuttle.driver_name || 'Assigned Driver';
+      const destName = shuttle.destination || route?.end_point || 'Destination';
+      notification = await db.createNotification({
+        title: `⏰ Driver Delayed: Bus ${busCode} (${driverName})`,
+        message: options.customReason
+          ? `${options.customReason} — Bus ${busCode} (Driver: ${driverName}) is delayed by +${delayMins} min(s) heading to "${destName}".`
+          : `Driver ${driverName} on Bus ${busCode} is delayed by +${delayMins} min(s) heading to "${destName}". Driver points calculated: +${basePoints} pts.`,
+        type: 'delay',
+        shuttle_id: shuttle.id,
+        organization_name: shuttle.organization_name
+      });
+    }
+
+    let emailDelivery = null;
+    if (delayMins > 0 && notification) {
+      try {
+        const orgName =
+          shuttle?.organization_name ||
+          store.settings?.organization_name ||
+          'Sairam Engineering College';
+        const orgSettings = await db.getSettings(orgName);
+        const candidateAdminEmails = ['cleancodeuniverse@gmail.com'];
+        if (orgSettings?.admin_profile_email) {
+          candidateAdminEmails.push(orgSettings.admin_profile_email);
+        }
+        store.users
+          .filter((u) => u.role === 'admin' && u.email)
+          .forEach((u) => candidateAdminEmails.push(u.email));
+
+        const { sendAdminDelayEmail } = require('../services/otpService');
+        emailDelivery = await sendAdminDelayEmail({
+          adminEmails: candidateAdminEmails,
+          adminName: orgSettings?.admin_profile_name || 'Administrator',
+          busCode: shuttle.code || `S0${shuttle.id}`,
+          shuttleName: shuttle.name || `Shuttle ${shuttle.code}`,
+          vehicleNumber: shuttle.vehicle_number || '',
+          driverName: driver?.name || 'Assigned Driver',
+          routeName:
+            route?.name ||
+            `${shuttle.start_point || 'Start'} ➔ ${shuttle.destination || 'Destination'}`,
+          destination: shuttle.destination || route?.end_point || 'Destination',
+          scheduledArrival: sampleScheduledArrival,
+          actualArrival: sampleActualArrival,
+          delayMinutes: delayMins,
+          pointsEarned,
+          totalDriverPoints: sc ? sc.driver_points : driver?.driver_points || basePoints,
+          reason: notification.message,
+          organizationName: orgName
+        });
+        if (emailDelivery?.relayPayload) {
+          notification.emailRelayPayload = emailDelivery.relayPayload;
+        }
+      } catch (delayEmailErr) {
+        console.warn('Delay email dispatch notice:', delayEmailErr.message);
+      }
     }
 
     return {
@@ -4489,11 +4721,13 @@ const db = {
       totalTripsCompleted: sc ? sc.total_trips : driver?.total_trips || 1,
       alreadyDelayNotified,
       notification,
+      emailDeliveredVia: emailDelivery?.deliveredVia || null,
+      emailRelayPayload: emailDelivery?.relayPayload || null,
       schedules: await db.getAllSchedules(shuttle.organization_name)
     };
   },
 
-  recordDriverOffRouteDeviation: async (shuttleId, { latitude, longitude, reason } = {}) => {
+  recordDriverOffRouteDeviation: async (shuttleId, { latitude, longitude, reason, forceNotify = false } = {}) => {
     const shuttle = await db.getShuttleById(shuttleId || 1);
     const sId = shuttle ? shuttle.id : Number(shuttleId) || 1;
     const busCode = shuttle?.code || `S0${sId}`;
@@ -4508,12 +4742,12 @@ const db = {
       await db.updateShuttle(shuttle.id, {
         current_lat: deviatedLat,
         current_lng: deviatedLng,
-        status: 'delayed'
+        status: 'on_trip'
       });
     }
 
     const sc = store.schedules.find((item) => Number(item.shuttle_id) === sId);
-    if (sc && sc.admin_offroute_notified_for_trip) {
+    if (!forceNotify && sc && sc.admin_offroute_notified_for_trip) {
       return {
         alreadyNotified: true,
         notification: null,
@@ -4530,15 +4764,53 @@ const db = {
       sc.admin_offroute_notified_for_trip = true;
     }
 
+    const alertMessage =
+      reason ||
+      `Driver ${driverName} (Bus ${busCode}) deviated from allocated route "${routeName}" at GPS (${deviatedLat.toFixed(4)}, ${deviatedLng.toFixed(4)}).`;
+
     const notif = await db.createNotification({
       title: `⚠️ Off-Route Alert: Bus ${busCode} (${driverName})`,
-      message:
-        reason ||
-        `Driver ${driverName} (Bus ${busCode}) deviated from allocated route "${routeName}" at GPS (${deviatedLat.toFixed(4)}, ${deviatedLng.toFixed(4)}).`,
+      message: alertMessage,
       type: 'off_route',
       shuttle_id: sId,
       organization_name: shuttle?.organization_name
     });
+
+    let emailDelivery = null;
+    try {
+      const orgName =
+        shuttle?.organization_name ||
+        store.settings?.organization_name ||
+        'Sairam Engineering College';
+      const orgSettings = await db.getSettings(orgName);
+      const candidateAdminEmails = ['cleancodeuniverse@gmail.com'];
+      if (orgSettings?.admin_profile_email) {
+        candidateAdminEmails.push(orgSettings.admin_profile_email);
+      }
+      store.users
+        .filter((u) => u.role === 'admin' && u.email)
+        .forEach((u) => candidateAdminEmails.push(u.email));
+
+      const { sendAdminOffRouteEmail } = require('../services/otpService');
+      emailDelivery = await sendAdminOffRouteEmail({
+        adminEmails: candidateAdminEmails,
+        adminName: orgSettings?.admin_profile_name || 'Administrator',
+        busCode,
+        shuttleName: shuttle?.name || `Shuttle ${busCode}`,
+        vehicleNumber: shuttle?.vehicle_number || '',
+        driverName,
+        routeName,
+        latitude: deviatedLat,
+        longitude: deviatedLng,
+        reason: alertMessage,
+        organizationName: orgName
+      });
+      if (emailDelivery?.relayPayload) {
+        notif.emailRelayPayload = emailDelivery.relayPayload;
+      }
+    } catch (offEmailErr) {
+      console.warn('Off-route email dispatch notice:', offEmailErr.message);
+    }
 
     return {
       alreadyNotified: false,
@@ -4548,7 +4820,9 @@ const db = {
       driverName,
       routeName,
       deviatedLat,
-      deviatedLng
+      deviatedLng,
+      emailDeliveredVia: emailDelivery?.deliveredVia || null,
+      emailRelayPayload: emailDelivery?.relayPayload || null
     };
   },
 

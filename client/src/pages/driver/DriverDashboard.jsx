@@ -47,9 +47,10 @@ export const DriverDashboard = () => {
     socket,
     liveLocations,
     sendDriverLocation,
-    startSimulation,
     stopSimulation,
-    simulationActive
+    simulationActive,
+    relayCloudEmail,
+    clearShuttleLiveLocation
   } = useSocket();
   const { addToast } = useToast();
 
@@ -66,7 +67,7 @@ export const DriverDashboard = () => {
     heading: 0
   });
 
-  // One-time per-trip notification flags (shared with backend and passenger portal)
+  // Per-trip notification status indicators
   const [delayNotifiedForTrip, setDelayNotifiedForTrip] = useState(false);
   const [offRouteNotifiedForTrip, setOffRouteNotifiedForTrip] = useState(false);
   const [emergencyStoppedNotifiedForTrip, setEmergencyStoppedNotifiedForTrip] = useState(false);
@@ -79,18 +80,27 @@ export const DriverDashboard = () => {
   const watchIdRef = useRef(null);
   const latestGpsRef = useRef(null);
   const gpsSecondTimerRef = useRef(null);
+  const isTripActiveRef = useRef(false);
+  const endingTripCooldownRef = useRef(0);
 
   const fetchDriver = async () => {
     try {
       const res = await api.get('/drivers/me');
       if (res.data.success && res.data.data) {
         const d = res.data.data;
+        const recentlyEnded = Date.now() - endingTripCooldownRef.current < 6000;
+        if (recentlyEnded && d.assignedShuttle) {
+          d.assignedShuttle.status = 'idle';
+          d.assignedShuttle.speed = 0;
+        }
         setDriverData(d);
-        if (d.assignedShuttle?.status === 'on_trip') {
+        if (!recentlyEnded && (d.assignedShuttle?.status === 'on_trip' || d.assignedShuttle?.status === 'delayed')) {
           setTripStatus('LIVE');
+          isTripActiveRef.current = true;
           setGpsStatus('Connected (Live Hardware GPS)');
         } else {
           setTripStatus('NOT_STARTED');
+          isTripActiveRef.current = false;
           setGpsStatus('Standby (Press Start Trip)');
         }
         if (d.delayNotifiedForTrip !== undefined) {
@@ -111,6 +121,7 @@ export const DriverDashboard = () => {
   useEffect(() => {
     fetchDriver();
     return () => {
+      isTripActiveRef.current = false;
       if (watchIdRef.current !== null && navigator.geolocation) {
         navigator.geolocation.clearWatch(watchIdRef.current);
       }
@@ -190,7 +201,7 @@ export const DriverDashboard = () => {
 
   const live = liveLocations[baseShuttle.id];
   const assignedShuttle =
-    tripStatus === 'LIVE' || baseShuttle.status === 'on_trip'
+    tripStatus === 'LIVE'
       ? {
           ...baseShuttle,
           current_lat: currentCoords.lat ?? live?.latitude ?? baseShuttle.current_lat,
@@ -224,6 +235,7 @@ export const DriverDashboard = () => {
   // If driver does not move, shuttle stays at exact same location with 0 km/h.
   // If driver moves >= 3 meters, shuttle moves that exact distance and calculates real speed.
   const applyHardwareGpsReading = (coords, shuttleIdToUse, tripIdToUse) => {
+    if (!isTripActiveRef.current) return;
     const rawLat = Number(coords?.latitude);
     const rawLng = Number(coords?.longitude);
     if (!Number.isFinite(rawLat) || !Number.isFinite(rawLng)) return;
@@ -364,6 +376,7 @@ export const DriverDashboard = () => {
 
     // Second-by-second (1000ms) exact hardware GPS heartbeat
     gpsSecondTimerRef.current = setInterval(() => {
+      if (!isTripActiveRef.current) return;
       const latest = latestGpsRef.current;
       if (!latest) return;
       const idleMs = Date.now() - (latest.lastMoveMs || latest.timestamp || Date.now());
@@ -387,9 +400,11 @@ export const DriverDashboard = () => {
   // Resume hardware GPS tracking automatically if page is refreshed while tripStatus === 'LIVE'
   useEffect(() => {
     if (tripStatus === 'LIVE' && !simulationActive && watchIdRef.current === null && assignedShuttle?.id) {
+      isTripActiveRef.current = true;
       startHardwareGpsTracking(assignedShuttle.id, activeTripId);
     }
     if (tripStatus !== 'LIVE') {
+      isTripActiveRef.current = false;
       if (gpsSecondTimerRef.current) {
         clearInterval(gpsSecondTimerRef.current);
         gpsSecondTimerRef.current = null;
@@ -400,6 +415,7 @@ export const DriverDashboard = () => {
   // Start Trip & Hardware Geolocation Watcher (NEVER runs fake autonomous route simulation when Driver presses Start Trip)
   const handleStartTrip = async () => {
     try {
+      endingTripCooldownRef.current = 0;
       setGpsStatus('Acquiring Exact Hardware GPS...');
       stopSimulation(assignedShuttle.id);
       latestGpsRef.current = null;
@@ -436,8 +452,13 @@ export const DriverDashboard = () => {
         heading: initHeading
       });
 
+      if (res.data?.emailRelayPayload) {
+        relayCloudEmail?.(res.data.emailRelayPayload);
+      }
+
       if (res.data.success) {
         const startedTripId = res.data.data.id;
+        isTripActiveRef.current = true;
         setActiveTripId(startedTripId);
         setTripStatus('LIVE');
         setDelayNotifiedForTrip(false);
@@ -454,8 +475,8 @@ export const DriverDashboard = () => {
         startHardwareGpsTracking(assignedShuttle.id, startedTripId);
 
         addToast({
-          title: 'Trip Started — Exact Live GPS Tracking Active',
-          message: `Bus ${assignedShuttle.code} is now tracking your exact GPS location second-by-second. Shuttle stays at your exact position when stationary and moves the exact distance you move.`,
+          title: 'Trip Started — Passengers Notified (Login & Email)',
+          message: `Bus ${assignedShuttle.code} is now tracking your exact GPS location second-by-second and passengers have been notified via Login & Email.`,
           type: 'success'
         });
       }
@@ -468,9 +489,15 @@ export const DriverDashboard = () => {
     }
   };
 
-  // End Trip (When driver reaches destination within scheduled time, do NOT notify Admin that END TRIP was pressed; if delayed, notify Admin & calculate points based on delay)
+  // End Trip — Works in ANY situation (whether activeTripId exists or not, whether schedule exists or not)
   const handleEndTrip = async () => {
-    if (watchIdRef.current !== null) {
+    const sId = assignedShuttle?.id || baseShuttle?.id || 1;
+    const tId = activeTripId || sId;
+
+    // 1. Immediately halt all GPS watchers, timers, and simulation
+    isTripActiveRef.current = false;
+    endingTripCooldownRef.current = Date.now();
+    if (watchIdRef.current !== null && navigator.geolocation) {
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
     }
@@ -479,73 +506,92 @@ export const DriverDashboard = () => {
       gpsSecondTimerRef.current = null;
     }
     latestGpsRef.current = null;
-    if (simulationActive) {
-      stopSimulation(assignedShuttle.id);
-    }
     try {
-      const currentDelay = Number(driverData?.delayMinutes || 0);
-      const arrivalRes = await api.post('/trips/destination-arrival', {
-        shuttle_id: assignedShuttle.id,
+      stopSimulation(sId);
+      clearShuttleLiveLocation?.(sId);
+    } catch (_) {}
+
+    // 2. Immediately transition UI state to NOT_STARTED so End Trip always works visually & functionally
+    setTripStatus('NOT_STARTED');
+    setActiveTripId(null);
+    setGpsStatus('Standby (Trip Ended)');
+    setCurrentCoords({ lat: null, lng: null, speed: 0, heading: 0 });
+    setDriverData((prev) =>
+      prev
+        ? {
+            ...prev,
+            assignedShuttle: prev.assignedShuttle
+              ? { ...prev.assignedShuttle, status: 'idle', speed: 0 }
+              : prev.assignedShuttle
+          }
+        : prev
+    );
+
+    const currentDelay = Number(driverData?.delayMinutes || 0);
+    let endData = null;
+
+    // 3. Notify backend to end trip & record arrival (resilient in any situation)
+    try {
+      const endRes = await api.post(`/trips/${tId}/end`, {
+        shuttle_id: sId,
+        trip_id: activeTripId || sId,
         delay_minutes: currentDelay
       });
-      await api.post(`/trips/${activeTripId || assignedShuttle.id}/end`);
-
-      setTripStatus('NOT_STARTED');
-      setGpsStatus('Standby');
-      setCurrentCoords({ lat: null, lng: null, speed: 0, heading: 0 });
-      fetchDriver();
-
-      const ptsEarned = arrivalRes.data?.data?.pointsEarned ?? (currentDelay > 0 ? Math.max(2, 10 - currentDelay) : 10);
-      const monthlyPts =
-        arrivalRes.data?.data?.monthlyPoints ??
-        arrivalRes.data?.data?.driverPoints ??
-        (Number(driverData?.monthlyPoints ?? driverData?.driver_points ?? 10) + ptsEarned);
-      const yearlyPts =
-        arrivalRes.data?.data?.yearlyPoints ??
-        (Number(driverData?.yearlyPoints ?? driverData?.yearly_points ?? monthlyPts));
-
-      if (currentDelay > 0) {
-        addToast({
-          title: `Trip Completed (+${currentDelay}m Delayed • +${ptsEarned} Pts)`,
-          message: `Destination reached with +${currentDelay} min delay. Admin notified & points added to all-trips score (Monthly: ${monthlyPts} pts • Yearly: ${yearlyPts} pts).`,
-          type: 'warning'
-        });
-      } else {
-        addToast({
-          title: `Destination Reached On Time (+${ptsEarned} Pts)`,
-          message: `Trip completed within scheduled time! +${ptsEarned} points added to all-trips score (Monthly: ${monthlyPts} pts • Yearly: ${yearlyPts} pts).`,
-          type: 'success'
-        });
+      endData = endRes.data?.data?.arrivalResult || endRes.data?.data || null;
+      if (endRes.data?.emailRelayPayload) {
+        relayCloudEmail?.(endRes.data.emailRelayPayload);
       }
-    } catch (err) {
-      console.error(err);
+    } catch (_) {
+      try {
+        await api.post('/trips/end', { shuttle_id: sId });
+      } catch (__) {}
+    }
+
+    fetchDriver();
+
+    const ptsEarned = endData?.pointsEarned ?? (currentDelay > 0 ? Math.max(2, 10 - currentDelay) : 10);
+    const monthlyPts =
+      endData?.monthlyPoints ??
+      endData?.driverPoints ??
+      (Number(driverData?.monthlyPoints ?? driverData?.driver_points ?? 10) + ptsEarned);
+    const yearlyPts =
+      endData?.yearlyPoints ??
+      (Number(driverData?.yearlyPoints ?? driverData?.yearly_points ?? monthlyPts));
+
+    if (currentDelay > 0) {
+      addToast({
+        title: `Trip Ended (+${currentDelay}m Delayed • +${ptsEarned} Pts)`,
+        message: `Trip ended with +${currentDelay} min delay. Admin notified & points added to score (Monthly: ${monthlyPts} pts • Yearly: ${yearlyPts} pts).`,
+        type: 'warning'
+      });
+    } else {
+      addToast({
+        title: `Trip Ended Successfully (+${ptsEarned} Pts)`,
+        message: `Trip ended and Bus ${assignedShuttle.code} is now in Standby! +${ptsEarned} points added to score (Monthly: ${monthlyPts} pts • Yearly: ${yearlyPts} pts).`,
+        type: 'success'
+      });
     }
   };
 
-  // Report Delay (Sends to Admin ONLY ONE TIME per trip & notifies passengers of stop traffic delay)
+  // Report Delay (Notifies Admin in Admin Site + Admin Email cleancodeuniverse@gmail.com & notifies passengers)
   const handleReportDelay = async (e) => {
     e.preventDefault();
-    if (delayNotifiedForTrip) {
-      addToast({
-        title: 'Already Notified for This Trip',
-        message: 'Delay notification has already been sent once to Admin for the current trip.',
-        type: 'info'
-      });
-      setIsDelayModalOpen(false);
-      return;
-    }
     try {
       const res = await api.post(`/trips/${activeTripId || assignedShuttle.id}/delay`, {
+        shuttle_id: assignedShuttle.id,
         minutes: delayMinutes,
         reason: delayReason
       });
+      if (res.data?.emailRelayPayload) {
+        relayCloudEmail?.(res.data.emailRelayPayload);
+      }
       setDelayNotifiedForTrip(true);
       fetchDriver();
       addToast({
-        title: res.data?.alreadyNotified ? 'Delay Already Notified (1/Trip)' : 'Delay Notification Sent (Once/Trip)',
+        title: 'Delay Alert Sent to Admin (Site & Email)',
         message:
           res.data?.message ||
-          `Admin and passengers notified of ${delayMinutes} min traffic delay on Bus ${assignedShuttle.code} (1 time for this trip).`,
+          `Admin (cleancodeuniverse@gmail.com) and passengers notified of +${delayMinutes} min delay on Bus ${assignedShuttle.code}.`,
         type: 'warning'
       });
       setIsDelayModalOpen(false);
@@ -554,16 +600,8 @@ export const DriverDashboard = () => {
     }
   };
 
-  // Off-Route Deviation Alert to Admin (Sends to Admin ONLY ONE TIME per trip)
+  // Off-Route Deviation Alert to Admin (Notifies Admin in Admin Site + Admin Email cleancodeuniverse@gmail.com)
   const handleTriggerOffRouteAlert = async () => {
-    if (offRouteNotifiedForTrip) {
-      addToast({
-        title: 'Already Notified for This Trip',
-        message: 'Off-route notification has already been sent once to Admin for the current trip.',
-        type: 'info'
-      });
-      return;
-    }
     try {
       const res = await api.post('/trips/off-route', {
         shuttle_id: assignedShuttle.id,
@@ -571,15 +609,16 @@ export const DriverDashboard = () => {
         longitude: Number(assignedShuttle.current_lng || currentCoords.lng || 80.1275) - 0.011,
         reason: `Driver ${driverData?.name || user?.name || ''} deviated from allocated route (${assignedShuttle.start_point || 'Start'} ➔ ${assignedShuttle.destination || 'Destination'}) on Bus ${assignedShuttle.code}.`
       });
+      if (res.data?.emailRelayPayload) {
+        relayCloudEmail?.(res.data.emailRelayPayload);
+      }
       if (res.data.success) {
         setOffRouteNotifiedForTrip(true);
         addToast({
-          title: res.data.alreadyNotified
-            ? 'Off-Route Already Notified (1/Trip)'
-            : 'Off-Route Notification Sent to Admin (Once/Trip)',
+          title: 'Off-Route Alert Sent to Admin (Site & Email)',
           message:
             res.data.message ||
-            `Admin has been notified once for this trip that Bus ${assignedShuttle.code} deviated from its allocated route.`,
+            `Admin (cleancodeuniverse@gmail.com) has been notified via Admin Site & Email that Bus ${assignedShuttle.code} deviated from its allocated route.`,
           type: 'warning'
         });
       }
@@ -598,16 +637,8 @@ export const DriverDashboard = () => {
         reason: `Emergency reported directly by Driver (${driverData?.name || user?.name || 'Driver'}): Bus ${assignedShuttle.code} on route ${assignedShuttle.start_point || 'Start'} ➔ ${assignedShuttle.destination || 'Destination'} requires immediate emergency assistance.`
       });
 
-      if (
-        res.data?.emailRelayPayload &&
-        window.location.hostname !== 'localhost' &&
-        window.location.hostname !== '127.0.0.1'
-      ) {
-        fetch('http://localhost:5000/api/auth/relay-email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(res.data.emailRelayPayload)
-        }).catch(() => {});
+      if (res.data?.emailRelayPayload) {
+        relayCloudEmail?.(res.data.emailRelayPayload);
       }
 
       if (res.data.success) {
@@ -616,27 +647,12 @@ export const DriverDashboard = () => {
           title: 'Emergency Alert Sent to Admin (Login & Email)',
           message:
             res.data.message ||
-            `Admin has been notified immediately via Dashboard and Email about the emergency on Bus ${assignedShuttle.code}.`,
+            `Admin (cleancodeuniverse@gmail.com) has been notified immediately via Dashboard and Email about the emergency on Bus ${assignedShuttle.code}.`,
           type: 'danger'
         });
       }
     } catch (err) {
       addToast({ title: 'Error', message: 'Failed to send emergency alert to Admin', type: 'danger' });
-    }
-  };
-
-  const handleToggleSimulation = () => {
-    if (simulationActive) {
-      stopSimulation(assignedShuttle.id);
-      addToast({ title: 'Simulation Stopped', message: 'Paused simulated coordinates', type: 'info' });
-    } else {
-      setDelayNotifiedForTrip(false);
-      setOffRouteNotifiedForTrip(false);
-      setEmergencyStoppedNotifiedForTrip(false);
-      startSimulation(assignedShuttle.id);
-      setGpsStatus('Simulated');
-      setTripStatus('LIVE');
-      addToast({ title: 'Simulation Active', message: 'Emitting smooth GPS route waypoints', type: 'success' });
     }
   };
 
@@ -697,7 +713,7 @@ export const DriverDashboard = () => {
             <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-semibold">
               <span
                 className={`w-2.5 h-2.5 rounded-full ${
-                  gpsStatus.includes('Connected') || gpsStatus === 'Simulated'
+                  gpsStatus.includes('Connected')
                     ? 'bg-emerald-500 animate-pulse'
                     : 'bg-slate-400'
                 }`}
@@ -764,7 +780,7 @@ export const DriverDashboard = () => {
         </div>
       </div>
 
-      {/* LARGE TRIP CONTROL BUTTON & ONE-TIME PER-TRIP DELAY / OFF-ROUTE / 20-MIN EMERGENCY CONTROLS */}
+      {/* LARGE TRIP CONTROL BUTTON & DELAY / OFF-ROUTE / EMERGENCY CONTROLS */}
       <div className="space-y-4">
         {tripStatus === 'NOT_STARTED' ? (
           <button
@@ -786,36 +802,34 @@ export const DriverDashboard = () => {
           </button>
         )}
 
-        {/* Driver Action Controls: One-Time Delay, One-Time Off-Route, One-Time 20+ Min Stopped Emergency, & GPS Simulation */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {/* Driver Action Controls: Report Route Delay, Off-Route Alert, & Emergency (Simulated GPS Removed) */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Button
             variant="outline"
             size="lg"
             icon={delayNotifiedForTrip ? CheckCircle2 : AlertTriangle}
-            disabled={delayNotifiedForTrip}
             onClick={() => setIsDelayModalOpen(true)}
             className={`w-full justify-center ${
               delayNotifiedForTrip
-                ? 'border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30 opacity-80 cursor-not-allowed'
+                ? 'border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30'
                 : 'border-amber-300 dark:border-amber-800 text-amber-600 dark:text-amber-400 bg-amber-50/40 dark:bg-amber-950/20'
             }`}
           >
-            {delayNotifiedForTrip ? 'Delay Notified (1/Trip)' : 'Report Route Delay'}
+            {delayNotifiedForTrip ? 'Delay Sent (Report Again)' : 'Report Route Delay'}
           </Button>
 
           <Button
             variant="outline"
             size="lg"
             icon={offRouteNotifiedForTrip ? CheckCircle2 : NavigationOff}
-            disabled={offRouteNotifiedForTrip}
             onClick={handleTriggerOffRouteAlert}
             className={`w-full justify-center ${
               offRouteNotifiedForTrip
-                ? 'border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30 opacity-80 cursor-not-allowed'
+                ? 'border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30'
                 : 'border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 bg-rose-50/40 dark:bg-rose-950/20'
             }`}
           >
-            {offRouteNotifiedForTrip ? 'Off-Route Notified (1/Trip)' : 'Off-Route Alert'}
+            {offRouteNotifiedForTrip ? 'Off-Route Sent (Resend)' : 'Off-Route Alert'}
           </Button>
 
           <Button
@@ -830,16 +844,6 @@ export const DriverDashboard = () => {
             }`}
           >
             {emergencyStoppedNotifiedForTrip ? 'Emergency Sent (Resend)' : 'Emergency'}
-          </Button>
-
-          <Button
-            variant="outline"
-            size="lg"
-            icon={Sparkles}
-            onClick={handleToggleSimulation}
-            className="w-full justify-center border-blue-300 dark:border-blue-800 text-brand-600 dark:text-accent-blue bg-blue-50/40 dark:bg-blue-950/20"
-          >
-            {simulationActive ? 'Stop Simulation' : '⚡ Simulate GPS'}
           </Button>
         </div>
       </div>

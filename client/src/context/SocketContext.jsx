@@ -89,21 +89,12 @@ export const SocketProvider = ({ children }) => {
       }));
     });
 
-    // Handle real-time push notification (one time per trip & per bus for delay and off_route)
+    // Handle real-time push notification
     socketInstance.on('notification:new', (notif) => {
       if (!notif) return;
       setRealtimeNotifications((prev) => {
         const isDuplicate = prev.some(
-          (n) =>
-            (n.id && notif.id && Number(n.id) === Number(notif.id)) ||
-            (n.type === 'delay' &&
-              notif.type === 'delay' &&
-              Number(n.shuttle_id) === Number(notif.shuttle_id) &&
-              !n._archivedTrip) ||
-            (n.type === 'off_route' &&
-              notif.type === 'off_route' &&
-              Number(n.shuttle_id) === Number(notif.shuttle_id) &&
-              !n._archivedTrip)
+          (n) => n.id && notif.id && Number(n.id) === Number(notif.id)
         );
         if (isDuplicate) return prev;
         setUnreadCount((c) => c + 1);
@@ -112,7 +103,23 @@ export const SocketProvider = ({ children }) => {
       });
     });
 
-    // When a new trip starts on a shuttle, allow 1 new delay and 1 new off-route alert for the new trip
+    // Sync liveLocations when shuttle status changes or trip starts/ends
+    socketInstance.on('shuttle:updated', (shuttle) => {
+      if (shuttle && shuttle.id && shuttle.status === 'idle') {
+        setLiveLocations((prev) => {
+          if (!prev[shuttle.id]) return prev;
+          return {
+            ...prev,
+            [shuttle.id]: {
+              ...prev[shuttle.id],
+              status: 'idle',
+              speed: 0
+            }
+          };
+        });
+      }
+    });
+
     socketInstance.on('trip:status_change', ({ type, shuttleId }) => {
       if (type === 'started' && shuttleId) {
         setRealtimeNotifications((prev) =>
@@ -120,6 +127,19 @@ export const SocketProvider = ({ children }) => {
             Number(n.shuttle_id) === Number(shuttleId) ? { ...n, _archivedTrip: true } : n
           )
         );
+      } else if (type === 'ended' && shuttleId) {
+        setSimulationActive(false);
+        setLiveLocations((prev) => {
+          if (!prev[shuttleId]) return prev;
+          return {
+            ...prev,
+            [shuttleId]: {
+              ...prev[shuttleId],
+              status: 'idle',
+              speed: 0
+            }
+          };
+        });
       }
     });
 
@@ -127,7 +147,7 @@ export const SocketProvider = ({ children }) => {
       setSimulationActive(running);
     });
 
-    // Automatic cloud-to-local SMTP relay for Driver Schedule & Admin Emergency emails when running on Render
+    // Automatic cloud-to-local SMTP relay for Driver Schedule, Passenger Trip Start & Admin Emergency/Delay/Off-Route emails when running on Render
     socketInstance.on('email:relay', (relayPayload) => {
       if (
         relayPayload &&
@@ -165,6 +185,21 @@ export const SocketProvider = ({ children }) => {
     }
   };
 
+  const clearShuttleLiveLocation = (shuttleId) => {
+    if (!shuttleId) return;
+    setLiveLocations((prev) => {
+      if (!prev[shuttleId]) return prev;
+      return {
+        ...prev,
+        [shuttleId]: {
+          ...prev[shuttleId],
+          status: 'idle',
+          speed: 0
+        }
+      };
+    });
+  };
+
   const joinShuttle = (shuttleId) => {
     if (socket && isConnected) {
       socket.emit('join:shuttle', shuttleId);
@@ -186,7 +221,7 @@ export const SocketProvider = ({ children }) => {
   const startSimulation = (shuttleId) => {
     if (socket && isConnected) {
       socket.emit('driver:start_simulation', { shuttleId });
-      setSimulationActive(true);
+      setSimulationActive(false);
     }
   };
 
@@ -217,7 +252,8 @@ export const SocketProvider = ({ children }) => {
         startSimulation,
         stopSimulation,
         clearUnread,
-        relayCloudEmail
+        relayCloudEmail,
+        clearShuttleLiveLocation
       }}
     >
       {children}

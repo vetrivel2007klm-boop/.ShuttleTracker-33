@@ -485,13 +485,29 @@ function setupTrackingSocket(io) {
     { name: 'West Tambaram', latitude: 12.9249, longitude: 80.1000 }
   ];
 
-  // Periodically check if any shuttle is at its scheduled time without the Driver pressing Start Trip (one-time Admin notification)
+  // Helper to compute shortest distance (km) from point P to segment A-B
+  const pointToSegmentDistanceKm = (pLat, pLng, aLat, aLng, bLat, bLng) => {
+    const dx = bLng - aLng;
+    const dy = bLat - aLat;
+    if (dx === 0 && dy === 0) {
+      return calculateDistance(pLat, pLng, aLat, aLng);
+    }
+    const t = Math.max(0, Math.min(1, ((pLng - aLng) * dx + (pLat - aLat) * dy) / (dx * dx + dy * dy)));
+    const projLat = aLat + t * dy;
+    const projLng = aLng + t * dx;
+    return calculateDistance(pLat, pLng, projLat, projLng);
+  };
+
+  // Periodically check if any shuttle is at its scheduled time without the Driver pressing Start Trip or has exceeded arrival time
   const runScheduleNotStartedCheck = async () => {
     try {
       const notifications = await db.checkScheduledTripsNotStarted();
       if (Array.isArray(notifications) && notifications.length > 0) {
         notifications.forEach((notif) => {
           io.emit('notification:new', notif);
+          if (notif.emailRelayPayload) {
+            io.emit('email:relay', notif.emailRelayPayload);
+          }
         });
         const schedules = await db.getAllSchedules();
         io.emit('schedule:updated', { schedules });
@@ -519,42 +535,23 @@ function setupTrackingSocket(io) {
 
     socket.on('driver:start_simulation', async ({ shuttleId }) => {
       const sId = Number(shuttleId) || 1;
-      activeRealGpsDrivers.delete(sId);
-      const shuttle = await db.getShuttleById(sId);
-      const stops =
-        shuttle?.stops && shuttle.stops.length >= 2 ? shuttle.stops : routeAStops;
-      const trip = await db.createTrip({
-        shuttle_id: sId,
-        route_id: shuttle?.current_route_id || 1,
-        passenger_count: 16
-      });
-      const updatedShuttle = await db.getShuttleById(sId);
-      const schedules = await db.getAllSchedules();
-      if (updatedShuttle) {
-        io.emit('shuttle:updated', updatedShuttle);
-      }
-      io.emit('trip:status_change', {
-        type: 'started',
-        trip,
-        shuttleId: sId
-      });
-      io.emit('schedule:updated', { schedules });
-      startAutonomousShuttle(io, sId, stops, 28, true);
-      socket.emit('simulation:state', { running: true });
+      stopAutonomousShuttle(sId);
+      socket.emit('simulation:state', { running: false });
     });
 
     socket.on('driver:stop_simulation', async ({ shuttleId }) => {
       const sId = Number(shuttleId) || 1;
       stopAutonomousShuttle(sId);
-      await db.endTrip(sId);
-      const updatedShuttle = await db.getShuttleById(sId);
+      await db.endTrip(sId, sId);
+      const updatedShuttle = await db.updateShuttle(sId, { status: 'idle', speed: 0 });
       const schedules = await db.getAllSchedules();
       if (updatedShuttle) {
         io.emit('shuttle:updated', updatedShuttle);
       }
       io.emit('trip:status_change', {
         type: 'ended',
-        shuttleId: sId
+        shuttleId: sId,
+        status: 'idle'
       });
       io.emit('schedule:updated', { schedules });
       socket.emit('simulation:state', { running: false });
@@ -576,8 +573,8 @@ function setupTrackingSocket(io) {
         }
 
         const shuttle = await db.getShuttleById(sId);
-        // Only broadcast live location if the Driver has pressed Start Trip
-        if (!shuttle || shuttle.status === 'inactive' || (shuttle.status !== 'on_trip' && shuttle.status !== 'delayed')) {
+        // Only broadcast live location if the Driver has pressed Start Trip (never overwrite an ended/idle trip)
+        if (!shuttle || shuttle.status === 'inactive' || shuttle.status === 'idle' || (shuttle.status !== 'on_trip' && shuttle.status !== 'delayed')) {
           return;
         }
 
@@ -662,6 +659,59 @@ function setupTrackingSocket(io) {
             }
           });
 
+          // Check minimum distance to allocated route segments on the map to detect off-route travel
+          let minRouteCorridorDistKm = nearestDist;
+          if (shuttle.stops.length >= 2) {
+            for (let i = 0; i < shuttle.stops.length - 1; i++) {
+              const sA = shuttle.stops[i];
+              const sB = shuttle.stops[i + 1];
+              const segDist = pointToSegmentDistanceKm(
+                effectiveLat,
+                effectiveLng,
+                Number(sA.latitude),
+                Number(sA.longitude),
+                Number(sB.latitude),
+                Number(sB.longitude)
+              );
+              if (segDist < minRouteCorridorDistKm) {
+                minRouteCorridorDistKm = segDist;
+              }
+            }
+          }
+
+          // If driver travels > 0.45 km outside allocated route corridor while moving on trip, notify Admin & send Admin Email
+          const lastOffAlertTime = lastOffRouteAlert.get(sId) || 0;
+          if (
+            minRouteCorridorDistKm > 0.45 &&
+            (cumulativeMovedKm >= 0.05 || computedSpeed >= 10) &&
+            now - lastOffAlertTime > 60000
+          ) {
+            lastOffRouteAlert.set(sId, now);
+            const offRouteResult = await db.recordDriverOffRouteDeviation(sId, {
+              latitude: effectiveLat,
+              longitude: effectiveLng,
+              reason: `Map GPS Route Deviation Detected (${minRouteCorridorDistKm.toFixed(2)} km off allocated route corridor)`
+            });
+            if (offRouteResult && !offRouteResult.alreadyNotified) {
+              if (offRouteResult.notification) {
+                io.emit('notification:new', offRouteResult.notification);
+              }
+              if (offRouteResult.emailRelayPayload) {
+                io.emit('email:relay', offRouteResult.emailRelayPayload);
+              }
+              io.emit('shuttle:off_route', {
+                shuttleId: offRouteResult.shuttleId,
+                code: offRouteResult.busCode,
+                driverName: offRouteResult.driverName,
+                routeName: offRouteResult.routeName,
+                latitude: offRouteResult.deviatedLat,
+                longitude: offRouteResult.deviatedLng,
+                alreadyNotified: offRouteResult.alreadyNotified,
+                notification: offRouteResult.notification
+              });
+            }
+          }
+
           const targetStopIdx =
             nearestDist <= 0.08 && nearestIdx < shuttle.stops.length - 1
               ? nearestIdx + 1
@@ -715,6 +765,9 @@ function setupTrackingSocket(io) {
               });
               if (emergencyResult && !emergencyResult.alreadyNotified && emergencyResult.notification) {
                 io.emit('notification:new', emergencyResult.notification);
+                if (emergencyResult.emailRelayPayload) {
+                  io.emit('email:relay', emergencyResult.emailRelayPayload);
+                }
                 io.emit('shuttle:emergency_stopped', {
                   shuttleId: emergencyResult.shuttleId,
                   busCode: emergencyResult.busCode,
@@ -742,8 +795,17 @@ function setupTrackingSocket(io) {
               if (arrivalResult.notification) {
                 io.emit('notification:new', arrivalResult.notification);
               }
+              if (arrivalResult.emailRelayPayload) {
+                io.emit('email:relay', arrivalResult.emailRelayPayload);
+              }
             }
           }
+        }
+
+        // Re-check shuttle status before saving so an in-flight GPS packet never overwrites an ended ('idle') trip
+        const latestShuttleCheck = await db.getShuttleById(sId);
+        if (!latestShuttleCheck || latestShuttleCheck.status === 'idle' || latestShuttleCheck.status === 'inactive') {
+          return;
         }
 
         const updatedShuttle = await db.updateShuttle(sId, {
@@ -758,7 +820,7 @@ function setupTrackingSocket(io) {
           eta_minutes: calculatedEta,
           destination_eta_minutes: destinationEta,
           next_stop_name: nextStopName,
-          status: 'on_trip'
+          status: latestShuttleCheck.status === 'delayed' ? 'delayed' : 'on_trip'
         });
 
         const updatePayload = {

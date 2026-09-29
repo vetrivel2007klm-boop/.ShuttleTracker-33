@@ -125,7 +125,34 @@ export const Topbar = ({ onMenuClick, title = 'Fleet Command Center' }) => {
     });
   }, [latestAlert, addToast, user?.role]);
 
-  // Send stop delay notification to ALL passengers in that bus when driver is delayed at any stop
+  // Load initial trip_started / passenger notifications & listen for live Trip Started + Stop Delay alerts for Passenger's Bus
+  useEffect(() => {
+    if (user?.role !== 'user') return;
+    let mounted = true;
+    api
+      .get('/notifications')
+      .then((res) => {
+        if (!mounted || !res.data?.success || !Array.isArray(res.data.data)) return;
+        const busNotifs = res.data.data.filter(
+          (n) =>
+            n.type === 'trip_started' &&
+            (!n.bus_code || String(n.bus_code).trim().toUpperCase() === passengerBusCode)
+        );
+        if (busNotifs.length > 0) {
+          setPassengerDelayNotifications((prev) => {
+            const existingIds = new Set(prev.map((p) => p.id));
+            const merged = [...busNotifs.filter((b) => !existingIds.has(b.id)), ...prev];
+            return merged;
+          });
+          setPassengerUnreadCount((c) => c + busNotifs.length);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, [user?.role, passengerBusCode]);
+
   useEffect(() => {
     if (!socket || user?.role !== 'user') return;
 
@@ -158,9 +185,29 @@ export const Topbar = ({ onMenuClick, title = 'Fleet Command Center' }) => {
       });
     };
 
+    const handleTripStartedNotif = (notif) => {
+      if (!notif || notif.type !== 'trip_started') return;
+      const eventBusCode = String(notif.bus_code || '').trim().toUpperCase();
+      if (eventBusCode && eventBusCode !== passengerBusCode) return;
+
+      setPassengerDelayNotifications((prev) => {
+        if (prev.some((n) => n.id === notif.id)) return prev;
+        setPassengerUnreadCount((c) => c + 1);
+        addToast({
+          title: notif.title || `🚍 Bus ${passengerBusCode} Trip Started`,
+          message: notif.message,
+          type: 'success',
+          duration: 7000
+        });
+        return [notif, ...prev];
+      });
+    };
+
     socket.on('passenger:stop_delay_traffic', handleStopDelayForBusPassengers);
+    socket.on('notification:new', handleTripStartedNotif);
     return () => {
       socket.off('passenger:stop_delay_traffic', handleStopDelayForBusPassengers);
+      socket.off('notification:new', handleTripStartedNotif);
     };
   }, [socket, user?.role, passengerBusCode, addToast]);
 

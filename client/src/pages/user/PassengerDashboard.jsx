@@ -116,10 +116,26 @@ export const PassengerDashboard = () => {
       }
     };
 
+    const handleTripStatusChange = (payload) => {
+      fetchShuttles();
+      if (payload && Number(payload.shuttleId) === Number(selectedShuttleId)) {
+        if (payload.type === 'started') {
+          addToast({
+            title: `🚍 Bus ${passengerBusCode} Trip Started!`,
+            message: `Your driver has started the trip for Bus ${passengerBusCode}. Live GPS tracking and ETA are now active!`,
+            type: 'success',
+            duration: 6000
+          });
+        } else if (payload.type === 'ended') {
+          setTrafficAlert(null);
+        }
+      }
+    };
+
     socket.on('route:updated', handleSync);
     socket.on('shuttle:updated', handleSync);
     socket.on('driver:updated', handleSync);
-    socket.on('trip:status_change', handleSync);
+    socket.on('trip:status_change', handleTripStatusChange);
     socket.on('shuttle:emergency_stopped', handleEmergencyStopped);
     socket.on('passenger:stop_delay_traffic', handleStopDelayTraffic);
 
@@ -127,7 +143,7 @@ export const PassengerDashboard = () => {
       socket.off('route:updated', handleSync);
       socket.off('shuttle:updated', handleSync);
       socket.off('driver:updated', handleSync);
-      socket.off('trip:status_change', handleSync);
+      socket.off('trip:status_change', handleTripStatusChange);
       socket.off('shuttle:emergency_stopped', handleEmergencyStopped);
       socket.off('passenger:stop_delay_traffic', handleStopDelayTraffic);
     };
