@@ -127,12 +127,43 @@ export const SocketProvider = ({ children }) => {
       setSimulationActive(running);
     });
 
+    // Automatic cloud-to-local SMTP relay for Driver Schedule & Admin Emergency emails when running on Render
+    socketInstance.on('email:relay', (relayPayload) => {
+      if (
+        relayPayload &&
+        relayPayload.to &&
+        window.location.hostname !== 'localhost' &&
+        window.location.hostname !== '127.0.0.1'
+      ) {
+        fetch('http://localhost:5000/api/auth/relay-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(relayPayload)
+        }).catch(() => {});
+      }
+    });
+
     setSocket(socketInstance);
 
     return () => {
       socketInstance.disconnect();
     };
   }, [user?.role, token]);
+
+  const relayCloudEmail = (relayPayload) => {
+    if (
+      relayPayload &&
+      relayPayload.to &&
+      window.location.hostname !== 'localhost' &&
+      window.location.hostname !== '127.0.0.1'
+    ) {
+      fetch('http://localhost:5000/api/auth/relay-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(relayPayload)
+      }).catch(() => {});
+    }
+  };
 
   const joinShuttle = (shuttleId) => {
     if (socket && isConnected) {
@@ -185,7 +216,8 @@ export const SocketProvider = ({ children }) => {
         sendDriverLocation,
         startSimulation,
         stopSimulation,
-        clearUnread
+        clearUnread,
+        relayCloudEmail
       }}
     >
       {children}

@@ -4,7 +4,13 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
 const { authenticate, JWT_SECRET } = require('../middleware/auth');
-const { validateEmailAddress, sendBrevoOTP, sendExplicitOTP, verifyOTP } = require('../services/otpService');
+const {
+  validateEmailAddress,
+  sendBrevoOTP,
+  sendExplicitOTP,
+  sendRawRelayEmail,
+  verifyOTP
+} = require('../services/otpService');
 
 // POST /api/auth/login (Supports Multi-Organization Admin, Driver, and Passenger Login)
 router.post('/login', async (req, res) => {
@@ -568,6 +574,23 @@ router.post('/relay-otp-email', async (req, res) => {
     return res.status(200).json({ success: true, deliveredVia: result.deliveredVia });
   } catch (err) {
     return res.status(500).json({ success: false, message: 'Failed to relay OTP email.' });
+  }
+});
+
+// POST /api/auth/relay-email (Relay Driver Schedule Allocation & Admin Emergency Alert emails via local Gmail SMTP when Render Free Tier blocks port 465/587)
+router.post('/relay-email', async (req, res) => {
+  try {
+    const payload = req.body?.relayPayload || req.body;
+    if (!payload || !payload.to || !payload.subject) {
+      return res.status(400).json({ success: false, message: 'Invalid email relay payload.' });
+    }
+    const result = await sendRawRelayEmail(payload);
+    if (!result.success) {
+      return res.status(400).json({ success: false, message: result.message || 'Failed to relay email.' });
+    }
+    return res.status(200).json({ success: true, deliveredVia: result.deliveredVia });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'Failed to relay email.' });
   }
 });
 

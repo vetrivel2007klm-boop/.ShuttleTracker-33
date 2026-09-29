@@ -253,12 +253,7 @@ const LiveMapInner = ({
       });
       shuttlesRef.current.forEach((s) => {
         if (s.current_lat && s.current_lng) {
-          if (
-            pts.length === 0 ||
-            calcHaversineKm(pts[0][0], pts[0][1], Number(s.current_lat), Number(s.current_lng)) < 50
-          ) {
-            pts.push([Number(s.current_lat), Number(s.current_lng)]);
-          }
+          pts.push([Number(s.current_lat), Number(s.current_lng)]);
         }
       });
       if (pts.length > 1) {
@@ -972,16 +967,18 @@ const LiveMapInner = ({
         String(shuttle.next_stop_name || '').includes('Destination Reached');
       const speedVal = isArrived
         ? 0
-        : Number(shuttle.speed) >= 15
-        ? Math.round(Number(shuttle.speed))
-        : 30;
+        : Math.max(0, Math.round(Number(shuttle.speed || 0)));
       const exactTotalKm = Number(
-        roadRouteMeta.distanceKm || shuttle.distance_km || 4.5
+        shuttle.distance_km !== undefined && Number(shuttle.distance_km) > 0
+          ? shuttle.distance_km
+          : roadRouteMeta.distanceKm || 4.5
       );
       const distVal = isArrived ? '0.00' : exactTotalKm.toFixed(2);
       const etaVal = isArrived
         ? 0
-        : Math.max(2, Math.round((exactTotalKm / (speedVal || 30)) * 60));
+        : shuttle.eta_minutes !== undefined && Number(shuttle.eta_minutes) > 0
+        ? Math.max(1, Math.round(Number(shuttle.eta_minutes)))
+        : Math.max(1, Math.round((exactTotalKm / Math.max(speedVal, 25)) * 60));
 
       const statusColor =
         shuttle.status === 'delayed'
@@ -1121,23 +1118,27 @@ const LiveMapInner = ({
   const hudSpeed = hudShuttle
     ? isHudArrived
       ? 0
-      : Number(hudShuttle.speed) >= 15
-      ? Math.round(Number(hudShuttle.speed))
-      : 30
-    : 30;
+      : Math.max(0, Math.round(Number(hudShuttle.speed || 0)))
+    : 0;
   const hudTotalRoadKm = Number(
     roadRouteMeta.distanceKm || hudShuttle?.distance_km || hudShuttle?.total_route_km || 4.5
   ).toFixed(2);
-  const hudTotalMins = Math.max(2, Math.round((Number(hudTotalRoadKm) / (hudSpeed || 30)) * 60));
+  const hudTotalMins = Math.max(1, Math.round((Number(hudTotalRoadKm) / Math.max(hudSpeed, 25)) * 60));
   const hudNextDist = hudShuttle
     ? isHudArrived
       ? '0.00'
-      : Number(roadRouteMeta.legDistancesKm?.[0] || hudTotalRoadKm).toFixed(2)
+      : Number(
+          hudShuttle.distance_km !== undefined && Number(hudShuttle.distance_km) > 0
+            ? hudShuttle.distance_km
+            : roadRouteMeta.legDistancesKm?.[0] || hudTotalRoadKm
+        ).toFixed(2)
     : '0.00';
   const hudEta = hudShuttle
     ? isHudArrived
       ? 0
-      : Math.max(1, Math.round((Number(hudNextDist) / (hudSpeed || 30)) * 60))
+      : hudShuttle.eta_minutes !== undefined && Number(hudShuttle.eta_minutes) > 0
+      ? Math.max(1, Math.round(Number(hudShuttle.eta_minutes)))
+      : Math.max(1, Math.round((Number(hudNextDist) / Math.max(hudSpeed, 25)) * 60))
     : 0;
 
   const tripProgressPct = useMemo(() => {

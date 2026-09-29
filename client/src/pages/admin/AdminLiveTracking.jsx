@@ -111,7 +111,7 @@ export const AdminLiveTracking = () => {
   const mergedShuttles = shuttles.map((s) => {
     const live = liveLocations[s.id];
     const effectiveStatus = live?.status || s.status || 'idle';
-    const isOnTrip = effectiveStatus === 'on_trip';
+    const isOnTrip = effectiveStatus === 'on_trip' || effectiveStatus === 'delayed';
     if (live && isOnTrip) {
       return {
         ...s,
@@ -123,7 +123,9 @@ export const AdminLiveTracking = () => {
         is_on_trip: true,
         eta_minutes: live.eta_minutes !== undefined ? live.eta_minutes : s.eta_minutes,
         next_stop_name: live.next_stop_name || s.next_stop_name,
-        distance_km: live.distance_km !== undefined ? live.distance_km : s.distance_km
+        distance_km: live.distance_km !== undefined ? live.distance_km : s.distance_km,
+        distance_covered_km:
+          live.distance_covered_km !== undefined ? live.distance_covered_km : s.distance_covered_km
       };
     }
     return {
@@ -410,9 +412,19 @@ export const AdminLiveTracking = () => {
                   Number(r.id) === Number(shuttle.current_route_id) ||
                   Number(r.shuttle_id) === Number(shuttle.id)
               );
-              const sDist = Number(sRoute?.distance_km || shuttle.distance_km || 4.5).toFixed(2);
-              const sSpeed = Number(shuttle.speed) >= 15 ? Math.round(Number(shuttle.speed)) : 30;
-              const sEta = Math.max(2, Math.round((Number(sDist) / sSpeed) * 60));
+              const sDist = Number(
+                isOnTrip && shuttle.distance_km !== undefined && Number(shuttle.distance_km) > 0
+                  ? shuttle.distance_km
+                  : sRoute?.distance_km || shuttle.distance_km || 4.5
+              ).toFixed(2);
+              const sSpeed =
+                isOnTrip && shuttle.speed !== undefined
+                  ? Math.max(0, Math.round(Number(shuttle.speed)))
+                  : 0;
+              const sEta =
+                isOnTrip && shuttle.eta_minutes !== undefined && Number(shuttle.eta_minutes) > 0
+                  ? Math.max(1, Math.round(Number(shuttle.eta_minutes)))
+                  : Math.max(1, Math.round((Number(sDist) / Math.max(sSpeed, 25)) * 60));
 
               return (
                 <div

@@ -14,15 +14,18 @@ router.get('/', authenticate, async (req, res) => {
   }
 });
 
-// POST /api/trips/start - Driver or Admin starts a new trip
+// POST /api/trips/start - Driver or Admin starts a new trip (Real Hardware GPS Only — Never Auto-Simulates to Destination)
 router.post('/start', authenticate, authorize('driver', 'admin'), async (req, res) => {
   try {
-    const { shuttle_id, route_id, passenger_count } = req.body;
+    const { shuttle_id, route_id, passenger_count, latitude, longitude, speed, heading } = req.body;
     if (!shuttle_id) {
       return res.status(400).json({ success: false, message: 'Shuttle ID is required to start a trip.' });
     }
 
     const sId = Number(shuttle_id);
+    // Stop any autonomous simulation immediately so the shuttle strictly follows the driver's real hardware GPS!
+    stopAutonomousShuttle(sId);
+
     const trip = await db.createTrip({
       shuttle_id: sId,
       driver_id: req.user.userId,
@@ -31,6 +34,16 @@ router.post('/start', authenticate, authorize('driver', 'admin'), async (req, re
       passenger_count: passenger_count || 14
     });
 
+    if (latitude !== undefined && longitude !== undefined && Number.isFinite(Number(latitude)) && Number.isFinite(Number(longitude))) {
+      await db.updateShuttle(sId, {
+        current_lat: Number(latitude),
+        current_lng: Number(longitude),
+        speed: Number(speed) || 0,
+        heading: Number(heading) || 0,
+        status: 'on_trip'
+      });
+    }
+
     const shuttle = await db.getShuttleById(sId);
     const schedules = await db.getAllSchedules();
 
@@ -38,6 +51,23 @@ router.post('/start', authenticate, authorize('driver', 'admin'), async (req, re
     if (io) {
       if (shuttle) {
         io.emit('shuttle:updated', shuttle);
+        if (shuttle.current_lat && shuttle.current_lng) {
+          const initialPayload = {
+            shuttleId: sId,
+            latitude: Number(shuttle.current_lat),
+            longitude: Number(shuttle.current_lng),
+            speed: Number(shuttle.speed) || 0,
+            heading: Number(shuttle.heading) || 0,
+            distance_km: shuttle.distance_km || 0,
+            distance_covered_km: 0,
+            eta_minutes: shuttle.eta_minutes || 5,
+            next_stop_name: shuttle.next_stop_name || shuttle.destination || 'En Route',
+            status: 'on_trip',
+            timestamp: new Date().toISOString()
+          };
+          io.emit('shuttle:location_updated', initialPayload);
+          io.emit('shuttle:quick_ping', initialPayload);
+        }
       }
       io.emit('trip:status_change', {
         type: 'started',
@@ -45,12 +75,9 @@ router.post('/start', authenticate, authorize('driver', 'admin'), async (req, re
         shuttleId: sId
       });
       io.emit('schedule:updated', { schedules });
-      if (shuttle?.stops && shuttle.stops.length >= 2) {
-        startAutonomousShuttle(io, sId, shuttle.stops, 26, true);
-      }
     }
 
-    res.status(201).json({ success: true, message: 'Trip started successfully.', data: trip });
+    res.status(201).json({ success: true, message: 'Trip started successfully with live hardware GPS.', data: trip });
   } catch (error) {
     console.error('Start trip error:', error);
     res.status(500).json({ success: false, message: 'Failed to start trip.' });
@@ -265,6 +292,9 @@ router.post('/emergency-stopped', authenticate, authorize('driver', 'user', 'adm
       if (emergencyResult.thresholdReached && !emergencyResult.alreadyNotified && emergencyResult.notification) {
         io.emit('notification:new', emergencyResult.notification);
       }
+      if (emergencyResult.emailRelayPayload && emergencyResult.emailDeliveredVia === 'cloud_verified') {
+        io.emit('email:relay', emergencyResult.emailRelayPayload);
+      }
       io.emit('shuttle:emergency_stopped', {
         shuttleId: emergencyResult.shuttleId,
         busCode: emergencyResult.busCode,
@@ -293,11 +323,12 @@ router.post('/emergency-stopped', authenticate, authorize('driver', 'user', 'adm
         maxCount: emergencyResult.maxCount || 10,
         requiredCount: emergencyResult.requiredCount || 5,
         passengerEmergencyReports: emergencyResult.passengerEmergencyReports || [],
-        message: `Emergency alert recorded: ${emergencyResult.currentCount} out of 10 on Bus ${emergencyResult.busCode}. One consolidated message will be sent to Admin when 5 to 10 passengers report within 15 minutes.`,
+        message: `Emergency alert recorded: ${emergencyResult.currentCount} out of 10 on Bus ${emergencyResult.busCode}. One consolidated message & email will be sent to Admin when 5 to 10 passengers report within 15 minutes.`,
         data: emergencyResult
       });
     }
 
+    const isDriverReport = (req.user?.role || 'user') === 'driver';
     return res.status(200).json({
       success: true,
       alreadyReportedByPassenger: false,
@@ -307,9 +338,13 @@ router.post('/emergency-stopped', authenticate, authorize('driver', 'user', 'adm
       maxCount: emergencyResult.maxCount || 10,
       requiredCount: emergencyResult.requiredCount || 5,
       passengerEmergencyReports: emergencyResult.passengerEmergencyReports || [],
+      deliveredVia: emergencyResult.emailDeliveredVia,
+      emailRelayPayload: emergencyResult.emailRelayPayload,
       message: emergencyResult.alreadyNotified
-        ? `Emergency recorded (${emergencyResult.currentCount} out of 10). Consolidated emergency message was already sent once to Admin for Bus ${emergencyResult.busCode}.`
-        : `Emergency threshold reached (${emergencyResult.currentCount} out of 10)! One consolidated emergency alert has been sent to Admin for Bus ${emergencyResult.busCode}.`,
+        ? `Emergency recorded (${emergencyResult.currentCount} out of 10). Consolidated emergency message & email were already sent once to Admin for Bus ${emergencyResult.busCode}.`
+        : isDriverReport
+        ? `Driver Emergency Alert sent to Admin Notification & Admin Email for Bus ${emergencyResult.busCode}!`
+        : `Emergency threshold reached (${emergencyResult.currentCount} out of 10)! Consolidated emergency alert & email have been sent to Admin for Bus ${emergencyResult.busCode}.`,
       data: emergencyResult
     });
   } catch (err) {

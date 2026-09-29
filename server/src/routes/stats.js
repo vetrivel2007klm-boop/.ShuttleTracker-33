@@ -77,6 +77,9 @@ router.post('/schedules', authenticate, authorize('admin'), async (req, res) => 
         message: `Your schedule time (${created.departure_time} – ${created.arrival_time}) is set for Bus ${created.shuttleCode}. Please be ready to ride safely!`
       });
       io.emit('driver:updated', { shuttleId: created.shuttle_id });
+      if (created.emailRelayPayload && created.emailDeliveredVia === 'cloud_verified') {
+        io.emit('email:relay', created.emailRelayPayload);
+      }
       const notifications = await db.getNotifications(null, orgName);
       if (notifications.length > 0 && notifications[0]?.title?.includes('Driver Not Started Trip')) {
         io.emit('notification:new', notifications[0]);
@@ -85,6 +88,8 @@ router.post('/schedules', authenticate, authorize('admin'), async (req, res) => 
     res.status(201).json({
       success: true,
       message: `Schedule slot created (${created.departure_time} – ${created.arrival_time}). Driver ${created.driverName || ''} notified in Driver Login & via Email ("Ready to ride safely!").`,
+      deliveredVia: created.emailDeliveredVia,
+      emailRelayPayload: created.emailRelayPayload,
       data: created
     });
   } catch (error) {

@@ -170,7 +170,7 @@ export const AdminSchedules = () => {
     try {
       const routeStart = selectedRouteObj?.start_point || selectedBusObj?.start_point || '';
       const routeDest = selectedRouteObj?.end_point || selectedBusObj?.destination || '';
-      await api.post('/stats/schedules', {
+      const res = await api.post('/stats/schedules', {
         shuttle_id: Number(formData.shuttle_id),
         route_id: Number(formData.route_id),
         route_name:
@@ -180,6 +180,19 @@ export const AdminSchedules = () => {
         arrival_time: exactArrivalPreview,
         days: formData.days
       });
+
+      if (
+        res.data?.emailRelayPayload &&
+        window.location.hostname !== 'localhost' &&
+        window.location.hostname !== '127.0.0.1'
+      ) {
+        fetch('http://localhost:5000/api/auth/relay-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(res.data.emailRelayPayload)
+        }).catch(() => {});
+      }
+
       addToast({
         title: 'Schedule Set • Driver Notified via Login & Email',
         message: `Notified ${selectedBusObj?.driver_name || 'Assigned Driver'} (Bus ${selectedBusObj?.code || 'S01'}): "${formData.departure_time} – ${exactArrivalPreview} • Your schedule time is on, ready to ride safely!"`,

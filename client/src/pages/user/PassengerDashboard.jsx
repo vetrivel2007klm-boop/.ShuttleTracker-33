@@ -184,7 +184,7 @@ export const PassengerDashboard = () => {
 
   const [mapRouteKm, setMapRouteKm] = useState(null);
 
-  // Calculate live distance covered from starting place
+  // Calculate live distance covered from starting place based on shuttle GPS analysis
   const computedDistanceCovered =
     currentShuttle?.distance_covered_km !== undefined
       ? Number(currentShuttle.distance_covered_km).toFixed(2)
@@ -195,17 +195,25 @@ export const PassengerDashboard = () => {
           Number(currentShuttle.current_lat),
           Number(currentShuttle.current_lng)
         ).toFixed(2)
-      : '1.20';
+      : '0.00';
 
   const vehicleSpeed =
-    Number(currentShuttle?.speed) >= 15 ? Math.round(Number(currentShuttle.speed)) : 30;
+    currentShuttle?.status === 'on_trip' && currentShuttle?.speed !== undefined
+      ? Math.max(0, Math.round(Number(currentShuttle.speed)))
+      : 0;
   const totalRouteKm = Number(
-    mapRouteKm || matchedRoute?.distance_km || currentShuttle?.distance_km || 4.5
+    currentShuttle?.status === 'on_trip' &&
+      currentShuttle?.distance_km !== undefined &&
+      Number(currentShuttle.distance_km) > 0
+      ? currentShuttle.distance_km
+      : mapRouteKm || matchedRoute?.distance_km || currentShuttle?.distance_km || 4.5
   ).toFixed(2);
-  const exactRouteEtaMins = Math.max(
-    2,
-    Math.round((Number(totalRouteKm) / vehicleSpeed) * 60)
-  );
+  const exactRouteEtaMins =
+    currentShuttle?.status === 'on_trip' &&
+    currentShuttle?.eta_minutes !== undefined &&
+    Number(currentShuttle.eta_minutes) > 0
+      ? Math.max(1, Math.round(Number(currentShuttle.eta_minutes)))
+      : Math.max(1, Math.round((Number(totalRouteKm) / Math.max(vehicleSpeed, 25)) * 60));
 
   const emergencyStorageKey = `shuttle_emergency_${user?.id || user?.email || 'guest'}_${passengerBusCode}`;
   let localStoredEmergency = null;
@@ -250,13 +258,13 @@ export const PassengerDashboard = () => {
       )
     : 0;
 
-  // Emergency Alert Handler (1 time per passenger, resets after 15 mins; shows X out of 10 to all passengers on this bus; sends ONE message to Admin at 5-10 passengers)
+  // Emergency Alert Handler (1 time per passenger within 15 mins; shows X out of 10 to all passengers on this bus; sends Notification + Email to Admin at 5-10 passengers)
   const handleEmergencyAlert = async () => {
     if (!currentShuttle) return;
     if (myEmergencyReport) {
       addToast({
         title: `Already Reported (${emergencyCount} out of 10)`,
-        message: `You can give an emergency alert only 1 time. Resets in ${myRemainingResetMins} min(s).`,
+        message: `You can give an emergency alert only 1 time within the 10-20 minute window. Resets in ${myRemainingResetMins} min(s).`,
         type: 'info'
       });
       return;
@@ -266,8 +274,21 @@ export const PassengerDashboard = () => {
     try {
       const res = await api.post('/trips/emergency-stopped', {
         shuttle_id: currentShuttle.id,
-        stopped_minutes: 20
+        stopped_minutes: 20,
+        reported_by_role: 'passenger'
       });
+
+      if (
+        res.data?.emailRelayPayload &&
+        window.location.hostname !== 'localhost' &&
+        window.location.hostname !== '127.0.0.1'
+      ) {
+        fetch('http://localhost:5000/api/auth/relay-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(res.data.emailRelayPayload)
+        }).catch(() => {});
+      }
 
       if (res.data.success) {
         const updatedCount = Number(res.data.currentCount || 1);

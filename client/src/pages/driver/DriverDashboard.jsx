@@ -30,6 +30,17 @@ import {
   Eye
 } from 'lucide-react';
 
+function calcHaversineKm(lat1, lng1, lat2, lng2) {
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const R = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 export const DriverDashboard = () => {
   const { user } = useAuth();
   const {
@@ -49,10 +60,10 @@ export const DriverDashboard = () => {
   const [mapFocusTrigger, setMapFocusTrigger] = useState(0);
   const [previewPassengerIdCard, setPreviewPassengerIdCard] = useState(null);
   const [currentCoords, setCurrentCoords] = useState({
-    lat: 12.9752,
-    lng: 77.6001,
-    speed: 24,
-    heading: 65
+    lat: null,
+    lng: null,
+    speed: 0,
+    heading: 0
   });
 
   // One-time per-trip notification flags (shared with backend and passenger portal)
@@ -66,6 +77,8 @@ export const DriverDashboard = () => {
   const [delayReason, setDelayReason] = useState('Heavy campus traffic near current stop');
 
   const watchIdRef = useRef(null);
+  const latestGpsRef = useRef(null);
+  const gpsSecondTimerRef = useRef(null);
 
   const fetchDriver = async () => {
     try {
@@ -75,7 +88,7 @@ export const DriverDashboard = () => {
         setDriverData(d);
         if (d.assignedShuttle?.status === 'on_trip') {
           setTripStatus('LIVE');
-          setGpsStatus('Connected (Live GPS)');
+          setGpsStatus('Connected (Live Hardware GPS)');
         } else {
           setTripStatus('NOT_STARTED');
           setGpsStatus('Standby (Press Start Trip)');
@@ -97,6 +110,14 @@ export const DriverDashboard = () => {
 
   useEffect(() => {
     fetchDriver();
+    return () => {
+      if (watchIdRef.current !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
+      if (gpsSecondTimerRef.current) {
+        clearInterval(gpsSecondTimerRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -169,22 +190,26 @@ export const DriverDashboard = () => {
 
   const live = liveLocations[baseShuttle.id];
   const assignedShuttle =
-    live && (tripStatus === 'LIVE' || baseShuttle.status === 'on_trip')
+    tripStatus === 'LIVE' || baseShuttle.status === 'on_trip'
       ? {
           ...baseShuttle,
-          current_lat: live.latitude ?? baseShuttle.current_lat,
-          current_lng: live.longitude ?? baseShuttle.current_lng,
-          speed: live.speed ?? baseShuttle.speed,
-          heading: live.heading ?? baseShuttle.heading,
+          current_lat: currentCoords.lat ?? live?.latitude ?? baseShuttle.current_lat,
+          current_lng: currentCoords.lng ?? live?.longitude ?? baseShuttle.current_lng,
+          speed: live?.speed !== undefined ? live.speed : (currentCoords.speed ?? 0),
+          heading: live?.heading ?? currentCoords.heading ?? baseShuttle.heading ?? 0,
           status: 'on_trip',
-          eta_minutes: live.eta_minutes !== undefined ? live.eta_minutes : baseShuttle.eta_minutes,
-          next_stop_name: live.next_stop_name || baseShuttle.next_stop_name,
-          distance_km: live.distance_km !== undefined ? live.distance_km : baseShuttle.distance_km
+          eta_minutes: live?.eta_minutes !== undefined ? live.eta_minutes : baseShuttle.eta_minutes,
+          next_stop_name: live?.next_stop_name || baseShuttle.next_stop_name,
+          distance_km: live?.distance_km !== undefined ? live.distance_km : baseShuttle.distance_km,
+          distance_covered_km:
+            live?.distance_covered_km !== undefined
+              ? live.distance_covered_km
+              : baseShuttle.distance_covered_km
         }
       : {
           ...baseShuttle,
-          status: tripStatus === 'LIVE' ? 'on_trip' : 'idle',
-          speed: tripStatus === 'LIVE' ? baseShuttle.speed : 0
+          status: 'idle',
+          speed: 0
         };
 
   const driverAvatar =
@@ -195,101 +220,244 @@ export const DriverDashboard = () => {
   const routePassengers = driverData?.routePassengers || [];
   const activeStops = assignedShuttle.stops?.length > 0 ? assignedShuttle.stops : [];
 
-  // Start Trip & Geolocation Watcher (requests GPS permission or automatically acquires location and streams immediately with zero delay)
+  // Process hardware GPS coordinates with 3-meter jitter lock:
+  // If driver does not move, shuttle stays at exact same location with 0 km/h.
+  // If driver moves >= 3 meters, shuttle moves that exact distance and calculates real speed.
+  const applyHardwareGpsReading = (coords, shuttleIdToUse, tripIdToUse) => {
+    const rawLat = Number(coords?.latitude);
+    const rawLng = Number(coords?.longitude);
+    if (!Number.isFinite(rawLat) || !Number.isFinite(rawLng)) return;
+
+    const nowMs = Date.now();
+    const rawSpeedKmh =
+      typeof coords.speed === 'number' && !Number.isNaN(coords.speed) && coords.speed >= 0
+        ? coords.speed * 3.6
+        : null;
+    const rawHeading =
+      typeof coords.heading === 'number' && !Number.isNaN(coords.heading) ? coords.heading : 0;
+
+    const prev = latestGpsRef.current;
+    if (!prev) {
+      const firstFix = {
+        lat: rawLat,
+        lng: rawLng,
+        speed: 0,
+        heading: rawHeading,
+        lastMoveMs: nowMs,
+        timestamp: nowMs
+      };
+      latestGpsRef.current = firstFix;
+      setCurrentCoords({
+        lat: rawLat,
+        lng: rawLng,
+        speed: 0,
+        heading: rawHeading
+      });
+      setGpsStatus('Connected (Exact Hardware GPS)');
+      sendDriverLocation({
+        shuttleId: shuttleIdToUse,
+        tripId: tripIdToUse,
+        latitude: rawLat,
+        longitude: rawLng,
+        speed: 0,
+        heading: rawHeading,
+        driverId: user?.id
+      });
+      setMapFocusTrigger((c) => c + 1);
+      return;
+    }
+
+    const movedKm = calcHaversineKm(prev.lat, prev.lng, rawLat, rawLng);
+    const dtHours = Math.max(0.000277, (nowMs - (prev.lastMoveMs || prev.timestamp || nowMs)) / 3600000);
+
+    // Stationary filter: ignore < 3 meters (0.003 km) GPS noise when standing still
+    if (movedKm < 0.003 && (rawSpeedKmh === null || rawSpeedKmh < 1.5)) {
+      const stationaryFix = {
+        ...prev,
+        speed: 0,
+        timestamp: nowMs
+      };
+      latestGpsRef.current = stationaryFix;
+      setCurrentCoords({
+        lat: prev.lat,
+        lng: prev.lng,
+        speed: 0,
+        heading: prev.heading
+      });
+      setGpsStatus('Connected (Exact Hardware GPS)');
+      sendDriverLocation({
+        shuttleId: shuttleIdToUse,
+        tripId: tripIdToUse,
+        latitude: prev.lat,
+        longitude: prev.lng,
+        speed: 0,
+        heading: prev.heading,
+        driverId: user?.id
+      });
+      return;
+    }
+
+    // Driver moved physically >= 3 meters: move exact distance & calculate real speed
+    const computedSpeedKmh =
+      rawSpeedKmh !== null && rawSpeedKmh >= 1
+        ? Math.round(rawSpeedKmh)
+        : Math.min(90, Math.max(1, Math.round(movedKm / dtHours)));
+
+    const movedFix = {
+      lat: rawLat,
+      lng: rawLng,
+      speed: computedSpeedKmh,
+      heading: rawHeading || prev.heading || 0,
+      lastMoveMs: nowMs,
+      timestamp: nowMs
+    };
+    latestGpsRef.current = movedFix;
+    setCurrentCoords({
+      lat: rawLat,
+      lng: rawLng,
+      speed: computedSpeedKmh,
+      heading: movedFix.heading
+    });
+    setGpsStatus('Connected (Exact Hardware GPS)');
+    sendDriverLocation({
+      shuttleId: shuttleIdToUse,
+      tripId: tripIdToUse,
+      latitude: rawLat,
+      longitude: rawLng,
+      speed: computedSpeedKmh,
+      heading: movedFix.heading,
+      driverId: user?.id
+    });
+  };
+
+  // Start hardware GPS watcher + second-by-second (1000ms) live location broadcast
+  const startHardwareGpsTracking = (shuttleIdToUse, tripIdToUse) => {
+    if (!navigator.geolocation) {
+      setGpsStatus('GPS Not Supported on Browser');
+      return;
+    }
+
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (position) => {
+        applyHardwareGpsReading(position.coords, shuttleIdToUse, tripIdToUse);
+      },
+      (err) => {
+        console.warn('Hardware GPS watch notice:', err.message);
+        // Retry high-accuracy GPS without ever starting fake route simulation
+        navigator.geolocation.getCurrentPosition(
+          (pos) => applyHardwareGpsReading(pos.coords, shuttleIdToUse, tripIdToUse),
+          () => {},
+          { enableHighAccuracy: false, timeout: 15000, maximumAge: 0 }
+        );
+      },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+    );
+
+    if (gpsSecondTimerRef.current) {
+      clearInterval(gpsSecondTimerRef.current);
+    }
+
+    // Second-by-second (1000ms) exact hardware GPS heartbeat
+    gpsSecondTimerRef.current = setInterval(() => {
+      const latest = latestGpsRef.current;
+      if (!latest) return;
+      const idleMs = Date.now() - (latest.lastMoveMs || latest.timestamp || Date.now());
+      const effectiveSpeed = idleMs > 3000 ? 0 : latest.speed;
+      if (effectiveSpeed !== latest.speed) {
+        latest.speed = 0;
+        setCurrentCoords((prev) => ({ ...prev, speed: 0 }));
+      }
+      sendDriverLocation({
+        shuttleId: shuttleIdToUse,
+        tripId: tripIdToUse,
+        latitude: latest.lat,
+        longitude: latest.lng,
+        speed: effectiveSpeed,
+        heading: latest.heading || 0,
+        driverId: user?.id
+      });
+    }, 1000);
+  };
+
+  // Resume hardware GPS tracking automatically if page is refreshed while tripStatus === 'LIVE'
+  useEffect(() => {
+    if (tripStatus === 'LIVE' && !simulationActive && watchIdRef.current === null && assignedShuttle?.id) {
+      startHardwareGpsTracking(assignedShuttle.id, activeTripId);
+    }
+    if (tripStatus !== 'LIVE') {
+      if (gpsSecondTimerRef.current) {
+        clearInterval(gpsSecondTimerRef.current);
+        gpsSecondTimerRef.current = null;
+      }
+    }
+  }, [tripStatus, simulationActive, assignedShuttle?.id]);
+
+  // Start Trip & Hardware Geolocation Watcher (NEVER runs fake autonomous route simulation when Driver presses Start Trip)
   const handleStartTrip = async () => {
     try {
-      setGpsStatus('Acquiring GPS...');
+      setGpsStatus('Acquiring Exact Hardware GPS...');
+      stopSimulation(assignedShuttle.id);
+      latestGpsRef.current = null;
 
-      // Immediately request browser GPS permission so Driver can allow location sharing right away
+      // Acquire initial hardware GPS position if user clicks Allow
+      let initialPosition = null;
       if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            const { latitude, longitude, speed, heading } = pos.coords;
-            const initialSpeed = speed && speed > 0 ? speed * 3.6 : 26;
-            setCurrentCoords({
-              lat: latitude,
-              lng: longitude,
-              speed: initialSpeed,
-              heading: heading || 65
-            });
-            setGpsStatus('Connected (Live GPS)');
-            sendDriverLocation({
-              shuttleId: assignedShuttle.id,
-              latitude,
-              longitude,
-              speed: initialSpeed,
-              heading: heading || 65,
-              driverId: user?.id
-            });
-          },
-          () => {
-            setGpsStatus('Connected (Auto Route GPS)');
-            startSimulation(assignedShuttle.id);
-          },
-          { enableHighAccuracy: true, timeout: 6000, maximumAge: 0 }
-        );
+        initialPosition = await new Promise((resolve) => {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => resolve(pos),
+            () => {
+              navigator.geolocation.getCurrentPosition(
+                (posFallback) => resolve(posFallback),
+                () => resolve(null),
+                { enableHighAccuracy: false, timeout: 10000, maximumAge: 0 }
+              );
+            },
+            { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+          );
+        });
       }
+
+      const initLat = initialPosition?.coords?.latitude;
+      const initLng = initialPosition?.coords?.longitude;
+      const initHeading = initialPosition?.coords?.heading || 0;
 
       const res = await api.post('/trips/start', {
         shuttle_id: assignedShuttle.id,
         route_id: assignedShuttle.current_route_id || 1,
-        passenger_count: routePassengers.length || 14
+        passenger_count: routePassengers.length || 14,
+        latitude: initLat,
+        longitude: initLng,
+        speed: 0,
+        heading: initHeading
       });
 
       if (res.data.success) {
-        setActiveTripId(res.data.data.id);
+        const startedTripId = res.data.data.id;
+        setActiveTripId(startedTripId);
         setTripStatus('LIVE');
-        setGpsStatus('Connected (Live GPS)');
-        setMapFocusTrigger((c) => c + 1);
         setDelayNotifiedForTrip(false);
         setOffRouteNotifiedForTrip(false);
         setEmergencyStoppedNotifiedForTrip(false);
 
-        // Immediately start live route movement so there is zero delay across Driver, Passenger, and Admin maps
-        startSimulation(assignedShuttle.id);
+        if (initialPosition?.coords) {
+          applyHardwareGpsReading(initialPosition.coords, assignedShuttle.id, startedTripId);
+        } else {
+          setMapFocusTrigger((c) => c + 1);
+        }
+
+        // Start continuous second-by-second real hardware GPS tracking
+        startHardwareGpsTracking(assignedShuttle.id, startedTripId);
 
         addToast({
-          title: 'Trip Started — Live GPS Sharing Active',
-          message: `Bus ${assignedShuttle.code} GPS is now live on Google Maps and immediately shared with allocated passengers on ${assignedShuttle.start_point || 'Start'} ➔ ${assignedShuttle.destination || 'Destination'}.`,
+          title: 'Trip Started — Exact Live GPS Tracking Active',
+          message: `Bus ${assignedShuttle.code} is now tracking your exact GPS location second-by-second. Shuttle stays at your exact position when stationary and moves the exact distance you move.`,
           type: 'success'
         });
-
-        if (navigator.geolocation) {
-          if (watchIdRef.current !== null) {
-            navigator.geolocation.clearWatch(watchIdRef.current);
-          }
-          watchIdRef.current = navigator.geolocation.watchPosition(
-            (position) => {
-              const { latitude, longitude, speed, heading } = position.coords;
-              const newCoords = {
-                lat: latitude,
-                lng: longitude,
-                speed: speed && speed > 0 ? speed * 3.6 : 26,
-                heading: heading || 65
-              };
-              setCurrentCoords(newCoords);
-              setGpsStatus('Connected (Live GPS)');
-
-              sendDriverLocation({
-                shuttleId: assignedShuttle.id,
-                tripId: res.data.data.id,
-                latitude,
-                longitude,
-                speed: newCoords.speed,
-                heading: newCoords.heading,
-                driverId: user?.id
-              });
-            },
-            () => {
-              setGpsStatus('Connected (Auto Route GPS)');
-              startSimulation(assignedShuttle.id);
-            },
-            { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
-          );
-        } else {
-          startSimulation(assignedShuttle.id);
-          setGpsStatus('Connected (Auto Route GPS)');
-        }
       }
     } catch (err) {
       addToast({
@@ -306,6 +474,11 @@ export const DriverDashboard = () => {
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
     }
+    if (gpsSecondTimerRef.current) {
+      clearInterval(gpsSecondTimerRef.current);
+      gpsSecondTimerRef.current = null;
+    }
+    latestGpsRef.current = null;
     if (simulationActive) {
       stopSimulation(assignedShuttle.id);
     }
@@ -319,6 +492,7 @@ export const DriverDashboard = () => {
 
       setTripStatus('NOT_STARTED');
       setGpsStatus('Standby');
+      setCurrentCoords({ lat: null, lng: null, speed: 0, heading: 0 });
       fetchDriver();
 
       const ptsEarned = arrivalRes.data?.data?.pointsEarned ?? (currentDelay > 0 ? Math.max(2, 10 - currentDelay) : 10);
@@ -393,8 +567,8 @@ export const DriverDashboard = () => {
     try {
       const res = await api.post('/trips/off-route', {
         shuttle_id: assignedShuttle.id,
-        latitude: Number(assignedShuttle.current_lat || currentCoords.lat) + 0.012,
-        longitude: Number(assignedShuttle.current_lng || currentCoords.lng) - 0.011,
+        latitude: Number(assignedShuttle.current_lat || currentCoords.lat || 12.9249) + 0.012,
+        longitude: Number(assignedShuttle.current_lng || currentCoords.lng || 80.1275) - 0.011,
         reason: `Driver ${driverData?.name || user?.name || ''} deviated from allocated route (${assignedShuttle.start_point || 'Start'} ➔ ${assignedShuttle.destination || 'Destination'}) on Bus ${assignedShuttle.code}.`
       });
       if (res.data.success) {
@@ -414,34 +588,40 @@ export const DriverDashboard = () => {
     }
   };
 
-  // 20-Minute Stopped Bus Emergency Notification to Admin (Sends to Admin ONLY ONE TIME per trip across Driver & Passenger)
+  // Direct Driver Emergency Alert to Admin (Sends immediate Notification + Email to Admin)
   const handleEmergencyStoppedAlert = async () => {
-    if (emergencyStoppedNotifiedForTrip) {
-      addToast({
-        title: 'Emergency Already Sent (1/Trip)',
-        message: `Emergency notification for Bus ${assignedShuttle.code} (stopped 20+ mins) was already sent once to Admin for this trip.`,
-        type: 'info'
-      });
-      return;
-    }
     try {
       const res = await api.post('/trips/emergency-stopped', {
         shuttle_id: assignedShuttle.id,
         stopped_minutes: 20,
-        reason: `Emergency reported by Driver (${driverData?.name || user?.name || 'Driver'}): Bus ${assignedShuttle.code} on route ${assignedShuttle.start_point || 'Start'} ➔ ${assignedShuttle.destination || 'Destination'} has been stopped for 20 minutes or more.`
+        reported_by_role: 'driver',
+        reason: `Emergency reported directly by Driver (${driverData?.name || user?.name || 'Driver'}): Bus ${assignedShuttle.code} on route ${assignedShuttle.start_point || 'Start'} ➔ ${assignedShuttle.destination || 'Destination'} requires immediate emergency assistance.`
       });
+
+      if (
+        res.data?.emailRelayPayload &&
+        window.location.hostname !== 'localhost' &&
+        window.location.hostname !== '127.0.0.1'
+      ) {
+        fetch('http://localhost:5000/api/auth/relay-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(res.data.emailRelayPayload)
+        }).catch(() => {});
+      }
+
       if (res.data.success) {
         setEmergencyStoppedNotifiedForTrip(true);
         addToast({
-          title: res.data.alreadyNotified
-            ? 'Emergency Already Notified (1/Trip)'
-            : '20+ Min Stopped Emergency Sent to Admin (Once/Trip)',
-          message: res.data.message,
-          type: res.data.alreadyNotified ? 'info' : 'danger'
+          title: 'Emergency Alert Sent to Admin (Login & Email)',
+          message:
+            res.data.message ||
+            `Admin has been notified immediately via Dashboard and Email about the emergency on Bus ${assignedShuttle.code}.`,
+          type: 'danger'
         });
       }
     } catch (err) {
-      addToast({ title: 'Error', message: 'Failed to send 20-min stopped emergency alert', type: 'danger' });
+      addToast({ title: 'Error', message: 'Failed to send emergency alert to Admin', type: 'danger' });
     }
   };
 
@@ -460,7 +640,7 @@ export const DriverDashboard = () => {
     }
   };
 
-  const displaySpeed = Math.round(Number(assignedShuttle.speed ?? currentCoords.speed ?? 24));
+  const displaySpeed = Math.max(0, Math.round(Number(assignedShuttle.speed ?? currentCoords.speed ?? 0)));
   const assignedSchedules = Array.isArray(driverData?.schedules) ? driverData.schedules : [];
   const monthlyPoints = driverData?.monthlyPoints ?? driverData?.monthly_points ?? driverData?.driver_points ?? driverData?.dailyPoints ?? 10;
   const yearlyPoints = driverData?.yearlyPoints ?? driverData?.yearly_points ?? driverData?.driver_points ?? monthlyPoints;
@@ -642,15 +822,14 @@ export const DriverDashboard = () => {
             variant="outline"
             size="lg"
             icon={emergencyStoppedNotifiedForTrip ? CheckCircle2 : Siren}
-            disabled={emergencyStoppedNotifiedForTrip}
             onClick={handleEmergencyStoppedAlert}
             className={`w-full justify-center ${
               emergencyStoppedNotifiedForTrip
-                ? 'border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30 opacity-80 cursor-not-allowed'
+                ? 'border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30'
                 : 'border-red-400 dark:border-red-800 text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-950/30'
             }`}
           >
-            {emergencyStoppedNotifiedForTrip ? 'Emergency Sent' : 'Emergency'}
+            {emergencyStoppedNotifiedForTrip ? 'Emergency Sent (Resend)' : 'Emergency'}
           </Button>
 
           <Button

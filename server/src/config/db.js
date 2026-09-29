@@ -760,13 +760,44 @@ function computeDriverFeedbackStats(driverId, fallbackRating = 5.0) {
 
 function resolveDriverForShuttle(shuttle) {
   if (!shuttle) return null;
-  let drv = store.drivers.find(
+  const isRealEmail = (em) =>
+    Boolean(
+      em &&
+        String(em).includes('@') &&
+        !String(em).toLowerCase().endsWith('@shuttletrack.com') &&
+        !String(em).toLowerCase().endsWith('@shuttletracker.com')
+    );
+
+  // 1. Direct match by assigned_shuttle_id or current_driver_id (prefer real email)
+  const directMatches = store.drivers.filter(
     (d) =>
       Number(d.assigned_shuttle_id) === Number(shuttle.id) ||
       (shuttle.current_driver_id && Number(d.user_id) === Number(shuttle.current_driver_id))
   );
-  if (!drv && store.shuttles.length === 1 && store.drivers.length === 1) {
-    drv = store.drivers[0];
+  let drv =
+    directMatches.find((d) => {
+      const u = store.users.find((usr) => usr.id === d.user_id);
+      return isRealEmail(u?.email || d.email);
+    }) || directMatches[0];
+
+  // 2. Fallback: match by organization_name (prefer real email)
+  if (!drv && shuttle.organization_name) {
+    const orgDrivers = store.drivers.filter((d) => matchesOrg(d.organization_name, shuttle.organization_name));
+    drv =
+      orgDrivers.find((d) => {
+        const u = store.users.find((usr) => usr.id === d.user_id);
+        return isRealEmail(u?.email || d.email);
+      }) || orgDrivers[0];
+  }
+
+  // 3. Fallback: any driver with a real email or single driver
+  if (!drv) {
+    drv =
+      store.drivers.find((d) => {
+        const u = store.users.find((usr) => usr.id === d.user_id);
+        return isRealEmail(u?.email || d.email);
+      }) ||
+      (store.drivers.length === 1 ? store.drivers[0] : null);
   }
   return drv || null;
 }
@@ -4114,8 +4145,18 @@ const db = {
 
     // Notify the assigned Driver in Driver Login and send an Email from Admin to the Driver:
     // "Your schedule time is on — please be ready to ride safely!"
-    const driverName = driver ? driverUser?.name || driver.name : 'Driver';
-    const driverEmail = driver ? driverUser?.email || driver.email : '';
+    const fallbackDriverUser =
+      !driverUser &&
+      store.users.find(
+        (u) =>
+          u.role === 'driver' &&
+          matchesOrg(u.organization_name, orgName) &&
+          u.email &&
+          !u.email.toLowerCase().endsWith('@shuttletrack.com')
+      );
+    const driverName = driver ? driverUser?.name || driver.name : fallbackDriverUser?.name || 'Driver';
+    const driverEmail =
+      (driver && (driverUser?.email || driver.email)) || fallbackDriverUser?.email || '';
     const busCode = shuttle?.code || `S0${sId}`;
 
     const driverNotification = await db.createNotification({
@@ -4123,26 +4164,29 @@ const db = {
       message: `Admin has set your schedule for Bus ${busCode} (${resolvedStart || 'Start'} ➔ ${resolvedDest || 'Destination'}) from ${newSched.departure_time} to ${newSched.arrival_time} (${newSched.days}). Your schedule time is on — please be ready to ride safely!`,
       type: 'driver_schedule',
       shuttle_id: sId,
-      user_id: driver?.user_id || null,
+      user_id: driver?.user_id || fallbackDriverUser?.id || null,
       organization_name: orgName
     });
 
+    let emailDelivery = null;
     if (driverEmail) {
-      const { sendDriverScheduleEmail } = require('../services/otpService');
-      sendDriverScheduleEmail({
-        email: driverEmail,
-        name: driverName,
-        shuttleCode: busCode,
-        shuttleName: shuttle?.name || 'Campus Shuttle',
-        vehicleNumber: shuttle?.vehicle_number || '',
-        startPoint: resolvedStart || 'Start Terminal',
-        destination: resolvedDest || 'Destination Terminal',
-        routeName: resolvedRouteName,
-        departureTime: newSched.departure_time,
-        arrivalTime: newSched.arrival_time,
-        days: newSched.days,
-        isReminder: false
-      }).catch(() => {});
+      try {
+        const { sendDriverScheduleEmail } = require('../services/otpService');
+        emailDelivery = await sendDriverScheduleEmail({
+          email: driverEmail,
+          name: driverName,
+          shuttleCode: busCode,
+          shuttleName: shuttle?.name || 'Campus Shuttle',
+          vehicleNumber: shuttle?.vehicle_number || '',
+          startPoint: resolvedStart || 'Start Terminal',
+          destination: resolvedDest || 'Destination Terminal',
+          routeName: resolvedRouteName,
+          departureTime: newSched.departure_time,
+          arrivalTime: newSched.arrival_time,
+          days: newSched.days,
+          isReminder: false
+        });
+      } catch (_) {}
     }
 
     // Immediately check if this new schedule is currently in its scheduled time window without driver having pressed Start Trip
@@ -4152,11 +4196,13 @@ const db = {
       ...newSched,
       driverName,
       driverEmail,
-      driverUserId: driver?.user_id || null,
+      driverUserId: driver?.user_id || fallbackDriverUser?.id || null,
       shuttleCode: busCode,
       startPoint: resolvedStart,
       destination: resolvedDest,
-      driverNotification
+      driverNotification,
+      emailDeliveredVia: emailDelivery?.deliveredVia || null,
+      emailRelayPayload: emailDelivery?.relayPayload || null
     };
   },
 
@@ -4676,7 +4722,7 @@ const db = {
           stoppedMinutes: mins
         };
       }
-    } else if (alreadyAdminNotified) {
+    } else if (reportedByRole !== 'driver' && alreadyAdminNotified) {
       return {
         alreadyNotified: true,
         thresholdReached: true,
@@ -4715,7 +4761,7 @@ const db = {
       reportedByRole === 'user'
         ? `Bus ${busCode} (Driver: ${driverName}, Route: ${routeName}) is facing an issue near "${stopName}" — ${currentCount} out of 10 passengers on Bus ${busCode} (${passengerNamesList}) reported an emergency within 15 minutes.`
         : reason ||
-          `Bus ${busCode} (Driver: ${driverName}, Route: ${routeName}) is facing an emergency issue near "${stopName}".`;
+          `Bus ${busCode} (Driver: ${driverName}, Route: ${routeName}) is facing an emergency issue near "${stopName}" (Reported directly by Driver ${driverName}).`;
 
     const notif = await db.createNotification({
       title: `🚨 Bus ${busCode} Emergency Issue (${reportedByRole === 'user' ? `${currentCount}/10 Passengers` : 'Driver Alert'})`,
@@ -4724,6 +4770,62 @@ const db = {
       shuttle_id: sId,
       organization_name: shuttle?.organization_name
     });
+
+    // Resolve Organization Admin email addresses for Emergency Alert Email dispatch
+    let emailDelivery = null;
+    try {
+      const orgName =
+        shuttle?.organization_name ||
+        store.settings?.organization_name ||
+        'Sairam Engineering College';
+      const orgSettings = await db.getSettings(orgName);
+      const isRealAdminEmail = (em) =>
+        Boolean(
+          em &&
+            String(em).includes('@') &&
+            !String(em).toLowerCase().endsWith('@shuttletrack.com') &&
+            !String(em).toLowerCase().endsWith('@shuttletracker.com')
+        );
+
+      const candidateAdminEmails = [];
+      if (isRealAdminEmail(orgSettings?.admin_profile_email)) {
+        candidateAdminEmails.push(orgSettings.admin_profile_email);
+      }
+      if (isRealAdminEmail(store.settings?.admin_profile_email)) {
+        candidateAdminEmails.push(store.settings.admin_profile_email);
+      }
+      store.users
+        .filter((u) => u.role === 'admin' && isRealAdminEmail(u.email))
+        .forEach((u) => candidateAdminEmails.push(u.email));
+
+      // If Admin logged in with placeholder admin@shuttletrack.com / admin@shuttletracker.com,
+      // also include registered real organization emails & system admin email so the alert arrives in the inbox
+      store.users
+        .filter((u) => matchesOrg(u.organization_name, orgName) && isRealAdminEmail(u.email))
+        .forEach((u) => candidateAdminEmails.push(u.email));
+      candidateAdminEmails.push('cleancodeuniverse@gmail.com');
+
+      const { sendAdminEmergencyEmail } = require('../services/otpService');
+      emailDelivery = await sendAdminEmergencyEmail({
+        adminEmails: candidateAdminEmails,
+        adminName: orgSettings?.admin_profile_name || 'Administrator',
+        busCode,
+        shuttleName: shuttle?.name || `Shuttle ${busCode}`,
+        vehicleNumber: shuttle?.vehicle_number || '',
+        driverName,
+        routeName,
+        stopName,
+        reportedByRole,
+        reportedByName: reportedByName || driverName,
+        passengerCount: currentCount,
+        maxPassengerCount: maxPassengerReports,
+        passengerNames: passengerNamesList,
+        reason: consolidatedMessage,
+        organizationName: orgName
+      });
+    } catch (emgEmailErr) {
+      console.warn('Emergency email dispatch notice:', emgEmailErr.message);
+    }
 
     return {
       alreadyReportedByPassenger: false,
@@ -4739,7 +4841,10 @@ const db = {
       driverName,
       routeName,
       stopName,
-      stoppedMinutes: mins
+      stoppedMinutes: mins,
+      emailDeliveredVia: emailDelivery?.deliveredVia || null,
+      emailRelayPayload: emailDelivery?.relayPayload || null,
+      adminEmailRecipients: emailDelivery?.recipients || []
     };
   },
 

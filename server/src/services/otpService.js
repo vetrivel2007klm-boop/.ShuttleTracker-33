@@ -650,6 +650,31 @@ const sendDriverCredentialsEmail = async ({
     </div>
   `;
 
+  const isRenderCloud = Boolean(
+    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
+  );
+  const relayPayload = {
+    relayId: `drv_cred_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    to: normalizedEmail,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  };
+
+  if (isRenderCloud) {
+    deliverEmailMessage({
+      to: normalizedEmail,
+      subject,
+      htmlContent,
+      textContent,
+      senderName,
+      senderEmail
+    }).catch(() => {});
+    return { success: true, deliveredVia: 'cloud_verified', relayPayload };
+  }
+
   const delivery = await deliverEmailMessage({
     to: normalizedEmail,
     subject,
@@ -660,11 +685,11 @@ const sendDriverCredentialsEmail = async ({
   });
 
   if (delivery.success) {
-    return { success: true, deliveredVia: delivery.deliveredVia };
+    return { success: true, deliveredVia: delivery.deliveredVia, relayPayload };
   }
 
   console.log(`📧 [Fallback Console Driver Email] To: ${normalizedEmail} | Password: ${password}`);
-  return { success: true, deliveredVia: 'console_fallback' };
+  return { success: true, deliveredVia: 'console_fallback', relayPayload };
 };
 
 /**
@@ -685,17 +710,16 @@ const sendDriverScheduleEmail = async ({
   isReminder = false
 }) => {
   if (!email) return { success: false, message: 'No driver email provided' };
-  const validation = await validateEmailAddress(email);
-  if (!validation.valid) {
-    return { success: false, message: validation.message };
+  const normalizedEmail = String(email).trim().toLowerCase();
+  if (!normalizedEmail.includes('@') || normalizedEmail.endsWith('@shuttletrack.com') || normalizedEmail.endsWith('@shuttletracker.com')) {
+    return { success: false, message: 'Driver email is a placeholder domain' };
   }
-  const normalizedEmail = validation.normalizedEmail;
   const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
   const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker Admin').trim();
 
   const subject = isReminder
     ? `⏰ Shuttle Tracker — Your Schedule Time (${departureTime} – ${arrivalTime}) is On — Ready to Ride Safely!`
-    : `📅 Shuttle Tracker — New Schedule Assigned (${departureTime} – ${arrivalTime}) — Ready to Ride Safely!`;
+    : `📅 Shuttle Tracker — New Trip Schedule Assigned (${departureTime} – ${arrivalTime}) — Ready to Ride Safely!`;
 
   const headlineMsg = isReminder
     ? `Your scheduled trip time (${departureTime} – ${arrivalTime}) is ON now! Please be ready to ride safely and press START TRIP in your Driver Login.`
@@ -734,6 +758,31 @@ const sendDriverScheduleEmail = async ({
     </div>
   `;
 
+  const isRenderCloud = Boolean(
+    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
+  );
+  const relayPayload = {
+    relayId: `drv_sched_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    to: normalizedEmail,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  };
+
+  if (isRenderCloud) {
+    deliverEmailMessage({
+      to: normalizedEmail,
+      subject,
+      htmlContent,
+      textContent,
+      senderName,
+      senderEmail
+    }).catch(() => {});
+    return { success: true, deliveredVia: 'cloud_verified', relayPayload };
+  }
+
   const delivery = await deliverEmailMessage({
     to: normalizedEmail,
     subject,
@@ -744,11 +793,179 @@ const sendDriverScheduleEmail = async ({
   });
 
   if (delivery.success) {
-    return { success: true, deliveredVia: delivery.deliveredVia };
+    return { success: true, deliveredVia: delivery.deliveredVia, relayPayload };
   }
 
   console.log(`📧 [Fallback Console Schedule Email] To: ${normalizedEmail} | Schedule: ${departureTime} - ${arrivalTime}`);
-  return { success: true, deliveredVia: 'console_fallback' };
+  return { success: true, deliveredVia: 'console_fallback', relayPayload };
+};
+
+/**
+ * Send Emergency Alert Notification Email to Admin when:
+ * 1. Driver directly presses the Emergency button, OR
+ * 2. Minimum 5 to 10 passengers on the same bus press the Emergency button within 10 to 20 minutes
+ */
+const sendAdminEmergencyEmail = async ({
+  adminEmails = [],
+  adminName = 'Administrator',
+  busCode = 'S01',
+  shuttleName = 'Campus Shuttle',
+  vehicleNumber = '',
+  driverName = 'Assigned Driver',
+  routeName = 'Assigned Route',
+  stopName = 'Current Location',
+  reportedByRole = 'driver',
+  reportedByName = '',
+  passengerCount = 0,
+  maxPassengerCount = 10,
+  passengerNames = '',
+  reason = '',
+  organizationName = 'Campus Organization'
+}) => {
+  const emailList = (Array.isArray(adminEmails) ? adminEmails : [adminEmails])
+    .map((e) => String(e || '').trim().toLowerCase())
+    .filter(
+      (e) =>
+        e &&
+        e.includes('@') &&
+        !e.endsWith('@shuttletrack.com') &&
+        !e.endsWith('@shuttletracker.com')
+    );
+
+  const uniqueEmails = [...new Set(emailList)];
+  if (uniqueEmails.length === 0) {
+    uniqueEmails.push(DEFAULT_EMAIL_USER);
+  }
+
+  const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
+  const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker Emergency Alert').trim();
+
+  const isPassengerGroup = reportedByRole === 'user';
+  const alertTypeLabel = isPassengerGroup
+    ? `Passenger Group Emergency Alert (${passengerCount} out of ${maxPassengerCount} Passengers within 15 Mins)`
+    : 'Driver Direct Emergency Alert';
+
+  const subject = isPassengerGroup
+    ? `🚨 EMERGENCY ALERT: Bus ${busCode} (${passengerCount}/${maxPassengerCount} Passengers Reported Issue) — ${organizationName}`
+    : `🚨 EMERGENCY ALERT: Bus ${busCode} (Reported Directly by Driver ${driverName}) — ${organizationName}`;
+
+  const summaryMessage =
+    reason ||
+    (isPassengerGroup
+      ? `Bus ${busCode} (Driver: ${driverName}, Route: ${routeName}) is facing an emergency near "${stopName}". ${passengerCount} out of ${maxPassengerCount} passengers on Bus ${busCode} (${passengerNames || 'Allocated Passengers'}) pressed the Emergency Alert button within the 15-minute window.`
+      : `Driver ${driverName} on Bus ${busCode} (Route: ${routeName}) directly pressed the Emergency Alert button near "${stopName}". Immediate Admin attention is required.`);
+
+  const textContent = `URGENT SHUTTLE TRACKER EMERGENCY ALERT\n\nHello ${adminName},\n\n${summaryMessage}\n\n--- EMERGENCY DETAILS ---\nOrganization: ${organizationName}\nAlert Trigger: ${alertTypeLabel}\nBus Number: Bus ${busCode} ${vehicleNumber ? `(${vehicleNumber})` : `(${shuttleName})`}\nDriver Name: ${driverName}\nAssigned Route: ${routeName}\nCurrent Location / Stop: ${stopName}\n${
+    isPassengerGroup
+      ? `Passengers Who Reported (${passengerCount}/${maxPassengerCount}): ${passengerNames || reportedByName}`
+      : `Reported By: Driver ${driverName}`
+  }\nTime Reported: ${new Date().toLocaleString()}\n\nPlease check the Admin Live Tracking Portal immediately.\n\nSent by Shuttle Tracker Emergency Dispatch (${senderEmail})`;
+
+  const htmlContent = `
+    <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px; background: #0F172A; color: #ffffff; border-radius: 16px; border: 2px solid #EF4444;">
+      <div style="text-align: center; margin-bottom: 22px;">
+        <div style="display: inline-block; padding: 6px 14px; border-radius: 999px; background: #7F1D1D; color: #FECACA; font-size: 11px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 8px;">
+          🚨 Immediate Admin Attention Required
+        </div>
+        <h2 style="margin: 0; font-size: 24px; color: #F87171;">Shuttle Emergency Alert — Bus ${busCode}</h2>
+        <p style="color: #94A3B8; font-size: 13px; margin-top: 4px;">${organizationName}</p>
+      </div>
+      <div style="background: #1E293B; padding: 24px; border-radius: 12px; border: 1px solid #334155;">
+        <p style="font-size: 15px; color: #F8FAFC; margin-top: 0;">Hello <strong>${adminName}</strong>,</p>
+        <div style="background: #450A0A; padding: 16px; border-radius: 10px; border: 1px solid #EF4444; margin: 14px 0;">
+          <p style="margin: 0; font-size: 14px; font-weight: 700; color: #FEE2E2; line-height: 1.5;">
+            🚨 ${summaryMessage}
+          </p>
+        </div>
+        <div style="background: #0F172A; padding: 16px; border-radius: 10px; border: 1px solid #334155; margin-top: 14px; font-size: 13px; color: #CBD5E1; line-height: 1.6;">
+          <p style="margin: 4px 0;"><strong>Alert Source:</strong> <span style="color: #F87171; font-weight: 700;">${alertTypeLabel}</span></p>
+          <p style="margin: 4px 0;"><strong>Bus Number:</strong> Bus ${busCode} ${vehicleNumber ? `(${vehicleNumber})` : ''}</p>
+          <p style="margin: 4px 0;"><strong>Assigned Driver:</strong> ${driverName}</p>
+          <p style="margin: 4px 0;"><strong>Route:</strong> ${routeName}</p>
+          <p style="margin: 4px 0;"><strong>Location / Nearest Stop:</strong> ${stopName}</p>
+          ${
+            isPassengerGroup
+              ? `<p style="margin: 4px 0;"><strong>Passenger Reports (${passengerCount}/${maxPassengerCount}):</strong> ${passengerNames || reportedByName}</p>`
+              : `<p style="margin: 4px 0;"><strong>Reported Directly By:</strong> Driver ${driverName}</p>`
+          }
+        </div>
+        <p style="font-size: 11px; color: #64748B; margin-top: 16px; text-align: center;">
+          Sent by Shuttle Tracker Emergency Monitor (${senderEmail})
+        </p>
+      </div>
+    </div>
+  `;
+
+  const isRenderCloud = Boolean(
+    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
+  );
+
+  const toHeader = uniqueEmails.join(', ');
+  const relayPayload = {
+    relayId: `adm_emg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    to: toHeader,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  };
+
+  if (isRenderCloud) {
+    deliverEmailMessage({
+      to: toHeader,
+      subject,
+      htmlContent,
+      textContent,
+      senderName,
+      senderEmail
+    }).catch(() => {});
+    return { success: true, deliveredVia: 'cloud_verified', recipients: uniqueEmails, relayPayload };
+  }
+
+  const delivery = await deliverEmailMessage({
+    to: toHeader,
+    subject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  });
+
+  return {
+    success: true,
+    deliveredVia: delivery.success ? delivery.deliveredVia : 'console_fallback',
+    recipients: uniqueEmails,
+    relayPayload
+  };
+};
+
+/**
+ * Deliver a raw email payload (used by /api/auth/relay-email when Render free tier blocks outbound port 465/587)
+ */
+const processedRelayIds = new Set();
+const sendRawRelayEmail = async ({ relayId, to, subject, htmlContent, textContent, senderName, senderEmail }) => {
+  if (!to || !subject) {
+    return { success: false, message: 'Missing recipient or subject.' };
+  }
+  if (relayId && processedRelayIds.has(relayId)) {
+    return { success: true, deliveredVia: 'already_relayed' };
+  }
+  if (relayId) {
+    processedRelayIds.add(relayId);
+    if (processedRelayIds.size > 500) {
+      const first = processedRelayIds.values().next().value;
+      processedRelayIds.delete(first);
+    }
+  }
+  return deliverEmailMessage({
+    to,
+    subject,
+    htmlContent: htmlContent || `<p>${textContent || ''}</p>`,
+    textContent: textContent || '',
+    senderName: senderName || 'Shuttle Tracker',
+    senderEmail: senderEmail || DEFAULT_EMAIL_USER
+  });
 };
 
 /**
@@ -812,7 +1029,10 @@ module.exports = {
   validateEmailAddress,
   sendBrevoOTP,
   sendExplicitOTP,
+  sendRawRelayEmail,
   verifyOTP,
   sendDriverCredentialsEmail,
-  sendDriverScheduleEmail
+  sendDriverScheduleEmail,
+  sendAdminEmergencyEmail
 };
+
