@@ -118,16 +118,6 @@ export const PassengerRoutes = () => {
     legDistancesKm: []
   });
 
-  const busSpeedKmh =
-    Number(selectedShuttle?.speed) >= 15 ? Math.round(Number(selectedShuttle.speed)) : 30;
-  const totalRouteKm = Number(
-    mapMetrics.distanceKm || activeRoute?.distance_km || selectedShuttle?.distance_km || 4.5
-  ).toFixed(2);
-  const totalRouteEtaMins = Math.max(
-    2,
-    Math.round((Number(totalRouteKm) / busSpeedKmh) * 60)
-  );
-
   // Helper to compute Haversine straight distance between two coordinates
   const calcHaversineKm = (lat1, lon1, lat2, lon2) => {
     if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
@@ -143,7 +133,37 @@ export const PassengerRoutes = () => {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   };
 
-  // Compute per-stop Driver Reached Time, Exact Leg/Cumulative KM, and Exact Speed-Based ETA Estimation
+  const activeStopsList = activeRoute?.stops || selectedShuttle?.stops || [];
+  let computedStopsGpsKm = 0;
+  for (let i = 1; i < activeStopsList.length; i++) {
+    computedStopsGpsKm +=
+      calcHaversineKm(
+        activeStopsList[i - 1].latitude,
+        activeStopsList[i - 1].longitude,
+        activeStopsList[i].latitude,
+        activeStopsList[i].longitude
+      ) * 1.24;
+  }
+
+  const isBusOnTrip =
+    selectedShuttle?.status === 'on_trip' || selectedShuttle?.status === 'delayed';
+  const busSpeedKmh = isBusOnTrip
+    ? Math.max(0, Math.round(Number(selectedShuttle?.speed || 0)))
+    : 0;
+  const effectiveSpeedForEta = busSpeedKmh >= 1 ? busSpeedKmh : 25;
+  const totalRouteKm = Number(
+    mapMetrics.distanceKm ||
+      (computedStopsGpsKm > 0 ? computedStopsGpsKm : 0) ||
+      activeRoute?.distance_km ||
+      selectedShuttle?.distance_km ||
+      0
+  ).toFixed(2);
+  const totalRouteEtaMins =
+    Number(totalRouteKm) > 0
+      ? Math.max(1, Math.round((Number(totalRouteKm) / effectiveSpeedForEta) * 60))
+      : 0;
+
+  // Compute per-stop Driver Reached Time, Exact Leg/Cumulative KM, and Exact GPS Speed-Based ETA Estimation
   const buildStopScheduleInfo = (route, shuttle) => {
     const stops = route?.stops || shuttle?.stops || [];
     if (stops.length === 0) return [];
@@ -152,14 +172,18 @@ export const PassengerRoutes = () => {
       ' (Driver Arrived)',
       ''
     );
-    const isArrivedAtFinal = (shuttle?.next_stop_name || '').includes('(Driver Arrived)');
-    const isOnTrip = shuttle?.status === 'on_trip';
+    const isArrivedAtFinal =
+      Boolean(shuttle?.driver_arrived) ||
+      (shuttle?.next_stop_name || '').includes('(Driver Arrived)');
+    const isOnTrip = shuttle?.status === 'on_trip' || shuttle?.status === 'delayed';
     const nextIdx = stops.findIndex((st) => st.name === rawNextStop);
     const activeNextIndex = isArrivedAtFinal
       ? stops.length
-      : isOnTrip && nextIdx > -1
-      ? nextIdx
-      : 1;
+      : isOnTrip
+      ? nextIdx > -1
+        ? nextIdx
+        : 1
+      : 0;
 
     // Calculate exact road distance for each leg and cumulative distance from Start (#1)
     const rawLegs = [];
@@ -180,10 +204,8 @@ export const PassengerRoutes = () => {
         rawSum += l;
       } else {
         const prev = stops[i - 1];
-        const l = Math.max(
-          0.2,
-          calcHaversineKm(prev.latitude, prev.longitude, stops[i].latitude, stops[i].longitude) * 1.24
-        );
+        const l =
+          calcHaversineKm(prev.latitude, prev.longitude, stops[i].latitude, stops[i].longitude) * 1.24;
         rawLegs.push(l);
         rawSum += l;
       }
@@ -199,9 +221,8 @@ export const PassengerRoutes = () => {
       return { legKm, cumKm: runningCumKm };
     });
 
-    // Reference cumulative km where the bus currently is (Start #1 if idle, or previous stop if on trip)
     const busBaseStopIdx = Math.max(0, Math.min(stops.length - 1, activeNextIndex - 1));
-    const busBaseCumKm = stopKmList[busBaseStopIdx]?.cumKm || 0;
+    const busBaseCumKm = isOnTrip ? stopKmList[busBaseStopIdx]?.cumKm || 0 : 0;
 
     const stopReachedMap = {
       ...(route?.stopReachedTimes || {}),
@@ -216,16 +237,12 @@ export const PassengerRoutes = () => {
 
     return stops.map((stop, idx) => {
       const { legKm, cumKm } = stopKmList[idx] || { legKm: 0, cumKm: 0 };
-      const isPassed = idx < activeNextIndex || isArrivedAtFinal;
-      const isNext = !isArrivedAtFinal && idx === activeNextIndex;
+      const recordedReachedTime = stopReachedMap[stop.name] || null;
+      const isPassed =
+        Boolean(recordedReachedTime) || (isOnTrip && (idx < activeNextIndex || isArrivedAtFinal));
+      const isNext = isOnTrip && !isArrivedAtFinal && idx === activeNextIndex;
 
-      if (isPassed) {
-        const fallbackMinsAgo = Math.max(0, (activeNextIndex - 1 - idx) * 3);
-        const fallbackTime = new Date(now - fallbackMinsAgo * 60000).toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-        const reachedTime = stopReachedMap[stop.name] || fallbackTime;
+      if (isPassed && recordedReachedTime) {
         const hadTrafficDelay =
           (trafficNotice && trafficNotice.stopName === stop.name) ||
           (isDelayed && idx === activeNextIndex - 1);
@@ -235,23 +252,36 @@ export const PassengerRoutes = () => {
           legKm: legKm.toFixed(2),
           cumKm: cumKm.toFixed(2),
           state: 'reached',
-          reachedTime,
+          reachedTime: recordedReachedTime,
           etaMinutes: 0,
-          etaClock: reachedTime,
+          etaClock: recordedReachedTime,
           hadTrafficDelay,
           delayMinutes: hadTrafficDelay ? trafficNotice?.delayMinutes || 4 : 0,
           trafficText: hadTrafficDelay
             ? trafficNotice?.trafficMessage ||
-              `Reached ${stop.name} at ${reachedTime} (+4 min traffic delay)`
+              `Reached ${stop.name} at ${recordedReachedTime}`
             : null
         };
       }
 
-      const remainingKmToStop = Math.max(0.2, cumKm - busBaseCumKm);
-      const exactStopEtaMins = Math.max(
-        idx - activeNextIndex + 1,
-        Math.round((remainingKmToStop / busSpeedKmh) * 60) + (isDelayed ? 3 : 0)
+      // Compute remaining distance strictly from live GPS location to this stop
+      const directGpsKmToStop =
+        shuttle?.current_lat && shuttle?.current_lng && stop.latitude && stop.longitude
+          ? calcHaversineKm(
+              shuttle.current_lat,
+              shuttle.current_lng,
+              stop.latitude,
+              stop.longitude
+            ) * 1.24
+          : 0;
+      const remainingKmToStop = Math.max(
+        0,
+        cumKm > busBaseCumKm ? cumKm - busBaseCumKm : directGpsKmToStop
       );
+      const exactStopEtaMins =
+        remainingKmToStop > 0
+          ? Math.max(1, Math.round((remainingKmToStop / effectiveSpeedForEta) * 60))
+          : 0;
       const etaClock = new Date(now + exactStopEtaMins * 60000).toLocaleTimeString([], {
         hour: '2-digit',
         minute: '2-digit'
@@ -269,7 +299,7 @@ export const PassengerRoutes = () => {
         delayMinutes: isDelayed ? 4 : 0,
         trafficText:
           isDelayed && isNext
-            ? `Moderate traffic ahead of ${stop.name} (+4 min delay included in ETA)`
+            ? `Delay reported ahead of ${stop.name}`
             : null
       };
     });
@@ -280,7 +310,7 @@ export const PassengerRoutes = () => {
     selectedStopTimeline.find((st) => st.state === 'next') ||
     selectedStopTimeline.find((st) => st.state === 'upcoming') ||
     null;
-  const nextStopEtaMins = nextUpcomingStop ? nextUpcomingStop.etaMinutes : 2;
+  const nextStopEtaMins = nextUpcomingStop ? nextUpcomingStop.etaMinutes : 0;
   const activeTrafficAlert =
     (selectedShuttle && trafficAlertsByShuttle[selectedShuttle.id]) ||
     selectedShuttle?.trafficDelayStop ||

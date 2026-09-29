@@ -213,23 +213,43 @@ export const PassengerDashboard = () => {
         ).toFixed(2)
       : '0.00';
 
+  let gpsStopsRoadKm = 0;
+  for (let i = 1; i < activeStops.length; i++) {
+    gpsStopsRoadKm +=
+      calculateHaversineKm(
+        Number(activeStops[i - 1].latitude),
+        Number(activeStops[i - 1].longitude),
+        Number(activeStops[i].latitude),
+        Number(activeStops[i].longitude)
+      ) * 1.24;
+  }
+
+  const isShuttleOnTrip =
+    currentShuttle?.status === 'on_trip' || currentShuttle?.status === 'delayed';
   const vehicleSpeed =
-    currentShuttle?.status === 'on_trip' && currentShuttle?.speed !== undefined
+    isShuttleOnTrip && currentShuttle?.speed !== undefined
       ? Math.max(0, Math.round(Number(currentShuttle.speed)))
       : 0;
   const totalRouteKm = Number(
-    currentShuttle?.status === 'on_trip' &&
+    isShuttleOnTrip &&
       currentShuttle?.distance_km !== undefined &&
       Number(currentShuttle.distance_km) > 0
       ? currentShuttle.distance_km
-      : mapRouteKm || matchedRoute?.distance_km || currentShuttle?.distance_km || 4.5
+      : mapRouteKm ||
+          (gpsStopsRoadKm > 0 ? gpsStopsRoadKm : 0) ||
+          matchedRoute?.distance_km ||
+          currentShuttle?.distance_km ||
+          0
   ).toFixed(2);
+  const effectiveSpeedForEta = vehicleSpeed >= 1 ? vehicleSpeed : 25;
   const exactRouteEtaMins =
-    currentShuttle?.status === 'on_trip' &&
+    isShuttleOnTrip &&
     currentShuttle?.eta_minutes !== undefined &&
     Number(currentShuttle.eta_minutes) > 0
       ? Math.max(1, Math.round(Number(currentShuttle.eta_minutes)))
-      : Math.max(1, Math.round((Number(totalRouteKm) / Math.max(vehicleSpeed, 25)) * 60));
+      : Number(totalRouteKm) > 0
+      ? Math.max(1, Math.round((Number(totalRouteKm) / effectiveSpeedForEta) * 60))
+      : 0;
 
   const emergencyStorageKey = `shuttle_emergency_${user?.id || user?.email || 'guest'}_${passengerBusCode}`;
   let localStoredEmergency = null;

@@ -19,13 +19,42 @@ import {
   Trash2
 } from 'lucide-react';
 
-// Helper to add minutes to a time string like "08:30 AM" or "14:15"
-function calculateExactArrivalTime(departureStr, durationMinutes = 18) {
-  if (!departureStr) return '08:25 AM';
+// Pure Haversine GPS distance in km
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const nLat1 = Number(lat1);
+  const nLon1 = Number(lon1);
+  const nLat2 = Number(lat2);
+  const nLon2 = Number(lon2);
+  if (
+    !Number.isFinite(nLat1) ||
+    !Number.isFinite(nLon1) ||
+    !Number.isFinite(nLat2) ||
+    !Number.isFinite(nLon2) ||
+    (nLat1 === 0 && nLon1 === 0) ||
+    (nLat2 === 0 && nLon2 === 0)
+  ) {
+    return null;
+  }
+  const R = 6371;
+  const dLat = ((nLat2 - nLat1) * Math.PI) / 180;
+  const dLon = ((nLon2 - nLon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((nLat1 * Math.PI) / 180) *
+      Math.cos((nLat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Number((R * c).toFixed(2));
+}
+
+// Helper to add GPS-calculated minutes to a departure time string like "08:30 AM" or "14:15"
+function calculateExactArrivalTime(departureStr, durationMinutes = 0) {
+  if (!departureStr) return '—';
   try {
     const clean = departureStr.trim().toUpperCase();
     const match12 = clean.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
-    let hours = 8;
+    let hours = 0;
     let mins = 0;
 
     if (match12) {
@@ -39,10 +68,12 @@ function calculateExactArrivalTime(departureStr, durationMinutes = 18) {
       if (match24) {
         hours = parseInt(match24[1], 10);
         mins = parseInt(match24[2], 10);
+      } else {
+        return departureStr;
       }
     }
 
-    const totalMinutes = hours * 60 + mins + Number(durationMinutes || 18);
+    const totalMinutes = hours * 60 + mins + Math.max(0, Math.round(Number(durationMinutes) || 0));
     const arrHours24 = Math.floor(totalMinutes / 60) % 24;
     const arrMins = totalMinutes % 60;
     const period = arrHours24 >= 12 ? 'PM' : 'AM';
@@ -50,7 +81,7 @@ function calculateExactArrivalTime(departureStr, durationMinutes = 18) {
 
     return `${String(arrHours12).padStart(2, '0')}:${String(arrMins).padStart(2, '0')} ${period}`;
   } catch (_) {
-    return '08:30 AM';
+    return departureStr;
   }
 }
 
@@ -67,7 +98,7 @@ export const AdminSchedules = () => {
     days: 'Mon - Fri'
   });
 
-  const { socket } = useSocket();
+  const { socket, liveLocations, relayCloudEmail } = useSocket();
   const { addToast } = useToast();
 
   const fetchData = async () => {
@@ -125,12 +156,14 @@ export const AdminSchedules = () => {
     socket.on('route:updated', handleSync);
     socket.on('shuttle:updated', handleSync);
     socket.on('driver:updated', handleSync);
+    socket.on('trip:status_change', handleSync);
 
     return () => {
       socket.off('schedule:updated', handleScheduleUpdated);
       socket.off('route:updated', handleSync);
       socket.off('shuttle:updated', handleSync);
       socket.off('driver:updated', handleSync);
+      socket.off('trip:status_change', handleSync);
     };
   }, [socket]);
 
@@ -142,10 +175,13 @@ export const AdminSchedules = () => {
     routes[0] ||
     null;
 
-  const calculatedDuration = selectedRouteObj
-    ? Number(selectedRouteObj.estimated_time_minutes) ||
-      Math.max(8, Math.round(((Number(selectedRouteObj.distance_km) || 4.2) / 24) * 60))
-    : 18;
+  const selectedRouteDistKm = Number(
+    selectedRouteObj?.distance_km || selectedBusObj?.distance_km || 0
+  );
+  const calculatedDuration =
+    selectedRouteDistKm > 0
+      ? Math.max(1, Math.round((selectedRouteDistKm / 25) * 60))
+      : Number(selectedRouteObj?.estimated_time_minutes) || 0;
   const exactArrivalPreview = calculateExactArrivalTime(formData.departure_time, calculatedDuration);
 
   const openScheduleModal = () => {
@@ -181,20 +217,12 @@ export const AdminSchedules = () => {
         days: formData.days
       });
 
-      if (
-        res.data?.emailRelayPayload &&
-        window.location.hostname !== 'localhost' &&
-        window.location.hostname !== '127.0.0.1'
-      ) {
-        fetch('http://localhost:5000/api/auth/relay-email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(res.data.emailRelayPayload)
-        }).catch(() => {});
+      if (res.data?.emailRelayPayload && relayCloudEmail) {
+        relayCloudEmail(res.data.emailRelayPayload);
       }
 
       addToast({
-        title: 'Schedule Set • Driver Notified via Login & Email',
+        title: 'Schedule Set • Driver Notified Once via Login & Email',
         message: `Notified ${selectedBusObj?.driver_name || 'Assigned Driver'} (Bus ${selectedBusObj?.code || 'S01'}): "${formData.departure_time} – ${exactArrivalPreview} • Your schedule time is on, ready to ride safely!"`,
         type: 'success'
       });
@@ -239,7 +267,7 @@ export const AdminSchedules = () => {
             Master Timetable & Scheduled Routes
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Displays Bus Number, allocated Driver Name, assigned Route, cumulative All-Trips Driver Points (Monthly / Yearly), and option to delete any scheduled route
+            All Speed, Distance, ETA, and Arrival Times are calculated strictly from real GPS coordinates. Arrival is recorded only when the bus physically reaches the destination on GPS.
           </p>
         </div>
 
@@ -263,8 +291,9 @@ export const AdminSchedules = () => {
                 <th className="py-4 px-5 whitespace-nowrap">Bus Number & Allocated Driver</th>
                 <th className="py-4 px-5 whitespace-nowrap">Assigned Route (Start ➔ Destination)</th>
                 <th className="py-4 px-5 whitespace-nowrap">Scheduled Departure</th>
-                <th className="py-4 px-5 whitespace-nowrap">Scheduled Arrival</th>
-                <th className="py-4 px-5 whitespace-nowrap">Trip / Arrival Status</th>
+                <th className="py-4 px-5 whitespace-nowrap">GPS Telemetry (Speed • Distance • ETA)</th>
+                <th className="py-4 px-5 whitespace-nowrap">Calculated Arrival Time</th>
+                <th className="py-4 px-5 whitespace-nowrap">GPS Trip / Arrival Status</th>
                 <th className="py-4 px-5 whitespace-nowrap">All-Trips Points (Monthly / Yearly)</th>
                 <th className="py-4 px-5 text-right whitespace-nowrap">Status & Actions</th>
               </tr>
@@ -272,7 +301,7 @@ export const AdminSchedules = () => {
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
               {schedules.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-10 px-5 text-center text-slate-400 text-xs">
+                  <td colSpan={9} className="py-10 px-5 text-center text-slate-400 text-xs">
                     No timetable slots configured yet. Click &ldquo;Add Timetable Slot&rdquo; above to schedule a bus and driver.
                   </td>
                 </tr>
@@ -282,6 +311,7 @@ export const AdminSchedules = () => {
                   const matchedRoute =
                     routes.find((r) => Number(r.id) === Number(item.route_id)) ||
                     routes.find((r) => Number(r.shuttle_id) === Number(item.shuttle_id));
+                  const liveLoc = liveLocations[item.shuttle_id] || null;
 
                   const busNumber =
                     item.shuttle_code || matchedBus?.code || matchedBus?.vehicle_number || `#${item.shuttle_id}`;
@@ -297,20 +327,68 @@ export const AdminSchedules = () => {
                   const routeTitle =
                     item.route_name || matchedRoute?.name || `${startPoint} - ${destination}`;
 
-                  const durationMins =
-                    item.estimated_time_minutes || matchedRoute?.estimated_time_minutes || 18;
-                  const scheduledArrival =
-                    item.arrival_time || calculateExactArrivalTime(item.departure_time, durationMins);
-
                   const hasArrived = Boolean(item.driver_arrived);
                   const isOnTrip =
-                    Boolean(item.is_on_trip) || matchedBus?.status === 'on_trip';
+                    Boolean(item.is_on_trip) ||
+                    matchedBus?.status === 'on_trip' ||
+                    matchedBus?.status === 'delayed' ||
+                    liveLoc?.status === 'on_trip';
+
+                  // Calculate GPS distance, speed, ETA, and arrival time strictly from GPS coordinates
+                  const stops = Array.isArray(matchedBus?.stops) ? matchedBus.stops : [];
+                  const destStop = stops.length > 0 ? stops[stops.length - 1] : null;
+                  const curLat = Number(liveLoc?.latitude ?? item.current_lat ?? matchedBus?.current_lat);
+                  const curLng = Number(liveLoc?.longitude ?? item.current_lng ?? matchedBus?.current_lng);
+
+                  const routeDistKm = Number(
+                    Number(item.distance_km || matchedRoute?.distance_km || matchedBus?.distance_km || 0).toFixed(2)
+                  );
+                  const remainingGpsKm =
+                    isOnTrip && destStop && Number.isFinite(curLat) && Number.isFinite(curLng)
+                      ? haversineKm(curLat, curLng, destStop.latitude, destStop.longitude) ?? routeDistKm
+                      : Number(item.remaining_distance_km ?? routeDistKm);
+
+                  const gpsSpeedKmh = isOnTrip
+                    ? Math.max(0, Math.round(Number(liveLoc?.speed ?? item.speed ?? matchedBus?.speed ?? 0)))
+                    : 0;
+
+                  const routeDurationFromGps =
+                    routeDistKm > 0
+                      ? Math.max(1, Math.round((routeDistKm / 25) * 60))
+                      : Number(item.estimated_time_minutes || matchedRoute?.estimated_time_minutes || 0);
+
+                  let gpsEtaMinutes = 0;
+                  if (hasArrived) {
+                    gpsEtaMinutes = 0;
+                  } else if (isOnTrip) {
+                    if (gpsSpeedKmh >= 1 && remainingGpsKm > 0) {
+                      gpsEtaMinutes = Math.max(1, Math.round((remainingGpsKm / gpsSpeedKmh) * 60));
+                    } else if (remainingGpsKm > 0) {
+                      gpsEtaMinutes = Math.max(1, Math.round((remainingGpsKm / 25) * 60));
+                    } else {
+                      gpsEtaMinutes = Number(item.eta_minutes) || 0;
+                    }
+                  } else {
+                    gpsEtaMinutes = routeDurationFromGps;
+                  }
+
+                  const scheduledArrival =
+                    item.arrival_time || calculateExactArrivalTime(item.departure_time, routeDurationFromGps);
+
+                  const liveGpsArrivalTime =
+                    isOnTrip && gpsEtaMinutes > 0
+                      ? new Date(Date.now() + gpsEtaMinutes * 60000).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })
+                      : null;
+
                   const isScheduledNow = Boolean(item.is_scheduled_time_now);
                   const notStartedAtSchedule =
                     Boolean(item.driver_not_started_at_schedule) || (isScheduledNow && !isOnTrip && !hasArrived);
 
                   const delayMins = Number(item.delay_minutes) || 0;
-                  const isDelayed = hasArrived && delayMins > 0;
+                  const isDelayed = delayMins > 0;
                   const monthlyPoints =
                     Number(item.monthly_points) || Number(item.driver_points) || 0;
                   const yearlyPoints =
@@ -378,17 +456,42 @@ export const AdminSchedules = () => {
                         </span>
                       </td>
 
-                      {/* 5. Scheduled Arrival */}
+                      {/* 5. Live GPS Telemetry (Speed, Distance, ETA) */}
+                      <td className="py-4 px-5 align-middle whitespace-nowrap">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-brand-600 dark:text-blue-400 font-mono font-bold text-[11px] border border-blue-200/60 dark:border-blue-800/60">
+                            {gpsSpeedKmh} km/h
+                          </span>
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-mono font-bold text-[11px]">
+                            {isOnTrip ? `${remainingGpsKm} km left` : `${routeDistKm} km`}
+                          </span>
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 font-mono font-bold text-[11px] border border-emerald-200/60 dark:border-emerald-800/60">
+                            ETA: {hasArrived ? '0 min' : `${gpsEtaMinutes} min`}
+                          </span>
+                        </div>
+                        {Number.isFinite(curLat) && Number.isFinite(curLng) && (
+                          <div className="text-[10px] text-slate-400 font-mono mt-1">
+                            GPS: {curLat.toFixed(4)}°N, {curLng.toFixed(4)}°E
+                          </div>
+                        )}
+                      </td>
+
+                      {/* 6. Calculated Arrival Time */}
                       <td className="py-4 px-5 align-middle whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 font-mono font-bold text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700">
                           <Clock className="w-3 h-3 text-brand-500" />
-                          {scheduledArrival}
+                          {liveGpsArrivalTime ? `${liveGpsArrivalTime} (Live GPS)` : scheduledArrival}
                         </span>
+                        {liveGpsArrivalTime && (
+                          <div className="text-[10px] text-slate-400 mt-1 font-medium">
+                            Scheduled: {scheduledArrival}
+                          </div>
+                        )}
                       </td>
 
-                      {/* 6. Trip / Destination Arrival Status */}
+                      {/* 7. GPS Trip / Destination Arrival Status */}
                       <td className="py-4 px-5 align-middle whitespace-nowrap">
-                        {hasArrived ? (
+                        {hasArrived && item.actual_arrival_time ? (
                           <div>
                             <span
                               className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-xl font-mono font-extrabold text-xs border ${
@@ -405,7 +508,7 @@ export const AdminSchedules = () => {
                               <span>Driver Arrived • {item.actual_arrival_time}</span>
                             </span>
                             <div className="text-[10px] text-slate-400 mt-1 font-medium">
-                              {isDelayed ? `Delayed by ${delayMins} min` : `Reached ${destination}`}
+                              {isDelayed ? `Delayed by ${delayMins} min` : `Reached ${destination} on GPS`}
                             </div>
                           </div>
                         ) : isOnTrip ? (
@@ -415,7 +518,7 @@ export const AdminSchedules = () => {
                               <span>On Trip to {destination}</span>
                             </span>
                             <div className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-semibold">
-                              Driver started trip • Live GPS active
+                              {gpsSpeedKmh} km/h • {remainingGpsKm} km to destination • ETA {gpsEtaMinutes} min
                             </div>
                           </div>
                         ) : notStartedAtSchedule ? (
@@ -432,16 +535,16 @@ export const AdminSchedules = () => {
                           <div>
                             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-xs border border-slate-200 dark:border-slate-700">
                               <Clock className="w-3 h-3 text-slate-400 shrink-0" />
-                              <span>Awaiting Driver Start Trip</span>
+                              <span>Trip Not Started (Not Arrived)</span>
                             </span>
                             <div className="text-[10px] text-slate-400 mt-1 font-medium">
-                              Scheduled at {item.departure_time}
+                              Scheduled at {item.departure_time} • {routeDistKm} km route
                             </div>
                           </div>
                         )}
                       </td>
 
-                      {/* 7. Cumulative All-Trips Driver Points (Monthly / Yearly) */}
+                      {/* 8. Cumulative All-Trips Driver Points (Monthly / Yearly) */}
                       <td className="py-4 px-5 align-middle whitespace-nowrap">
                         <div className="flex items-center gap-1.5">
                           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-black text-xs border border-purple-200 dark:border-purple-800">
@@ -453,14 +556,14 @@ export const AdminSchedules = () => {
                           </span>
                         </div>
                         <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 font-semibold">
-                          Cumulative All Trips ({totalTrips} {totalTrips === 1 ? 'Trip' : 'Trips'} Completed)
+                          Cumulative All Trips ({totalTrips} {totalTrips === 1 ? 'Trip' : 'Trips'} Completed on GPS)
                         </div>
                       </td>
 
-                      {/* 8. Status & Delete Scheduled Route Button */}
+                      {/* 9. Status & Delete Scheduled Route Button */}
                       <td className="py-4 px-5 align-middle text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-2.5">
-                          {hasArrived ? (
+                          {hasArrived && item.actual_arrival_time ? (
                             isDelayed ? (
                               <Badge status="delayed">Driver Delayed</Badge>
                             ) : (

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import { useAuth } from './AuthContext';
 import api from '../services/api';
@@ -29,6 +29,29 @@ export const SocketProvider = ({ children }) => {
   const [unreadCount, setUnreadCount] = useState(0);
   const [latestAlert, setLatestAlert] = useState(null);
   const [simulationActive, setSimulationActive] = useState(false);
+  const relayedEmailIdsRef = useRef(new Set());
+
+  const dispatchSingleClientRelay = (relayPayload) => {
+    if (
+      !relayPayload ||
+      !relayPayload.to ||
+      window.location.hostname === 'localhost' ||
+      window.location.hostname === '127.0.0.1'
+    ) {
+      return;
+    }
+    const relayKey =
+      relayPayload.relayId || `${relayPayload.to}::${relayPayload.subject || ''}`;
+    if (relayedEmailIdsRef.current.has(relayKey)) {
+      return;
+    }
+    relayedEmailIdsRef.current.add(relayKey);
+    fetch('http://localhost:5000/api/auth/relay-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(relayPayload)
+    }).catch(() => {});
+  };
 
   // Load initial notifications from backend when authenticated
   useEffect(() => {
@@ -149,18 +172,7 @@ export const SocketProvider = ({ children }) => {
 
     // Automatic cloud-to-local SMTP relay for Driver Schedule, Passenger Trip Start & Admin Emergency/Delay/Off-Route emails when running on Render
     socketInstance.on('email:relay', (relayPayload) => {
-      if (
-        relayPayload &&
-        relayPayload.to &&
-        window.location.hostname !== 'localhost' &&
-        window.location.hostname !== '127.0.0.1'
-      ) {
-        fetch('http://localhost:5000/api/auth/relay-email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(relayPayload)
-        }).catch(() => {});
-      }
+      dispatchSingleClientRelay(relayPayload);
     });
 
     setSocket(socketInstance);
@@ -171,18 +183,7 @@ export const SocketProvider = ({ children }) => {
   }, [user?.role, token]);
 
   const relayCloudEmail = (relayPayload) => {
-    if (
-      relayPayload &&
-      relayPayload.to &&
-      window.location.hostname !== 'localhost' &&
-      window.location.hostname !== '127.0.0.1'
-    ) {
-      fetch('http://localhost:5000/api/auth/relay-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(relayPayload)
-      }).catch(() => {});
-    }
+    dispatchSingleClientRelay(relayPayload);
   };
 
   const clearShuttleLiveLocation = (shuttleId) => {

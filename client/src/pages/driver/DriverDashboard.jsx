@@ -549,33 +549,32 @@ export const DriverDashboard = () => {
 
     fetchDriver();
 
-    const ptsEarned = endData?.pointsEarned ?? (currentDelay > 0 ? Math.max(2, 10 - currentDelay) : 10);
-    const monthlyPts =
-      endData?.monthlyPoints ??
-      endData?.driverPoints ??
-      (Number(driverData?.monthlyPoints ?? driverData?.driver_points ?? 10) + ptsEarned);
-    const yearlyPts =
-      endData?.yearlyPoints ??
-      (Number(driverData?.yearlyPoints ?? driverData?.yearly_points ?? monthlyPts));
-
-    if (currentDelay > 0) {
+    const arrivedOnGps = Boolean(endData?.driverArrived);
+    if (arrivedOnGps) {
+      const ptsEarned = Number(endData?.pointsEarned) || 0;
+      const monthlyPts = Number(endData?.monthlyDriverPoints ?? endData?.totalDriverPoints ?? 0);
+      const yearlyPts = Number(endData?.yearlyDriverPoints ?? monthlyPts);
       addToast({
-        title: `Trip Ended (+${currentDelay}m Delayed • +${ptsEarned} Pts)`,
-        message: `Trip ended with +${currentDelay} min delay. Admin notified & points added to score (Monthly: ${monthlyPts} pts • Yearly: ${yearlyPts} pts).`,
-        type: 'warning'
+        title: `Destination Reached on GPS (+${ptsEarned} Pts)`,
+        message: `Bus ${assignedShuttle.code} reached destination on GPS! +${ptsEarned} points added (Monthly: ${monthlyPts} pts • Yearly: ${yearlyPts} pts).`,
+        type: 'success'
       });
     } else {
       addToast({
-        title: `Trip Ended Successfully (+${ptsEarned} Pts)`,
-        message: `Trip ended and Bus ${assignedShuttle.code} is now in Standby! +${ptsEarned} points added to score (Monthly: ${monthlyPts} pts • Yearly: ${yearlyPts} pts).`,
-        type: 'success'
+        title: 'Trip Ended (Standby Mode)',
+        message: `Trip ended before reaching destination on GPS. Bus ${assignedShuttle.code} is now in Standby (not marked as arrived).`,
+        type: 'info'
       });
     }
   };
 
-  // Report Delay (Notifies Admin in Admin Site + Admin Email cleancodeuniverse@gmail.com & notifies passengers)
+  // Report Delay (Notifies Admin in Admin Site + Admin Email cleancodeuniverse@gmail.com strictly 1x per trip)
   const handleReportDelay = async (e) => {
     e.preventDefault();
+    if (delayNotifiedForTrip) {
+      setIsDelayModalOpen(false);
+      return;
+    }
     try {
       const res = await api.post(`/trips/${activeTripId || assignedShuttle.id}/delay`, {
         shuttle_id: assignedShuttle.id,
@@ -588,10 +587,10 @@ export const DriverDashboard = () => {
       setDelayNotifiedForTrip(true);
       fetchDriver();
       addToast({
-        title: 'Delay Alert Sent to Admin (Site & Email)',
+        title: 'Delay Alert Sent Once to Admin (Site & Email)',
         message:
           res.data?.message ||
-          `Admin (cleancodeuniverse@gmail.com) and passengers notified of +${delayMinutes} min delay on Bus ${assignedShuttle.code}.`,
+          `Admin (cleancodeuniverse@gmail.com) and passengers notified once of +${delayMinutes} min delay on Bus ${assignedShuttle.code}.`,
         type: 'warning'
       });
       setIsDelayModalOpen(false);
@@ -600,13 +599,16 @@ export const DriverDashboard = () => {
     }
   };
 
-  // Off-Route Deviation Alert to Admin (Notifies Admin in Admin Site + Admin Email cleancodeuniverse@gmail.com)
+  // Off-Route Deviation Alert to Admin (Notifies Admin in Admin Site + Admin Email cleancodeuniverse@gmail.com strictly 1x per trip)
   const handleTriggerOffRouteAlert = async () => {
+    if (offRouteNotifiedForTrip) return;
     try {
+      const exactLat = Number(currentCoords.lat || assignedShuttle.current_lat || 0);
+      const exactLng = Number(currentCoords.lng || assignedShuttle.current_lng || 0);
       const res = await api.post('/trips/off-route', {
         shuttle_id: assignedShuttle.id,
-        latitude: Number(assignedShuttle.current_lat || currentCoords.lat || 12.9249) + 0.012,
-        longitude: Number(assignedShuttle.current_lng || currentCoords.lng || 80.1275) - 0.011,
+        latitude: exactLat,
+        longitude: exactLng,
         reason: `Driver ${driverData?.name || user?.name || ''} deviated from allocated route (${assignedShuttle.start_point || 'Start'} ➔ ${assignedShuttle.destination || 'Destination'}) on Bus ${assignedShuttle.code}.`
       });
       if (res.data?.emailRelayPayload) {
@@ -615,10 +617,10 @@ export const DriverDashboard = () => {
       if (res.data.success) {
         setOffRouteNotifiedForTrip(true);
         addToast({
-          title: 'Off-Route Alert Sent to Admin (Site & Email)',
+          title: 'Off-Route Alert Sent Once to Admin (Site & Email)',
           message:
             res.data.message ||
-            `Admin (cleancodeuniverse@gmail.com) has been notified via Admin Site & Email that Bus ${assignedShuttle.code} deviated from its allocated route.`,
+            `Admin (cleancodeuniverse@gmail.com) has been notified once via Admin Site & Email that Bus ${assignedShuttle.code} deviated from its allocated route.`,
           type: 'warning'
         });
       }
@@ -627,8 +629,9 @@ export const DriverDashboard = () => {
     }
   };
 
-  // Direct Driver Emergency Alert to Admin (Sends immediate Notification + Email to Admin)
+  // Direct Driver Emergency Alert to Admin (Sends immediate Notification + Email to Admin strictly 1x per trip)
   const handleEmergencyStoppedAlert = async () => {
+    if (emergencyStoppedNotifiedForTrip) return;
     try {
       const res = await api.post('/trips/emergency-stopped', {
         shuttle_id: assignedShuttle.id,
@@ -644,10 +647,10 @@ export const DriverDashboard = () => {
       if (res.data.success) {
         setEmergencyStoppedNotifiedForTrip(true);
         addToast({
-          title: 'Emergency Alert Sent to Admin (Login & Email)',
+          title: 'Emergency Alert Sent Once to Admin (Login & Email)',
           message:
             res.data.message ||
-            `Admin (cleancodeuniverse@gmail.com) has been notified immediately via Dashboard and Email about the emergency on Bus ${assignedShuttle.code}.`,
+            `Admin (cleancodeuniverse@gmail.com) has been notified once via Dashboard and Email about the emergency on Bus ${assignedShuttle.code}.`,
           type: 'danger'
         });
       }
@@ -656,12 +659,47 @@ export const DriverDashboard = () => {
     }
   };
 
-  const displaySpeed = Math.max(0, Math.round(Number(assignedShuttle.speed ?? currentCoords.speed ?? 0)));
+  const isLiveTrip = tripStatus === 'LIVE';
+  const displaySpeed = isLiveTrip
+    ? Math.max(0, Math.round(Number(currentCoords.speed ?? assignedShuttle.speed ?? 0)))
+    : 0;
+  const displayHeading = Math.round(Number(currentCoords.heading ?? assignedShuttle.heading ?? 0));
+
+  const destStopObj = activeStops.length > 0 ? activeStops[activeStops.length - 1] : null;
+  const liveLat = Number(currentCoords.lat ?? assignedShuttle.current_lat);
+  const liveLng = Number(currentCoords.lng ?? assignedShuttle.current_lng);
+  const gpsDistanceKm =
+    destStopObj && Number.isFinite(liveLat) && Number.isFinite(liveLng) && liveLat !== 0
+      ? Number(calcHaversineKm(liveLat, liveLng, Number(destStopObj.latitude), Number(destStopObj.longitude)).toFixed(2))
+      : Number(Number(assignedShuttle.remaining_distance_km ?? assignedShuttle.distance_km ?? 0).toFixed(2));
+
+  const gpsEtaMinutes = isLiveTrip
+    ? displaySpeed >= 1 && gpsDistanceKm > 0
+      ? Math.max(1, Math.round((gpsDistanceKm / displaySpeed) * 60))
+      : gpsDistanceKm > 0
+      ? Math.max(1, Math.round((gpsDistanceKm / 25) * 60))
+      : 0
+    : gpsDistanceKm > 0
+    ? Math.max(1, Math.round((gpsDistanceKm / 25) * 60))
+    : 0;
+
+  const gpsArrivalTimeStr =
+    isLiveTrip && gpsEtaMinutes > 0
+      ? new Date(Date.now() + gpsEtaMinutes * 60000).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit'
+        })
+      : null;
+
   const assignedSchedules = Array.isArray(driverData?.schedules) ? driverData.schedules : [];
-  const monthlyPoints = driverData?.monthlyPoints ?? driverData?.monthly_points ?? driverData?.driver_points ?? driverData?.dailyPoints ?? 10;
-  const yearlyPoints = driverData?.yearlyPoints ?? driverData?.yearly_points ?? driverData?.driver_points ?? monthlyPoints;
-  const totalTripsCompleted = driverData?.totalTripsCompleted ?? driverData?.total_trips ?? 1;
-  const lastPointsEarned = driverData?.lastPointsEarned ?? driverData?.last_points_earned ?? 10;
+  const monthlyPoints = Number(
+    driverData?.monthlyPoints ?? driverData?.monthly_points ?? driverData?.driver_points ?? 0
+  );
+  const yearlyPoints = Number(
+    driverData?.yearlyPoints ?? driverData?.yearly_points ?? driverData?.driver_points ?? monthlyPoints
+  );
+  const totalTripsCompleted = Number(driverData?.totalTripsCompleted ?? driverData?.total_trips ?? 0);
+  const lastPointsEarned = Number(driverData?.lastPointsEarned ?? driverData?.last_points_earned ?? 0);
   const driverDelayMins = Number(driverData?.delayMinutes ?? driverData?.delay_minutes ?? 0);
 
   return (
@@ -706,7 +744,7 @@ export const DriverDashboard = () => {
               <Award className="w-4 h-4 text-amber-500" />
               <span>Monthly: {monthlyPoints} pts • Yearly: {yearlyPoints} pts</span>
               <span className="text-[10px] font-bold opacity-80">
-                ({totalTripsCompleted} Trips • {driverDelayMins > 0 ? `+${lastPointsEarned} pts after ${driverDelayMins}m delay` : '+10 pts On-Time'})
+                ({totalTripsCompleted} Trips{lastPointsEarned > 0 ? ` • Last: +${lastPointsEarned} pts` : ''})
               </span>
             </div>
 
@@ -747,7 +785,7 @@ export const DriverDashboard = () => {
                 </h3>
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold">
                   <Mail className="w-3 h-3" />
-                  Email & Login Notified
+                  Email & Login Notified (1x)
                 </span>
               </div>
               {assignedSchedules.length > 0 ? (
@@ -772,7 +810,7 @@ export const DriverDashboard = () => {
                 </div>
               ) : (
                 <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
-                  When Admin sets your schedule time, you will be notified here earlier and receive an email from Admin (<i>"Your schedule time is on — ready to ride safely"</i>).
+                  When Admin sets your schedule time, you will be notified here and receive one email from Admin (<i>"Your schedule time is on — ready to ride safely"</i>).
                 </p>
               )}
             </div>
@@ -802,11 +840,12 @@ export const DriverDashboard = () => {
           </button>
         )}
 
-        {/* Driver Action Controls: Report Route Delay, Off-Route Alert, & Emergency (Simulated GPS Removed) */}
+        {/* Driver Action Controls: Report Route Delay, Off-Route Alert, & Emergency (Strictly 1x per trip) */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Button
             variant="outline"
             size="lg"
+            disabled={delayNotifiedForTrip}
             icon={delayNotifiedForTrip ? CheckCircle2 : AlertTriangle}
             onClick={() => setIsDelayModalOpen(true)}
             className={`w-full justify-center ${
@@ -815,12 +854,13 @@ export const DriverDashboard = () => {
                 : 'border-amber-300 dark:border-amber-800 text-amber-600 dark:text-amber-400 bg-amber-50/40 dark:bg-amber-950/20'
             }`}
           >
-            {delayNotifiedForTrip ? 'Delay Sent (Report Again)' : 'Report Route Delay'}
+            {delayNotifiedForTrip ? 'Delay Alert Sent (1/1)' : 'Report Route Delay'}
           </Button>
 
           <Button
             variant="outline"
             size="lg"
+            disabled={offRouteNotifiedForTrip}
             icon={offRouteNotifiedForTrip ? CheckCircle2 : NavigationOff}
             onClick={handleTriggerOffRouteAlert}
             className={`w-full justify-center ${
@@ -829,12 +869,13 @@ export const DriverDashboard = () => {
                 : 'border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 bg-rose-50/40 dark:bg-rose-950/20'
             }`}
           >
-            {offRouteNotifiedForTrip ? 'Off-Route Sent (Resend)' : 'Off-Route Alert'}
+            {offRouteNotifiedForTrip ? 'Off-Route Alert Sent (1/1)' : 'Off-Route Alert'}
           </Button>
 
           <Button
             variant="outline"
             size="lg"
+            disabled={emergencyStoppedNotifiedForTrip}
             icon={emergencyStoppedNotifiedForTrip ? CheckCircle2 : Siren}
             onClick={handleEmergencyStoppedAlert}
             className={`w-full justify-center ${
@@ -843,12 +884,12 @@ export const DriverDashboard = () => {
                 : 'border-red-400 dark:border-red-800 text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-950/30'
             }`}
           >
-            {emergencyStoppedNotifiedForTrip ? 'Emergency Sent (Resend)' : 'Emergency'}
+            {emergencyStoppedNotifiedForTrip ? 'Emergency Sent (1/1)' : 'Emergency'}
           </Button>
         </div>
       </div>
 
-      {/* Operational Telemetry Cards */}
+      {/* Operational Telemetry Cards (Strictly Calculated from Real GPS Coordinates) */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-stretch">
         <Card className="p-6 text-center flex flex-col justify-between border-brand-200 dark:border-brand-900/60 shadow-premium">
           <div className="w-10 h-10 rounded-2xl bg-blue-50 dark:bg-blue-950 text-brand-600 dark:text-accent-blue mx-auto flex items-center justify-center">
@@ -859,11 +900,13 @@ export const DriverDashboard = () => {
               Next Stop / Destination
             </span>
             <h3 className="text-xl font-black text-navy-900 dark:text-white mt-1">
-              {assignedShuttle.next_stop_name || assignedShuttle.destination || 'Academic Block'}
+              {isLiveTrip
+                ? assignedShuttle.next_stop_name || assignedShuttle.destination || 'Destination'
+                : assignedShuttle.destination || 'Trip Not Started'}
             </h3>
           </div>
           <span className="text-xs font-semibold text-brand-600 dark:text-accent-blue">
-            Allocated Corridor
+            {isLiveTrip ? 'Live GPS Tracking Active' : 'Standby — Press Start Trip'}
           </span>
         </Card>
 
@@ -873,14 +916,14 @@ export const DriverDashboard = () => {
           </div>
           <div className="my-2">
             <span className="text-xs uppercase font-bold tracking-wider text-slate-400 block">
-              Estimated Arrival (ETA)
+              GPS Calculated ETA & Arrival
             </span>
             <h3 className="text-3xl font-black text-emerald-600 dark:text-emerald-400 mt-1">
-              {assignedShuttle.eta_minutes ?? 3} min
+              {gpsEtaMinutes} min
             </h3>
           </div>
           <span className="text-xs text-slate-400">
-            Distance: {assignedShuttle.distance_km ?? 1.8} km
+            GPS Distance: {gpsDistanceKm} km{gpsArrivalTimeStr ? ` • Est. Arrival: ${gpsArrivalTimeStr}` : ''}
           </span>
         </Card>
 
@@ -890,13 +933,13 @@ export const DriverDashboard = () => {
           </div>
           <div className="my-2">
             <span className="text-xs uppercase font-bold tracking-wider text-slate-400 block">
-              Vehicle Speed
+              Live GPS Speed
             </span>
             <h3 className="text-3xl font-black text-navy-900 dark:text-white mt-1">
               {displaySpeed} km/h
             </h3>
           </div>
-          <span className="text-xs text-slate-400">Heading: North-East</span>
+          <span className="text-xs text-slate-400">GPS Bearing: {displayHeading}°</span>
         </Card>
       </div>
 
@@ -916,10 +959,10 @@ export const DriverDashboard = () => {
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 font-mono text-[11px] font-bold text-slate-700 dark:text-slate-300">
-              GPS: {Number(assignedShuttle.current_lat || 12.9745).toFixed(5)}°N, {Number(assignedShuttle.current_lng || 77.5992).toFixed(5)}°E
+              GPS: {Number(liveLat || 0).toFixed(5)}°N, {Number(liveLng || 0).toFixed(5)}°E
             </span>
             <span className="px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/60 font-bold text-brand-600 dark:text-accent-blue">
-              {activeStops.length} Route Stops • {displaySpeed} km/h • ETA {assignedShuttle.eta_minutes ?? 3}m
+              {activeStops.length} Route Stops • {displaySpeed} km/h • {gpsDistanceKm} km • ETA {gpsEtaMinutes}m
             </span>
           </div>
         </div>

@@ -594,6 +594,107 @@ const verifyOTP = (email, candidateOtp, consume = true) => {
   return { valid: true };
 };
 
+// Deduplication map to guarantee every operational email is sent strictly ONE time per operation
+const recentOperationalEmailMap = new Map(); // key: `${to.toLowerCase()}::${subject}` -> timestamp
+const processedRelayIds = new Set();
+
+const dispatchSingleOperationalEmail = async ({
+  prefix = 'op',
+  to,
+  subject,
+  htmlContent,
+  textContent,
+  senderName,
+  senderEmail,
+  recipients = []
+}) => {
+  const cleanTo = String(to || '').trim();
+  const cleanSubject = String(subject || '').trim();
+  const dedupKey = `${cleanTo.toLowerCase()}::${cleanSubject}`;
+  const now = Date.now();
+  const prevSentAt = recentOperationalEmailMap.get(dedupKey);
+  if (prevSentAt && now - prevSentAt < 90 * 1000) {
+    return {
+      success: true,
+      alreadySent: true,
+      deliveredVia: 'deduplicated_once',
+      recipients,
+      relayPayload: null
+    };
+  }
+  recentOperationalEmailMap.set(dedupKey, now);
+  if (recentOperationalEmailMap.size > 500) {
+    const oldestKey = recentOperationalEmailMap.keys().next().value;
+    recentOperationalEmailMap.delete(oldestKey);
+  }
+
+  const isRenderCloud = Boolean(
+    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
+  );
+  const relayPayload = {
+    relayId: `${prefix}_${now}_${Math.random().toString(36).slice(2, 8)}`,
+    to: cleanTo,
+    subject: cleanSubject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  };
+
+  if (isRenderCloud) {
+    const cloudDelivery = await deliverEmailMessage({
+      to: cleanTo,
+      subject: cleanSubject,
+      htmlContent,
+      textContent,
+      senderName,
+      senderEmail
+    }).catch(() => ({ success: false }));
+
+    if (cloudDelivery && cloudDelivery.success) {
+      return {
+        success: true,
+        deliveredVia: cloudDelivery.deliveredVia,
+        recipients,
+        relayPayload: null
+      };
+    }
+
+    return {
+      success: true,
+      deliveredVia: 'cloud_verified',
+      recipients,
+      relayPayload
+    };
+  }
+
+  const delivery = await deliverEmailMessage({
+    to: cleanTo,
+    subject: cleanSubject,
+    htmlContent,
+    textContent,
+    senderName,
+    senderEmail
+  });
+
+  if (delivery.success) {
+    // Delivered directly via local SMTP — do NOT return relayPayload so client never relays a second copy!
+    return {
+      success: true,
+      deliveredVia: delivery.deliveredVia,
+      recipients,
+      relayPayload: null
+    };
+  }
+
+  return {
+    success: true,
+    deliveredVia: 'console_fallback',
+    recipients,
+    relayPayload
+  };
+};
+
 /**
  * Automatically send Driver Login Credentials & Assigned Shuttle Details
  * when Admin adds a new shuttle or registers a driver.
@@ -650,46 +751,16 @@ const sendDriverCredentialsEmail = async ({
     </div>
   `;
 
-  const isRenderCloud = Boolean(
-    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
-  );
-  const relayPayload = {
-    relayId: `drv_cred_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  return dispatchSingleOperationalEmail({
+    prefix: 'drv_cred',
     to: normalizedEmail,
     subject,
     htmlContent,
     textContent,
     senderName,
-    senderEmail
-  };
-
-  if (isRenderCloud) {
-    deliverEmailMessage({
-      to: normalizedEmail,
-      subject,
-      htmlContent,
-      textContent,
-      senderName,
-      senderEmail
-    }).catch(() => {});
-    return { success: true, deliveredVia: 'cloud_verified', relayPayload };
-  }
-
-  const delivery = await deliverEmailMessage({
-    to: normalizedEmail,
-    subject,
-    htmlContent,
-    textContent,
-    senderName,
-    senderEmail
+    senderEmail,
+    recipients: [normalizedEmail]
   });
-
-  if (delivery.success) {
-    return { success: true, deliveredVia: delivery.deliveredVia, relayPayload };
-  }
-
-  console.log(`📧 [Fallback Console Driver Email] To: ${normalizedEmail} | Password: ${password}`);
-  return { success: true, deliveredVia: 'console_fallback', relayPayload };
 };
 
 /**
@@ -717,9 +788,7 @@ const sendDriverScheduleEmail = async ({
   const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
   const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker Admin').trim();
 
-  const subject = isReminder
-    ? `⏰ Shuttle Tracker — Your Schedule Time (${departureTime} – ${arrivalTime}) is On — Ready to Ride Safely!`
-    : `📅 Shuttle Tracker — New Trip Schedule Assigned (${departureTime} – ${arrivalTime}) — Ready to Ride Safely!`;
+  const subject = `📅 Shuttle Tracker — Trip Schedule Assigned (${departureTime} – ${arrivalTime}) — Ready to Ride Safely!`;
 
   const headlineMsg = isReminder
     ? `Your scheduled trip time (${departureTime} – ${arrivalTime}) is ON now! Please be ready to ride safely and press START TRIP in your Driver Login.`
@@ -758,46 +827,16 @@ const sendDriverScheduleEmail = async ({
     </div>
   `;
 
-  const isRenderCloud = Boolean(
-    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
-  );
-  const relayPayload = {
-    relayId: `drv_sched_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  return dispatchSingleOperationalEmail({
+    prefix: 'drv_sched',
     to: normalizedEmail,
     subject,
     htmlContent,
     textContent,
     senderName,
-    senderEmail
-  };
-
-  if (isRenderCloud) {
-    deliverEmailMessage({
-      to: normalizedEmail,
-      subject,
-      htmlContent,
-      textContent,
-      senderName,
-      senderEmail
-    }).catch(() => {});
-    return { success: true, deliveredVia: 'cloud_verified', relayPayload };
-  }
-
-  const delivery = await deliverEmailMessage({
-    to: normalizedEmail,
-    subject,
-    htmlContent,
-    textContent,
-    senderName,
-    senderEmail
+    senderEmail,
+    recipients: [normalizedEmail]
   });
-
-  if (delivery.success) {
-    return { success: true, deliveredVia: delivery.deliveredVia, relayPayload };
-  }
-
-  console.log(`📧 [Fallback Console Schedule Email] To: ${normalizedEmail} | Schedule: ${departureTime} - ${arrivalTime}`);
-  return { success: true, deliveredVia: 'console_fallback', relayPayload };
 };
 
 /**
@@ -896,48 +935,16 @@ const sendAdminEmergencyEmail = async ({
     </div>
   `;
 
-  const isRenderCloud = Boolean(
-    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
-  );
-
-  const toHeader = uniqueEmails.join(', ');
-  const relayPayload = {
-    relayId: `adm_emg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    to: toHeader,
+  return dispatchSingleOperationalEmail({
+    prefix: 'adm_emg',
+    to: uniqueEmails.join(', '),
     subject,
     htmlContent,
     textContent,
     senderName,
-    senderEmail
-  };
-
-  if (isRenderCloud) {
-    deliverEmailMessage({
-      to: toHeader,
-      subject,
-      htmlContent,
-      textContent,
-      senderName,
-      senderEmail
-    }).catch(() => {});
-    return { success: true, deliveredVia: 'cloud_verified', recipients: uniqueEmails, relayPayload };
-  }
-
-  const delivery = await deliverEmailMessage({
-    to: toHeader,
-    subject,
-    htmlContent,
-    textContent,
-    senderName,
-    senderEmail
+    senderEmail,
+    recipients: uniqueEmails
   });
-
-  return {
-    success: true,
-    deliveredVia: delivery.success ? delivery.deliveredVia : 'console_fallback',
-    recipients: uniqueEmails,
-    relayPayload
-  };
 };
 
 /**
@@ -977,7 +984,7 @@ const sendAdminOffRouteEmail = async ({
   const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker Off-Route Monitor').trim();
 
   const subject = `⚠️ OFF-ROUTE ALERT: Bus ${busCode} (${driverName}) Deviated from Allocated Route — ${organizationName}`;
-  const gpsCoords = `${Number(latitude || 12.9602).toFixed(5)}°N, ${Number(longitude || 80.0569).toFixed(5)}°E`;
+  const gpsCoords = `${Number(latitude || 0).toFixed(5)}°N, ${Number(longitude || 0).toFixed(5)}°E`;
   const summaryMessage =
     reason ||
     `Driver ${driverName} on Bus ${busCode} is travelling on a non-allocated route away from "${routeName}" at GPS (${gpsCoords}).`;
@@ -1013,47 +1020,16 @@ const sendAdminOffRouteEmail = async ({
     </div>
   `;
 
-  const isRenderCloud = Boolean(
-    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
-  );
-  const toHeader = uniqueEmails.join(', ');
-  const relayPayload = {
-    relayId: `adm_off_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    to: toHeader,
+  return dispatchSingleOperationalEmail({
+    prefix: 'adm_off',
+    to: uniqueEmails.join(', '),
     subject,
     htmlContent,
     textContent,
     senderName,
-    senderEmail
-  };
-
-  if (isRenderCloud) {
-    deliverEmailMessage({
-      to: toHeader,
-      subject,
-      htmlContent,
-      textContent,
-      senderName,
-      senderEmail
-    }).catch(() => {});
-    return { success: true, deliveredVia: 'cloud_verified', recipients: uniqueEmails, relayPayload };
-  }
-
-  const delivery = await deliverEmailMessage({
-    to: toHeader,
-    subject,
-    htmlContent,
-    textContent,
-    senderName,
-    senderEmail
+    senderEmail,
+    recipients: uniqueEmails
   });
-
-  return {
-    success: true,
-    deliveredVia: delivery.success ? delivery.deliveredVia : 'console_fallback',
-    recipients: uniqueEmails,
-    relayPayload
-  };
 };
 
 /**
@@ -1073,8 +1049,8 @@ const sendAdminDelayEmail = async ({
   scheduledArrival = '',
   actualArrival = '',
   delayMinutes = 5,
-  pointsEarned = 5,
-  totalDriverPoints = 10,
+  pointsEarned = 0,
+  totalDriverPoints = 0,
   reason = '',
   organizationName = 'Campus Organization'
 }) => {
@@ -1101,7 +1077,7 @@ const sendAdminDelayEmail = async ({
     reason ||
     `Driver ${driverName} on Bus ${busCode} (${routeName}) is delayed by +${delayMinutes} minute(s) past the allocated arrival time (${scheduledArrival || 'Scheduled Time'}).`;
 
-  const textContent = `SHUTTLE TRACKER DELAY & ARRIVAL TIME ALERT\n\nHello ${adminName},\n\n${summaryMessage}\n\n--- DELAY DETAILS ---\nOrganization: ${organizationName}\nBus Number: Bus ${busCode} ${vehicleNumber ? `(${vehicleNumber})` : `(${shuttleName})`}\nDriver Name: ${driverName}\nAllocated Route: ${routeName}\nDestination: ${destination}\nAllocated Arrival Time: ${scheduledArrival || 'N/A'}\nExpected / Actual Arrival: ${actualArrival || 'Delayed'}\nDelay Duration: +${delayMinutes} min(s)\nDriver Points Awarded: +${pointsEarned} pts (Total Score: ${totalDriverPoints} pts)\nTime Reported: ${new Date().toLocaleString()}\n\nSent by Shuttle Tracker Delay Monitor (${senderEmail})`;
+  const textContent = `SHUTTLE TRACKER DELAY & ARRIVAL TIME ALERT\n\nHello ${adminName},\n\n${summaryMessage}\n\n--- DELAY DETAILS ---\nOrganization: ${organizationName}\nBus Number: Bus ${busCode} ${vehicleNumber ? `(${vehicleNumber})` : `(${shuttleName})`}\nDriver Name: ${driverName}\nAllocated Route: ${routeName}\nDestination: ${destination}\nAllocated Arrival Time: ${scheduledArrival || 'N/A'}\nStatus: ${actualArrival || 'In Transit (Delayed)'}\nDelay Duration: +${delayMinutes} min(s)\nTime Reported: ${new Date().toLocaleString()}\n\nSent by Shuttle Tracker Delay Monitor (${senderEmail})`;
 
   const htmlContent = `
     <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px; background: #0F172A; color: #ffffff; border-radius: 16px; border: 2px solid #F59E0B;">
@@ -1125,7 +1101,6 @@ const sendAdminDelayEmail = async ({
           <p style="margin: 4px 0;"><strong>Allocated Route:</strong> ${routeName}</p>
           <p style="margin: 4px 0;"><strong>Allocated Arrival Time:</strong> ${scheduledArrival || 'Scheduled'}</p>
           <p style="margin: 4px 0;"><strong>Delay Duration:</strong> <span style="color: #FBBF24; font-weight: 700;">+${delayMinutes} min(s)</span></p>
-          <p style="margin: 4px 0;"><strong>Driver Points Adjusted:</strong> +${pointsEarned} pts (Cumulative: ${totalDriverPoints} pts)</p>
         </div>
         <p style="font-size: 11px; color: #64748B; margin-top: 16px; text-align: center;">
           Sent by Shuttle Tracker Delay Monitor (${senderEmail})
@@ -1134,47 +1109,16 @@ const sendAdminDelayEmail = async ({
     </div>
   `;
 
-  const isRenderCloud = Boolean(
-    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
-  );
-  const toHeader = uniqueEmails.join(', ');
-  const relayPayload = {
-    relayId: `adm_dly_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    to: toHeader,
+  return dispatchSingleOperationalEmail({
+    prefix: 'adm_dly',
+    to: uniqueEmails.join(', '),
     subject,
     htmlContent,
     textContent,
     senderName,
-    senderEmail
-  };
-
-  if (isRenderCloud) {
-    deliverEmailMessage({
-      to: toHeader,
-      subject,
-      htmlContent,
-      textContent,
-      senderName,
-      senderEmail
-    }).catch(() => {});
-    return { success: true, deliveredVia: 'cloud_verified', recipients: uniqueEmails, relayPayload };
-  }
-
-  const delivery = await deliverEmailMessage({
-    to: toHeader,
-    subject,
-    htmlContent,
-    textContent,
-    senderName,
-    senderEmail
+    senderEmail,
+    recipients: uniqueEmails
   });
-
-  return {
-    success: true,
-    deliveredVia: delivery.success ? delivery.deliveredVia : 'console_fallback',
-    recipients: uniqueEmails,
-    relayPayload
-  };
 };
 
 /**
@@ -1244,60 +1188,38 @@ const sendPassengerTripStartedEmail = async ({
     </div>
   `;
 
-  const isRenderCloud = Boolean(
-    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
-  );
-  const toHeader = uniqueEmails.join(', ');
-  const relayPayload = {
-    relayId: `pass_start_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    to: toHeader,
+  return dispatchSingleOperationalEmail({
+    prefix: 'pass_start',
+    to: uniqueEmails.join(', '),
     subject,
     htmlContent,
     textContent,
     senderName,
-    senderEmail
-  };
-
-  if (isRenderCloud) {
-    deliverEmailMessage({
-      to: toHeader,
-      subject,
-      htmlContent,
-      textContent,
-      senderName,
-      senderEmail
-    }).catch(() => {});
-    return { success: true, deliveredVia: 'cloud_verified', recipients: uniqueEmails, relayPayload };
-  }
-
-  const delivery = await deliverEmailMessage({
-    to: toHeader,
-    subject,
-    htmlContent,
-    textContent,
-    senderName,
-    senderEmail
+    senderEmail,
+    recipients: uniqueEmails
   });
-
-  return {
-    success: true,
-    deliveredVia: delivery.success ? delivery.deliveredVia : 'console_fallback',
-    recipients: uniqueEmails,
-    relayPayload
-  };
 };
 
 /**
  * Deliver a raw email payload (used by /api/auth/relay-email when Render free tier blocks outbound port 465/587)
  */
-const processedRelayIds = new Set();
 const sendRawRelayEmail = async ({ relayId, to, subject, htmlContent, textContent, senderName, senderEmail }) => {
   if (!to || !subject) {
     return { success: false, message: 'Missing recipient or subject.' };
   }
+  const cleanTo = String(to).trim();
+  const cleanSubject = String(subject).trim();
+  const dedupKey = `${cleanTo.toLowerCase()}::${cleanSubject}`;
+  const now = Date.now();
+
   if (relayId && processedRelayIds.has(relayId)) {
     return { success: true, deliveredVia: 'already_relayed' };
   }
+  const prevSentAt = recentOperationalEmailMap.get(dedupKey);
+  if (prevSentAt && now - prevSentAt < 90 * 1000) {
+    return { success: true, deliveredVia: 'already_relayed' };
+  }
+
   if (relayId) {
     processedRelayIds.add(relayId);
     if (processedRelayIds.size > 500) {
@@ -1305,9 +1227,11 @@ const sendRawRelayEmail = async ({ relayId, to, subject, htmlContent, textConten
       processedRelayIds.delete(first);
     }
   }
+  recentOperationalEmailMap.set(dedupKey, now);
+
   return deliverEmailMessage({
-    to,
-    subject,
+    to: cleanTo,
+    subject: cleanSubject,
     htmlContent: htmlContent || `<p>${textContent || ''}</p>`,
     textContent: textContent || '',
     senderName: senderName || 'Shuttle Tracker',
