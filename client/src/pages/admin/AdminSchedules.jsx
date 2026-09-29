@@ -279,17 +279,48 @@ export const AdminSchedules = () => {
 
   const handleCreateSchedule = async (e) => {
     e.preventDefault();
+    const normalizedDeparture = formatTime12Hr(formData.departure_time);
+    const computedArrival = calculateExactArrivalTime(normalizedDeparture, calculatedDuration);
+    const routeStart = selectedRouteObj?.start_point || selectedBusObj?.start_point || '';
+    const routeDest = selectedRouteObj?.end_point || selectedBusObj?.destination || '';
+    const resolvedRouteName =
+      selectedRouteObj?.name ||
+      (routeStart && routeDest ? `${routeStart} - ${routeDest}` : 'Assigned Route');
+    const tempId = Date.now();
+
+    const optimisticSlot = {
+      id: tempId,
+      shuttle_id: Number(formData.shuttle_id || selectedBusObj?.id),
+      shuttle_code: selectedBusObj?.code || 'S01',
+      shuttle_vehicle_number: selectedBusObj?.vehicle_number || '',
+      driver_name: selectedBusObj?.driver_name || 'Assigned Driver',
+      route_id: Number(formData.route_id || selectedRouteObj?.id),
+      route_name: resolvedRouteName,
+      start_point: routeStart || 'Start',
+      destination: routeDest || 'Destination',
+      departure_time: normalizedDeparture,
+      arrival_time: computedArrival,
+      days: formData.days,
+      distance_km: selectedRouteDistKm,
+      estimated_time_minutes: calculatedDuration,
+      eta_minutes: calculatedDuration,
+      status: 'On Time'
+    };
+
+    // Instant 0ms UI reflex: close modal, add schedule to top (pushing first-added to last), and show toast immediately
+    setSchedules((prev) => [optimisticSlot, ...prev]);
+    setIsModalOpen(false);
+    addToast({
+      title: 'Schedule Set • Driver Notified Once via Login & Email',
+      message: `Notified ${selectedBusObj?.driver_name || 'Assigned Driver'} (Bus ${selectedBusObj?.code || 'S01'}): "${normalizedDeparture} – ${computedArrival} • Your schedule time is on, ready to ride safely!"`,
+      type: 'success'
+    });
+
     try {
-      const normalizedDeparture = formatTime12Hr(formData.departure_time);
-      const computedArrival = calculateExactArrivalTime(normalizedDeparture, calculatedDuration);
-      const routeStart = selectedRouteObj?.start_point || selectedBusObj?.start_point || '';
-      const routeDest = selectedRouteObj?.end_point || selectedBusObj?.destination || '';
       const res = await api.post('/stats/schedules', {
-        shuttle_id: Number(formData.shuttle_id || selectedBusObj?.id),
-        route_id: Number(formData.route_id || selectedRouteObj?.id),
-        route_name:
-          selectedRouteObj?.name ||
-          (routeStart && routeDest ? `${routeStart} - ${routeDest}` : 'Assigned Route'),
+        shuttle_id: optimisticSlot.shuttle_id,
+        route_id: optimisticSlot.route_id,
+        route_name: resolvedRouteName,
         departure_time: normalizedDeparture,
         arrival_time: computedArrival,
         days: formData.days
@@ -299,33 +330,36 @@ export const AdminSchedules = () => {
         relayCloudEmail(res.data.emailRelayPayload);
       }
 
-      addToast({
-        title: 'Schedule Set • Driver Notified Once via Login & Email',
-        message: `Notified ${selectedBusObj?.driver_name || 'Assigned Driver'} (Bus ${selectedBusObj?.code || 'S01'}): "${normalizedDeparture} – ${computedArrival} • Your schedule time is on, ready to ride safely!"`,
-        type: 'success'
-      });
-      setIsModalOpen(false);
+      if (res.data?.data) {
+        setSchedules((prev) =>
+          prev.map((item) => (item.id === tempId ? res.data.data : item))
+        );
+      }
       fetchData();
     } catch (err) {
+      setSchedules((prev) => prev.filter((item) => item.id !== tempId));
       addToast({ title: 'Error', message: 'Failed to create schedule slot', type: 'danger' });
     }
   };
 
   const handleDeleteSchedule = async (scheduleId, busCode, routeTitle) => {
+    const previousSchedules = schedules;
+    // Instant 0ms UI reflex: remove immediately
+    setSchedules((prev) => prev.filter((s) => Number(s.id) !== Number(scheduleId)));
+    addToast({
+      title: 'Scheduled Route Deleted',
+      message: `Deleted scheduled route "${routeTitle}" for Bus ${busCode}.`,
+      type: 'info'
+    });
+
     setDeletingId(scheduleId);
     try {
       const res = await api.delete(`/stats/schedules/${scheduleId}`);
       if (res.data?.data && Array.isArray(res.data.data)) {
         setSchedules(res.data.data);
-      } else {
-        setSchedules((prev) => prev.filter((s) => Number(s.id) !== Number(scheduleId)));
       }
-      addToast({
-        title: 'Scheduled Route Deleted',
-        message: `Deleted scheduled route "${routeTitle}" for Bus ${busCode}.`,
-        type: 'info'
-      });
     } catch (err) {
+      setSchedules(previousSchedules);
       addToast({
         title: 'Error',
         message: err.response?.data?.message || 'Failed to delete scheduled route',
@@ -335,6 +369,11 @@ export const AdminSchedules = () => {
       setDeletingId(null);
     }
   };
+
+  // Sort so newly added schedules appear first and the first-added schedule goes to the LAST of the list
+  const orderedSchedules = [...schedules].sort(
+    (a, b) => Number(b.id || 0) - Number(a.id || 0)
+  );
 
   return (
     <div className="space-y-6">
@@ -365,7 +404,7 @@ export const AdminSchedules = () => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 dark:bg-slate-800/70 border-b border-slate-200 dark:border-slate-800 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                <th className="py-4 px-5 whitespace-nowrap">Slot ID</th>
+                <th className="py-4 px-5 whitespace-nowrap">Schedule No.</th>
                 <th className="py-4 px-5 whitespace-nowrap">Bus Number & Allocated Driver</th>
                 <th className="py-4 px-5 whitespace-nowrap">Assigned Route (Start ➔ Destination)</th>
                 <th className="py-4 px-5 whitespace-nowrap">Scheduled Departure</th>
@@ -377,14 +416,15 @@ export const AdminSchedules = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
-              {schedules.length === 0 ? (
+              {orderedSchedules.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="py-10 px-5 text-center text-slate-400 text-xs">
                     No timetable slots configured yet. Click &ldquo;Add Timetable Slot&rdquo; above to schedule a bus and driver.
                   </td>
                 </tr>
               ) : (
-                schedules.map((item) => {
+                orderedSchedules.map((item, idx) => {
+                  const scheduleSerialNumber = idx + 1;
                   const matchedBus = shuttles.find((s) => Number(s.id) === Number(item.shuttle_id));
                   const matchedRoute =
                     routes.find((r) => Number(r.id) === Number(item.route_id)) ||
@@ -495,9 +535,11 @@ export const AdminSchedules = () => {
                           : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/40'
                       }`}
                     >
-                      {/* 1. Slot ID */}
+                      {/* 1. Proper Sequential Schedule Number (1, 2, 3, 4...) */}
                       <td className="py-4 px-5 align-middle whitespace-nowrap font-extrabold text-navy-900 dark:text-white">
-                        #{item.id}
+                        <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 text-navy-900 dark:text-white font-black text-xs border border-slate-200 dark:border-slate-700">
+                          {scheduleSerialNumber}
+                        </span>
                       </td>
 
                       {/* 2. Exact Bus Number & Allocated Driver Name */}

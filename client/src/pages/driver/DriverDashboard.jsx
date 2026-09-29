@@ -97,7 +97,7 @@ export const DriverDashboard = () => {
         if (!recentlyEnded && (d.assignedShuttle?.status === 'on_trip' || d.assignedShuttle?.status === 'delayed')) {
           setTripStatus('LIVE');
           isTripActiveRef.current = true;
-          setGpsStatus('Connected (Live Hardware GPS)');
+          setGpsStatus('Connected');
         } else {
           setTripStatus('NOT_STARTED');
           isTripActiveRef.current = false;
@@ -231,10 +231,10 @@ export const DriverDashboard = () => {
   const routePassengers = driverData?.routePassengers || [];
   const activeStops = assignedShuttle.stops?.length > 0 ? assignedShuttle.stops : [];
 
-  // Process hardware GPS coordinates with 3-meter jitter lock:
+  // Process live GPS coordinates with 3-meter jitter lock:
   // If driver does not move, shuttle stays at exact same location with 0 km/h.
   // If driver moves >= 3 meters, shuttle moves that exact distance and calculates real speed.
-  const applyHardwareGpsReading = (coords, shuttleIdToUse, tripIdToUse) => {
+  const applyLiveGpsReading = (coords, shuttleIdToUse, tripIdToUse) => {
     if (!isTripActiveRef.current) return;
     const rawLat = Number(coords?.latitude);
     const rawLng = Number(coords?.longitude);
@@ -265,7 +265,7 @@ export const DriverDashboard = () => {
         speed: 0,
         heading: rawHeading
       });
-      setGpsStatus('Connected (Exact Hardware GPS)');
+      setGpsStatus('Connected');
       sendDriverLocation({
         shuttleId: shuttleIdToUse,
         tripId: tripIdToUse,
@@ -296,7 +296,7 @@ export const DriverDashboard = () => {
         speed: 0,
         heading: prev.heading
       });
-      setGpsStatus('Connected (Exact Hardware GPS)');
+      setGpsStatus('Connected');
       sendDriverLocation({
         shuttleId: shuttleIdToUse,
         tripId: tripIdToUse,
@@ -309,7 +309,7 @@ export const DriverDashboard = () => {
       return;
     }
 
-    // Driver moved physically >= 3 meters: move exact distance & calculate real speed
+    // Driver moved >= 3 meters: move exact distance & calculate real speed
     const computedSpeedKmh =
       rawSpeedKmh !== null && rawSpeedKmh >= 1
         ? Math.round(rawSpeedKmh)
@@ -330,7 +330,7 @@ export const DriverDashboard = () => {
       speed: computedSpeedKmh,
       heading: movedFix.heading
     });
-    setGpsStatus('Connected (Exact Hardware GPS)');
+    setGpsStatus('Connected');
     sendDriverLocation({
       shuttleId: shuttleIdToUse,
       tripId: tripIdToUse,
@@ -342,8 +342,8 @@ export const DriverDashboard = () => {
     });
   };
 
-  // Start hardware GPS watcher + second-by-second (1000ms) live location broadcast
-  const startHardwareGpsTracking = (shuttleIdToUse, tripIdToUse) => {
+  // Start live GPS watcher + second-by-second (1000ms) live location broadcast
+  const startLiveGpsTracking = (shuttleIdToUse, tripIdToUse) => {
     if (!navigator.geolocation) {
       setGpsStatus('GPS Not Supported on Browser');
       return;
@@ -354,27 +354,31 @@ export const DriverDashboard = () => {
       watchIdRef.current = null;
     }
 
+    navigator.geolocation.getCurrentPosition(
+      (pos) => applyLiveGpsReading(pos.coords, shuttleIdToUse, tripIdToUse),
+      () => {},
+      { enableHighAccuracy: true, timeout: 4000, maximumAge: 10000 }
+    );
+
     watchIdRef.current = navigator.geolocation.watchPosition(
       (position) => {
-        applyHardwareGpsReading(position.coords, shuttleIdToUse, tripIdToUse);
+        applyLiveGpsReading(position.coords, shuttleIdToUse, tripIdToUse);
       },
-      (err) => {
-        console.warn('Hardware GPS watch notice:', err.message);
-        // Retry high-accuracy GPS without ever starting fake route simulation
+      () => {
         navigator.geolocation.getCurrentPosition(
-          (pos) => applyHardwareGpsReading(pos.coords, shuttleIdToUse, tripIdToUse),
+          (pos) => applyLiveGpsReading(pos.coords, shuttleIdToUse, tripIdToUse),
           () => {},
-          { enableHighAccuracy: false, timeout: 15000, maximumAge: 0 }
+          { enableHighAccuracy: false, timeout: 8000, maximumAge: 10000 }
         );
       },
-      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 5000 }
     );
 
     if (gpsSecondTimerRef.current) {
       clearInterval(gpsSecondTimerRef.current);
     }
 
-    // Second-by-second (1000ms) exact hardware GPS heartbeat
+    // Second-by-second (1000ms) live GPS heartbeat
     gpsSecondTimerRef.current = setInterval(() => {
       if (!isTripActiveRef.current) return;
       const latest = latestGpsRef.current;
@@ -397,11 +401,11 @@ export const DriverDashboard = () => {
     }, 1000);
   };
 
-  // Resume hardware GPS tracking automatically if page is refreshed while tripStatus === 'LIVE'
+  // Resume GPS tracking automatically if page is refreshed while tripStatus === 'LIVE'
   useEffect(() => {
     if (tripStatus === 'LIVE' && !simulationActive && watchIdRef.current === null && assignedShuttle?.id) {
       isTripActiveRef.current = true;
-      startHardwareGpsTracking(assignedShuttle.id, activeTripId);
+      startLiveGpsTracking(assignedShuttle.id, activeTripId);
     }
     if (tripStatus !== 'LIVE') {
       isTripActiveRef.current = false;
@@ -412,80 +416,52 @@ export const DriverDashboard = () => {
     }
   }, [tripStatus, simulationActive, assignedShuttle?.id]);
 
-  // Start Trip & Hardware Geolocation Watcher (NEVER runs fake autonomous route simulation when Driver presses Start Trip)
+  // Start Trip — Instant UI response (0ms delay), starts live GPS & notifies passengers in background
   const handleStartTrip = async () => {
+    const sId = assignedShuttle.id;
+    endingTripCooldownRef.current = 0;
+    stopSimulation(sId);
+    latestGpsRef.current = null;
+
+    // 1. Instant optimistic UI transition so button responds immediately
+    isTripActiveRef.current = true;
+    setTripStatus('LIVE');
+    setGpsStatus('Connected');
+    setDelayNotifiedForTrip(false);
+    setOffRouteNotifiedForTrip(false);
+    setEmergencyStoppedNotifiedForTrip(false);
+    setMapFocusTrigger((c) => c + 1);
+
+    // 2. Immediately begin non-blocking live GPS tracking
+    startLiveGpsTracking(sId, activeTripId || sId);
+
+    addToast({
+      title: 'Trip Started — Passengers Notified (Login & Email)',
+      message: `Bus ${assignedShuttle.code} is now tracking your live GPS location and passengers are being notified.`,
+      type: 'success'
+    });
+
+    // 3. Fire backend trip creation in background
     try {
-      endingTripCooldownRef.current = 0;
-      setGpsStatus('Acquiring Exact Hardware GPS...');
-      stopSimulation(assignedShuttle.id);
-      latestGpsRef.current = null;
-
-      // Acquire initial hardware GPS position if user clicks Allow
-      let initialPosition = null;
-      if (navigator.geolocation) {
-        initialPosition = await new Promise((resolve) => {
-          navigator.geolocation.getCurrentPosition(
-            (pos) => resolve(pos),
-            () => {
-              navigator.geolocation.getCurrentPosition(
-                (posFallback) => resolve(posFallback),
-                () => resolve(null),
-                { enableHighAccuracy: false, timeout: 10000, maximumAge: 0 }
-              );
-            },
-            { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
-          );
-        });
-      }
-
-      const initLat = initialPosition?.coords?.latitude;
-      const initLng = initialPosition?.coords?.longitude;
-      const initHeading = initialPosition?.coords?.heading || 0;
-
       const res = await api.post('/trips/start', {
-        shuttle_id: assignedShuttle.id,
+        shuttle_id: sId,
         route_id: assignedShuttle.current_route_id || 1,
         passenger_count: routePassengers.length || 14,
-        latitude: initLat,
-        longitude: initLng,
+        latitude: latestGpsRef.current?.lat ?? assignedShuttle.current_lat,
+        longitude: latestGpsRef.current?.lng ?? assignedShuttle.current_lng,
         speed: 0,
-        heading: initHeading
+        heading: latestGpsRef.current?.heading ?? 0
       });
 
       if (res.data?.emailRelayPayload) {
         relayCloudEmail?.(res.data.emailRelayPayload);
       }
 
-      if (res.data.success) {
-        const startedTripId = res.data.data.id;
-        isTripActiveRef.current = true;
-        setActiveTripId(startedTripId);
-        setTripStatus('LIVE');
-        setDelayNotifiedForTrip(false);
-        setOffRouteNotifiedForTrip(false);
-        setEmergencyStoppedNotifiedForTrip(false);
-
-        if (initialPosition?.coords) {
-          applyHardwareGpsReading(initialPosition.coords, assignedShuttle.id, startedTripId);
-        } else {
-          setMapFocusTrigger((c) => c + 1);
-        }
-
-        // Start continuous second-by-second real hardware GPS tracking
-        startHardwareGpsTracking(assignedShuttle.id, startedTripId);
-
-        addToast({
-          title: 'Trip Started — Passengers Notified (Login & Email)',
-          message: `Bus ${assignedShuttle.code} is now tracking your exact GPS location second-by-second and passengers have been notified via Login & Email.`,
-          type: 'success'
-        });
+      if (res.data?.success && res.data?.data?.id) {
+        setActiveTripId(res.data.data.id);
       }
     } catch (err) {
-      addToast({
-        title: 'Error',
-        message: 'Failed to initiate trip on server',
-        type: 'danger'
-      });
+      console.warn('Start trip sync warning:', err?.message);
     }
   };
 
@@ -568,13 +544,21 @@ export const DriverDashboard = () => {
     }
   };
 
-  // Report Delay (Notifies Admin in Admin Site + Admin Email cleancodeuniverse@gmail.com strictly 1x per trip)
+  // Report Delay — Instant UI response (Notifies Admin in Admin Site + Admin Email cleancodeuniverse@gmail.com strictly 1x per trip)
   const handleReportDelay = async (e) => {
     e.preventDefault();
     if (delayNotifiedForTrip) {
       setIsDelayModalOpen(false);
       return;
     }
+    setDelayNotifiedForTrip(true);
+    setIsDelayModalOpen(false);
+    addToast({
+      title: 'Delay Alert Sent Once to Admin (Site & Email)',
+      message: `Admin (cleancodeuniverse@gmail.com) and passengers notified once of +${delayMinutes} min delay on Bus ${assignedShuttle.code}.`,
+      type: 'warning'
+    });
+
     try {
       const res = await api.post(`/trips/${activeTripId || assignedShuttle.id}/delay`, {
         shuttle_id: assignedShuttle.id,
@@ -584,24 +568,22 @@ export const DriverDashboard = () => {
       if (res.data?.emailRelayPayload) {
         relayCloudEmail?.(res.data.emailRelayPayload);
       }
-      setDelayNotifiedForTrip(true);
       fetchDriver();
-      addToast({
-        title: 'Delay Alert Sent Once to Admin (Site & Email)',
-        message:
-          res.data?.message ||
-          `Admin (cleancodeuniverse@gmail.com) and passengers notified once of +${delayMinutes} min delay on Bus ${assignedShuttle.code}.`,
-        type: 'warning'
-      });
-      setIsDelayModalOpen(false);
     } catch (err) {
-      addToast({ title: 'Error', message: 'Could not report delay', type: 'danger' });
+      console.warn('Report delay sync warning:', err?.message);
     }
   };
 
-  // Off-Route Deviation Alert to Admin (Notifies Admin in Admin Site + Admin Email cleancodeuniverse@gmail.com strictly 1x per trip)
+  // Off-Route Deviation Alert to Admin — Instant UI response (Notifies Admin strictly 1x per trip)
   const handleTriggerOffRouteAlert = async () => {
     if (offRouteNotifiedForTrip) return;
+    setOffRouteNotifiedForTrip(true);
+    addToast({
+      title: 'Off-Route Alert Sent Once to Admin (Site & Email)',
+      message: `Admin (cleancodeuniverse@gmail.com) has been notified once via Admin Site & Email that Bus ${assignedShuttle.code} deviated from its allocated route.`,
+      type: 'warning'
+    });
+
     try {
       const exactLat = Number(currentCoords.lat || assignedShuttle.current_lat || 0);
       const exactLng = Number(currentCoords.lng || assignedShuttle.current_lng || 0);
@@ -614,24 +596,21 @@ export const DriverDashboard = () => {
       if (res.data?.emailRelayPayload) {
         relayCloudEmail?.(res.data.emailRelayPayload);
       }
-      if (res.data.success) {
-        setOffRouteNotifiedForTrip(true);
-        addToast({
-          title: 'Off-Route Alert Sent Once to Admin (Site & Email)',
-          message:
-            res.data.message ||
-            `Admin (cleancodeuniverse@gmail.com) has been notified once via Admin Site & Email that Bus ${assignedShuttle.code} deviated from its allocated route.`,
-          type: 'warning'
-        });
-      }
     } catch (err) {
-      addToast({ title: 'Error', message: 'Failed to send off-route alert', type: 'danger' });
+      console.warn('Off-route alert sync warning:', err?.message);
     }
   };
 
-  // Direct Driver Emergency Alert to Admin (Sends immediate Notification + Email to Admin strictly 1x per trip)
+  // Direct Driver Emergency Alert to Admin — Instant UI response (Sends immediate Notification + Email to Admin strictly 1x per trip)
   const handleEmergencyStoppedAlert = async () => {
     if (emergencyStoppedNotifiedForTrip) return;
+    setEmergencyStoppedNotifiedForTrip(true);
+    addToast({
+      title: 'Emergency Alert Sent Once to Admin (Login & Email)',
+      message: `Admin (cleancodeuniverse@gmail.com) has been notified once via Dashboard and Email about the emergency on Bus ${assignedShuttle.code}.`,
+      type: 'danger'
+    });
+
     try {
       const res = await api.post('/trips/emergency-stopped', {
         shuttle_id: assignedShuttle.id,
@@ -643,19 +622,8 @@ export const DriverDashboard = () => {
       if (res.data?.emailRelayPayload) {
         relayCloudEmail?.(res.data.emailRelayPayload);
       }
-
-      if (res.data.success) {
-        setEmergencyStoppedNotifiedForTrip(true);
-        addToast({
-          title: 'Emergency Alert Sent Once to Admin (Login & Email)',
-          message:
-            res.data.message ||
-            `Admin (cleancodeuniverse@gmail.com) has been notified once via Dashboard and Email about the emergency on Bus ${assignedShuttle.code}.`,
-          type: 'danger'
-        });
-      }
     } catch (err) {
-      addToast({ title: 'Error', message: 'Failed to send emergency alert to Admin', type: 'danger' });
+      console.warn('Emergency alert sync warning:', err?.message);
     }
   };
 

@@ -85,7 +85,7 @@ router.post('/start', authenticate, authorize('driver', 'admin'), async (req, re
 
     res.status(201).json({
       success: true,
-      message: 'Trip started successfully with live hardware GPS. Passengers notified via Login & Email.',
+      message: 'Trip started successfully with live GPS. Passengers notified via Login & Email.',
       deliveredVia: trip.emailDeliveredVia,
       emailRelayPayload: trip.emailRelayPayload,
       data: trip

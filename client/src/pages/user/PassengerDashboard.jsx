@@ -306,6 +306,46 @@ export const PassengerDashboard = () => {
       return;
     }
 
+    // Instant 0ms optimistic UI reflex
+    const nowTs = Date.now();
+    const optimisticCount = Math.min(10, emergencyCount + 1);
+    const optimisticReport = {
+      passengerId: user?.id || 0,
+      passengerName: user?.name || 'Passenger',
+      busCode: passengerBusCode,
+      timestamp: nowTs
+    };
+    const optimisticReports = [...activeEmergencyReports, optimisticReport];
+    try {
+      localStorage.setItem(
+        emergencyStorageKey,
+        JSON.stringify({
+          ...optimisticReport,
+          currentCount: optimisticCount
+        })
+      );
+    } catch (_) {}
+    setNowTick(nowTs);
+    setShuttles((prev) =>
+      prev.map((s) =>
+        Number(s.id) === Number(currentShuttle.id)
+          ? {
+              ...s,
+              passengerEmergencyCount: optimisticCount,
+              passengerEmergencyReports: optimisticReports
+            }
+          : s
+      )
+    );
+    addToast({
+      title: `${optimisticCount} out of 10 Emergency Alert`,
+      message:
+        optimisticCount >= 5
+          ? `Emergency threshold reached (${optimisticCount} out of 10 passengers)! Admin notified via Dashboard & Email.`
+          : `Emergency alert recorded (${optimisticCount} out of 10 passengers). Admin is alerted at 5–10 reports.`,
+      type: optimisticCount >= 5 ? 'danger' : 'warning'
+    });
+
     setSendingEmergency(true);
     try {
       const res = await api.post('/trips/emergency-stopped', {
@@ -327,16 +367,8 @@ export const PassengerDashboard = () => {
       }
 
       if (res.data.success) {
-        const updatedCount = Number(res.data.currentCount || 1);
-        const updatedReports = res.data.passengerEmergencyReports || [
-          ...activeEmergencyReports,
-          {
-            passengerId: user?.id || 0,
-            passengerName: user?.name || 'Passenger',
-            busCode: passengerBusCode,
-            timestamp: Date.now()
-          }
-        ];
+        const updatedCount = Number(res.data.currentCount || optimisticCount);
+        const updatedReports = res.data.passengerEmergencyReports || optimisticReports;
         const myMatchingReport = updatedReports.find(
           (r) =>
             (user?.id && Number(r.passengerId) === Number(user.id)) ||
@@ -351,7 +383,7 @@ export const PassengerDashboard = () => {
               passengerId: user?.id || 0,
               passengerName: user?.name || 'Passenger',
               busCode: passengerBusCode,
-              timestamp: myMatchingReport?.timestamp || Date.now(),
+              timestamp: myMatchingReport?.timestamp || nowTs,
               currentCount: updatedCount
             })
           );
@@ -370,11 +402,6 @@ export const PassengerDashboard = () => {
               : s
           )
         );
-        addToast({
-          title: `${updatedCount} out of 10 Emergency Alert`,
-          message: res.data.message,
-          type: res.data.thresholdReached ? 'danger' : 'warning'
-        });
       }
     } catch (err) {
       addToast({

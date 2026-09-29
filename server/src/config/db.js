@@ -1059,6 +1059,9 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
       database: process.env.PGDATABASE,
       password: process.env.PGPASSWORD,
       port: process.env.PGPORT || 5432,
+      max: Number(process.env.PG_POOL_MAX) || 25,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000,
       ssl: isRemoteCloud || process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
     });
 
@@ -4256,6 +4259,12 @@ const db = {
   // 2) One-time Admin Notification when Driver has NOT pressed Start Trip at scheduled time
   // 3) One-time Admin Delay Notification + Email when Driver does NOT reach destination on scheduled time
   checkScheduledTripsNotStarted: async () => {
+    const nowTs = Date.now();
+    if (store._lastScheduleMonitorTs && nowTs - store._lastScheduleMonitorTs < 15000) {
+      return [];
+    }
+    store._lastScheduleMonitorTs = nowTs;
+
     const createdNotifications = [];
     const { sendDriverScheduleEmail } = require('../services/otpService');
 
@@ -4341,8 +4350,10 @@ const db = {
   },
 
   // Schedules with exact GPS-calculated distance, speed, ETA, arrival time & cumulative driver points
+  // Ordered so newly added schedules appear first and the first-added schedule goes to the LAST of the list,
+  // with sequential serial_number (1, 2, 3, 4...)
   getAllSchedules: async (orgName = null) => {
-    const schedulesList = orgName
+    const filteredList = orgName
       ? store.schedules.filter((sc) => {
           if (matchesOrg(sc.organization_name, orgName)) return true;
           const sht = store.shuttles.find((s) => s.id === Number(sc.shuttle_id));
@@ -4350,7 +4361,11 @@ const db = {
         })
       : store.schedules;
 
-    return schedulesList.map((sched) => {
+    const schedulesList = [...filteredList].sort(
+      (a, b) => Number(b.id || 0) - Number(a.id || 0)
+    );
+
+    return schedulesList.map((sched, idx) => {
       const shuttle = store.shuttles.find((s) => s.id === Number(sched.shuttle_id));
       const driver = shuttle ? resolveDriverForShuttle(shuttle) : null;
       const driverUser = driver ? store.users.find((u) => u.id === driver.user_id) : null;
@@ -4415,6 +4430,7 @@ const db = {
 
       return {
         ...sched,
+        serial_number: idx + 1,
         organization_name:
           sched.organization_name ||
           shuttle?.organization_name ||
