@@ -411,7 +411,7 @@ export const AdminSchedules = () => {
                 <th className="py-4 px-5 whitespace-nowrap">GPS Telemetry (Speed • Distance • ETA)</th>
                 <th className="py-4 px-5 whitespace-nowrap">Calculated Arrival Time</th>
                 <th className="py-4 px-5 whitespace-nowrap">GPS Trip / Arrival Status</th>
-                <th className="py-4 px-5 whitespace-nowrap">All-Trips Points (Monthly / Yearly)</th>
+                <th className="py-4 px-5 whitespace-nowrap">Trip Points (This Schedule)</th>
                 <th className="py-4 px-5 text-right whitespace-nowrap">Status & Actions</th>
               </tr>
             </thead>
@@ -515,12 +515,17 @@ export const AdminSchedules = () => {
 
                   const delayMins = Number(item.delay_minutes) || 0;
                   const isDelayed = delayMins > 0;
-                  const monthlyPoints =
-                    Number(item.monthly_points) || Number(item.driver_points) || 0;
-                  const yearlyPoints =
-                    Number(item.yearly_points) || monthlyPoints;
-                  const totalTrips =
-                    Number(item.total_trips) || Number(item.daily_trips) || 0;
+                  const rawTripPts = Number(item.trip_points ?? item.last_points_earned) || 0;
+                  const tripPoints =
+                    rawTripPts > 0
+                      ? rawTripPts
+                      : hasArrived
+                      ? isDelayed
+                        ? Math.max(1, 10 - delayMins)
+                        : 10
+                      : isDelayed
+                      ? Math.max(1, 10 - delayMins)
+                      : 0;
 
                   return (
                     <tr
@@ -636,14 +641,22 @@ export const AdminSchedules = () => {
                               <span>Driver Arrived • {item.actual_arrival_time}</span>
                             </span>
                             <div className="text-[10px] text-slate-400 mt-1 font-medium">
-                              {isDelayed ? `Delayed by ${delayMins} min` : `Reached ${destination} on GPS`}
+                              {isDelayed ? `Delayed by +${delayMins} min • Admin Notified` : `Reached ${destination} on Time`}
                             </div>
                           </div>
                         ) : isOnTrip ? (
                           <div>
-                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-brand-600 dark:text-blue-400 font-bold text-xs border border-blue-200/60 dark:border-blue-800/60">
+                            <span
+                              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-xl font-bold text-xs border ${
+                                isDelayed
+                                  ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800'
+                                  : 'bg-blue-50 dark:bg-blue-950/60 text-brand-600 dark:text-blue-400 border-blue-200/60 dark:border-blue-800/60'
+                              }`}
+                            >
                               <Navigation className="w-3 h-3 animate-pulse shrink-0" />
-                              <span>On Trip to {destination}</span>
+                              <span>
+                                {isDelayed ? `Delayed (+${delayMins}m) to ${destination}` : `On Trip to ${destination}`}
+                              </span>
                             </span>
                             <div className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-semibold">
                               {gpsSpeedKmh} km/h • {remainingGpsKm} km to destination • ETA {gpsEtaMinutes} min
@@ -672,19 +685,36 @@ export const AdminSchedules = () => {
                         )}
                       </td>
 
-                      {/* 8. Cumulative All-Trips Driver Points (Monthly / Yearly) */}
+                      {/* 8. Points for This Particular Trip (On-Time Full 10 Pts or Delay-Based Points) */}
                       <td className="py-4 px-5 align-middle whitespace-nowrap">
                         <div className="flex items-center gap-1.5">
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-black text-xs border border-purple-200 dark:border-purple-800">
-                            <Award className="w-3.5 h-3.5 text-purple-500 shrink-0" />
-                            <span>Monthly: {monthlyPoints} pts</span>
-                          </span>
-                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-bold text-[11px] border border-indigo-200 dark:border-indigo-800">
-                            <span>Yearly: {yearlyPoints} pts</span>
+                          <span
+                            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-xl font-black text-xs border ${
+                              tripPoints >= 10
+                                ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                                : tripPoints > 0
+                                ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                                : 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800'
+                            }`}
+                          >
+                            <Award
+                              className={`w-3.5 h-3.5 shrink-0 ${
+                                tripPoints >= 10
+                                  ? 'text-emerald-500'
+                                  : tripPoints > 0
+                                  ? 'text-amber-500'
+                                  : 'text-purple-500'
+                              }`}
+                            />
+                            <span>{tripPoints > 0 ? `+${tripPoints} pts` : '0 pts'}</span>
                           </span>
                         </div>
                         <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 font-semibold">
-                          Cumulative All Trips ({totalTrips} {totalTrips === 1 ? 'Trip' : 'Trips'} Completed on GPS)
+                          {hasArrived && !isDelayed
+                            ? 'On-Time Arrival (Full 10 Pts)'
+                            : isDelayed
+                            ? `Delay-Based (+${delayMins}m Delay)`
+                            : 'This Trip Only (10 Pts On-Time)'}
                         </div>
                       </td>
 
@@ -698,7 +728,11 @@ export const AdminSchedules = () => {
                               <Badge status="active">Driver Arrived</Badge>
                             )
                           ) : isOnTrip ? (
-                            <Badge status="on_trip">On Trip</Badge>
+                            isDelayed ? (
+                              <Badge status="delayed">Delayed (+{delayMins}m)</Badge>
+                            ) : (
+                              <Badge status="on_trip">On Trip</Badge>
+                            )
                           ) : notStartedAtSchedule ? (
                             <Badge status="delayed">Not Started (Scheduled Now)</Badge>
                           ) : (

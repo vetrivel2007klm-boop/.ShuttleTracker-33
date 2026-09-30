@@ -862,6 +862,176 @@ function resolveRouteForShuttle(shuttle) {
   return rt || null;
 }
 
+function calculateTripPointsFromDelay(delayMinutes = 0) {
+  const d = Math.max(0, Math.round(Number(delayMinutes) || 0));
+  if (d === 0) return 10; // Full 10 points when driver reaches destination on time
+  return Math.max(1, 10 - d); // Delay-adjusted points (e.g. 1m->9, 2m->8, 3m->7, 5m->5, >=9m->1)
+}
+
+function resolveActiveScheduleForShuttle(shuttleId, explicitScheduleId = null) {
+  const schedulesForShuttle = store.schedules
+    .filter((sc) => Number(sc.shuttle_id) === Number(shuttleId))
+    .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+  if (schedulesForShuttle.length === 0) return null;
+
+  if (explicitScheduleId) {
+    const explicitMatch = schedulesForShuttle.find(
+      (sc) => Number(sc.id) === Number(explicitScheduleId)
+    );
+    if (explicitMatch) return explicitMatch;
+  }
+
+  const activeTripMatch = schedulesForShuttle.find(
+    (sc) => sc.is_active_for_current_trip && !sc.driver_arrived
+  );
+  if (activeTripMatch) return activeTripMatch;
+
+  const windowUncompletedMatch = schedulesForShuttle.find(
+    (sc) => !sc.driver_arrived && isTimeWithinScheduleWindow(sc.departure_time, sc.arrival_time)
+  );
+  if (windowUncompletedMatch) return windowUncompletedMatch;
+
+  const newestUncompleted = schedulesForShuttle.find((sc) => !sc.driver_arrived);
+  if (newestUncompleted) return newestUncompleted;
+
+  const windowAnyMatch = schedulesForShuttle.find((sc) =>
+    isTimeWithinScheduleWindow(sc.departure_time, sc.arrival_time)
+  );
+  return windowAnyMatch || schedulesForShuttle[0];
+}
+
+async function awardScheduleAndDriverPoints(sc, driver, delayMinutes = 0) {
+  const cleanDelay = Math.max(0, Math.round(Number(delayMinutes) || 0));
+  const pointsEarned = calculateTripPointsFromDelay(cleanDelay);
+
+  if (sc) {
+    const prevAwardedOnThisSched = Number(sc.points_awarded_value) || 0;
+    const wasTripCounted = Boolean(sc.trip_counted);
+    const pointsDelta = pointsEarned - prevAwardedOnThisSched;
+    const tripDelta = wasTripCounted ? 0 : 1;
+
+    sc.trip_points = pointsEarned;
+    sc.last_points_earned = pointsEarned;
+    sc.point_awarded_for_trip = true;
+    sc.points_awarded_value = pointsEarned;
+    sc.trip_counted = true;
+    sc.delay_minutes = cleanDelay;
+
+    if (driver) {
+      const baseDriverPts = Math.max(
+        Number(driver.driver_points) || 0,
+        Number(driver.monthly_points) || 0,
+        Number(driver.yearly_points) || 0
+      );
+      const baseDriverTrips = Number(driver.total_trips) || 0;
+
+      const candidatePts = Math.max(0, baseDriverPts + pointsDelta);
+      const candidateTrips = Math.max(1, baseDriverTrips + tripDelta);
+
+      const evaluatedSchedules = store.schedules.filter(
+        (item) =>
+          Number(item.shuttle_id) === Number(sc.shuttle_id) &&
+          (item.point_awarded_for_trip || Number(item.trip_points) > 0 || Number(item.last_points_earned) > 0)
+      );
+      const sumSchedPts = evaluatedSchedules.reduce(
+        (sum, item) => sum + (Number(item.trip_points ?? item.last_points_earned) || 0),
+        0
+      );
+      const countSchedTrips = evaluatedSchedules.length;
+
+      const finalOverallPts = Math.max(candidatePts, sumSchedPts, pointsEarned);
+      const finalTotalTrips = Math.max(candidateTrips, countSchedTrips, 1);
+
+      driver.driver_points = finalOverallPts;
+      driver.monthly_points = finalOverallPts;
+      driver.yearly_points = finalOverallPts;
+      driver.daily_points = finalOverallPts;
+      driver.total_trips = finalTotalTrips;
+      driver.last_points_earned = pointsEarned;
+      driver.delay_minutes = cleanDelay;
+    }
+
+    sc.driver_points = driver ? driver.driver_points : pointsEarned;
+    sc.monthly_points = driver ? driver.monthly_points : pointsEarned;
+    sc.yearly_points = driver ? driver.yearly_points : pointsEarned;
+    sc.total_trips = driver ? driver.total_trips : 1;
+    sc.daily_trips = sc.total_trips;
+
+    if (isPostgresConnected && pool) {
+      try {
+        await pool.query(
+          `UPDATE schedules
+           SET driver_points = $1, monthly_points = $2, yearly_points = $3,
+               total_trips = $4, last_points_earned = $5, delay_minutes = $6,
+               actual_arrival_time = $7, status = $8
+           WHERE id = $9`,
+          [
+            sc.driver_points,
+            sc.monthly_points,
+            sc.yearly_points,
+            sc.total_trips,
+            pointsEarned,
+            sc.delay_minutes,
+            sc.actual_arrival_time || null,
+            sc.status || 'active',
+            sc.id
+          ]
+        );
+        if (driver) {
+          await pool.query(
+            `UPDATE drivers
+             SET driver_points = $1, monthly_points = $2, yearly_points = $3,
+                 total_trips = $4, last_points_earned = $5
+             WHERE id = $6`,
+            [
+              driver.driver_points,
+              driver.monthly_points,
+              driver.yearly_points,
+              driver.total_trips,
+              driver.last_points_earned,
+              driver.id
+            ]
+          );
+        }
+      } catch (_) {}
+    }
+  } else if (driver) {
+    const nextPts = (Number(driver.driver_points) || 0) + pointsEarned;
+    const nextTrips = (Number(driver.total_trips) || 0) + 1;
+    driver.driver_points = nextPts;
+    driver.monthly_points = nextPts;
+    driver.yearly_points = nextPts;
+    driver.daily_points = nextPts;
+    driver.total_trips = nextTrips;
+    driver.last_points_earned = pointsEarned;
+    driver.delay_minutes = cleanDelay;
+    if (isPostgresConnected && pool) {
+      try {
+        await pool.query(
+          `UPDATE drivers
+           SET driver_points = $1, monthly_points = $2, yearly_points = $3,
+               total_trips = $4, last_points_earned = $5
+           WHERE id = $6`,
+          [
+            driver.driver_points,
+            driver.monthly_points,
+            driver.yearly_points,
+            driver.total_trips,
+            driver.last_points_earned,
+            driver.id
+          ]
+        );
+      } catch (_) {}
+    }
+  }
+
+  return {
+    pointsEarned,
+    overallPoints: driver ? driver.driver_points : pointsEarned,
+    totalTrips: driver ? driver.total_trips : 1
+  };
+}
+
 function getShuttleScheduleContext(shuttleId) {
   const schedulesForShuttle = store.schedules.filter(
     (sc) => Number(sc.shuttle_id) === Number(shuttleId)
@@ -876,7 +1046,7 @@ function getShuttleScheduleContext(shuttleId) {
   const matchingNow = schedulesForShuttle.find((sc) =>
     isTimeWithinScheduleWindow(sc.departure_time, sc.arrival_time)
   );
-  const primarySchedule = matchingNow || schedulesForShuttle[0];
+  const primarySchedule = resolveActiveScheduleForShuttle(shuttleId);
   return {
     hasSchedule: true,
     isScheduledTimeNow: Boolean(matchingNow),
@@ -1580,21 +1750,33 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
               } catch (_) {}
             }
           }
-          store.schedules = (schedRes.rows || []).map((sc) => ({
-            ...sc,
-            days: sc.days || sc.days_of_week || 'Mon - Fri',
-            organization_name: sc.organization_name || defaultOrgName,
-            driver_arrived: false,
-            actual_arrival_time: null,
-            arrived_at_live: null,
-            driver_schedule_reminder_sent: true,
-            delay_minutes: 0,
-            driver_points: Number(sc.driver_points) || 0,
-            monthly_points: Number(sc.monthly_points) || Number(sc.driver_points) || 0,
-            yearly_points: Number(sc.yearly_points) || Number(sc.driver_points) || 0,
-            total_trips: Number(sc.total_trips) || 0,
-            last_points_earned: Number(sc.last_points_earned) || 0
-          }));
+          store.schedules = (schedRes.rows || []).map((sc) => {
+            const perTripPts = Number(sc.last_points_earned) || 0;
+            const hasArrived = Boolean(
+              sc.actual_arrival_time ||
+                sc.status === 'arrived_on_time' ||
+                sc.status === 'delayed'
+            );
+            return {
+              ...sc,
+              days: sc.days || sc.days_of_week || 'Mon - Fri',
+              organization_name: sc.organization_name || defaultOrgName,
+              driver_arrived: hasArrived,
+              actual_arrival_time: hasArrived ? sc.actual_arrival_time || null : null,
+              arrived_at_live: hasArrived ? sc.actual_arrival_time || null : null,
+              driver_schedule_reminder_sent: true,
+              delay_minutes: Number(sc.delay_minutes) || 0,
+              trip_points: perTripPts,
+              last_points_earned: perTripPts,
+              point_awarded_for_trip: perTripPts > 0,
+              points_awarded_value: perTripPts,
+              trip_counted: perTripPts > 0 || hasArrived,
+              driver_points: Number(sc.driver_points) || 0,
+              monthly_points: Number(sc.monthly_points) || Number(sc.driver_points) || 0,
+              yearly_points: Number(sc.yearly_points) || Number(sc.driver_points) || 0,
+              total_trips: Number(sc.total_trips) || 0
+            };
+          });
 
           // 7. Restore active 15-minute passenger emergency reports from PostgreSQL
           const cutoffMs = Date.now() - 15 * 60 * 1000;
@@ -2374,11 +2556,27 @@ const db = {
             (u) => (u.bus_number || '').toUpperCase() === busCode.toUpperCase()
           )
         : [];
+      const driverShuttleSchedules = assignedShuttle
+        ? store.schedules.filter((sc) => Number(sc.shuttle_id) === Number(assignedShuttle.id))
+        : [];
+      const sumTripPts = driverShuttleSchedules.reduce(
+        (sum, sc) => sum + (Number(sc.trip_points ?? sc.last_points_earned) || 0),
+        0
+      );
+      const countEvalTrips = driverShuttleSchedules.filter(
+        (sc) =>
+          sc.point_awarded_for_trip ||
+          sc.driver_arrived ||
+          Number(sc.trip_points ?? sc.last_points_earned) > 0
+      ).length;
+
       const totalPts = Math.max(
         Number(driver.driver_points) || 0,
         Number(driver.yearly_points) || 0,
-        Number(driver.monthly_points) || 0
+        Number(driver.monthly_points) || 0,
+        sumTripPts
       );
+      const totalTrips = Math.max(Number(driver.total_trips) || 0, countEvalTrips);
 
       return {
         ...driver,
@@ -2397,9 +2595,12 @@ const db = {
         routePassengers,
         allPassengers,
         driver_points: totalPts,
-        monthly_points: Number(driver.monthly_points) || totalPts,
-        yearly_points: Number(driver.yearly_points) || totalPts,
-        total_trips: Number(driver.total_trips) || 0,
+        driverPoints: totalPts,
+        monthly_points: Math.max(Number(driver.monthly_points) || 0, totalPts),
+        yearly_points: Math.max(Number(driver.yearly_points) || 0, totalPts),
+        total_trips: totalTrips,
+        totalTripsCompleted: totalTrips,
+        last_points_earned: Number(driver.last_points_earned) || 0,
         plain_password:
           (userObj && userObj.plain_password) || driver.plain_password || 'driver123',
         is_active:
@@ -2485,6 +2686,7 @@ const db = {
           .map((sc) => {
             const minsUntil = getMinutesUntilDeparture(sc.departure_time);
             const inWin = isTimeWithinScheduleWindow(sc.departure_time, sc.arrival_time);
+            const perTripPts = Number(sc.trip_points ?? sc.last_points_earned) || 0;
             return {
               ...sc,
               start_point: assignedShuttle.start_point || activeRoute?.start_point || '',
@@ -2492,10 +2694,11 @@ const db = {
               is_scheduled_time_now: inWin,
               minutes_until_departure: minsUntil,
               is_approaching_soon: minsUntil !== null && minsUntil >= 0 && minsUntil <= 60,
+              trip_points: perTripPts,
+              last_points_earned: perTripPts,
               driver_points: Number(sc.driver_points) || 0,
               monthly_points: Number(sc.monthly_points) || Number(sc.driver_points) || 0,
               yearly_points: Number(sc.yearly_points) || Number(sc.driver_points) || 0,
-              last_points_earned: Number(sc.last_points_earned) || 0,
               total_trips: Number(sc.total_trips) || Number(sc.daily_trips) || 0
             };
           })
@@ -2507,19 +2710,33 @@ const db = {
         (n.type === 'driver_schedule' && assignedShuttle && Number(n.shuttle_id) === Number(assignedShuttle.id))
     );
 
-    const schedulePointsSum = driverSchedules.reduce((sum, sc) => sum + (Number(sc.driver_points) || 0), 0);
+    const scheduleTripPointsSum = driverSchedules.reduce(
+      (sum, sc) => sum + (Number(sc.trip_points ?? sc.last_points_earned) || 0),
+      0
+    );
+    const evaluatedTripsCount = driverSchedules.filter(
+      (sc) =>
+        sc.point_awarded_for_trip ||
+        sc.driver_arrived ||
+        Number(sc.trip_points ?? sc.last_points_earned) > 0
+    ).length;
+
     const totalDriverPoints = Math.max(
       Number(driver.driver_points) || 0,
       Number(driver.yearly_points) || 0,
       Number(driver.monthly_points) || 0,
-      schedulePointsSum
+      scheduleTripPointsSum
     );
     const monthlyPoints = Math.max(Number(driver.monthly_points) || 0, totalDriverPoints);
     const yearlyPoints = Math.max(Number(driver.yearly_points) || 0, totalDriverPoints);
     const totalTripsCompleted = Math.max(
       Number(driver.total_trips) || 0,
-      driverSchedules.reduce((sum, sc) => sum + (Number(sc.total_trips) || Number(sc.daily_trips) || 0), 0)
+      evaluatedTripsCount
     );
+    const latestTripPoints =
+      Number(activeSchedule?.trip_points ?? activeSchedule?.last_points_earned) ||
+      Number(driver.last_points_earned) ||
+      0;
 
     return {
       ...driver,
@@ -2539,13 +2756,15 @@ const db = {
       routePassengers,
       schedules: driverSchedules,
       driverNotifications,
+      driver_points: totalDriverPoints,
       dailyPoints: totalDriverPoints,
       driverPoints: totalDriverPoints,
       monthlyPoints,
       yearlyPoints,
+      total_trips: totalTripsCompleted,
       totalTripsCompleted,
-      lastPointsEarned: Number(activeSchedule?.last_points_earned) || 0,
-      delayMinutes: Number(activeSchedule?.delay_minutes) || 0,
+      lastPointsEarned: latestTripPoints,
+      delayMinutes: Number(activeSchedule?.delay_minutes ?? driver.delay_minutes) || 0,
       delayNotifiedForTrip: Boolean(activeSchedule?.admin_delay_notified_for_trip),
       offRouteNotifiedForTrip: Boolean(activeSchedule?.admin_offroute_notified_for_trip),
       emergencyStoppedNotifiedForTrip: Boolean(activeSchedule?.admin_emergency_stopped_notified_for_trip),
@@ -4016,24 +4235,32 @@ const db = {
       }
     }
 
-    // Reset per-trip arrival, point, delay-notification, off-route, and emergency flags so the new trip notifies once
-    // IMPORTANT: Keep cumulative driver_points, monthly_points, yearly_points, total_trips across all trips!
+    // Activate only the current schedule for this trip without wiping out previously completed schedules!
+    const activeSc = resolveActiveScheduleForShuttle(resolvedShuttleId, tripData.schedule_id);
     store.schedules.forEach((sc) => {
       if (Number(sc.shuttle_id) === Number(resolvedShuttleId)) {
-        sc.driver_arrived = false;
-        sc.actual_arrival_time = null;
-        sc.arrived_at_live = null;
-        sc.trip_completed_in_window = false;
-        sc.point_awarded_for_trip = false;
-        sc.admin_delay_notified_for_trip = false;
-        sc.admin_offroute_notified_for_trip = false;
-        sc.admin_emergency_stopped_notified_for_trip = false;
-        sc.driver_not_started_notified = false;
-        sc.passenger_emergency_reports = [];
-        sc.delay_minutes = 0;
-        sc.status = 'on_trip';
+        sc.is_active_for_current_trip = Boolean(activeSc && Number(sc.id) === Number(activeSc.id));
       }
     });
+    if (activeSc) {
+      newTrip.schedule_id = activeSc.id;
+      activeSc.driver_arrived = false;
+      activeSc.actual_arrival_time = null;
+      activeSc.arrived_at_live = null;
+      activeSc.trip_completed_in_window = false;
+      activeSc.point_awarded_for_trip = false;
+      activeSc.points_awarded_value = 0;
+      activeSc.trip_counted = false;
+      activeSc.trip_points = 0;
+      activeSc.last_points_earned = 0;
+      activeSc.admin_delay_notified_for_trip = false;
+      activeSc.admin_offroute_notified_for_trip = false;
+      activeSc.admin_emergency_stopped_notified_for_trip = false;
+      activeSc.driver_not_started_notified = false;
+      activeSc.passenger_emergency_reports = [];
+      activeSc.delay_minutes = 0;
+      activeSc.status = 'on_trip';
+    }
 
     // Notify allocated Passengers (in Passenger Login + Passenger Email) when Driver starts trip
     try {
@@ -4146,6 +4373,7 @@ const db = {
 
     if (shuttle) {
       const reachedOnGps = hasShuttleReachedDestinationOnGps(shuttle);
+      const activeSc = resolveActiveScheduleForShuttle(shuttle.id, trip?.schedule_id);
       shuttle.status = 'idle';
       shuttle.trip_id = null;
       shuttle.speed = 0;
@@ -4159,20 +4387,23 @@ const db = {
           );
         } catch (_) {}
       }
-      // IMPORTANT: Only mark schedule as arrived if the bus actually reached the destination on GPS!
+      // Update only the active schedule for this trip (do not overwrite earlier completed schedules)
+      if (activeSc) {
+        activeSc.is_active_for_current_trip = false;
+        if (reachedOnGps) {
+          activeSc.driver_arrived = true;
+          activeSc.trip_completed_in_window = true;
+          activeSc.driver_not_started_notified = true;
+          activeSc.status = Number(activeSc.delay_minutes) > 0 ? 'delayed' : 'arrived_on_time';
+        } else if (!activeSc.driver_arrived) {
+          activeSc.actual_arrival_time = null;
+          activeSc.arrived_at_live = null;
+          activeSc.status = 'not_started';
+        }
+      }
       store.schedules.forEach((sc) => {
         if (Number(sc.shuttle_id) === Number(shuttle.id)) {
-          if (reachedOnGps) {
-            sc.driver_arrived = true;
-            sc.trip_completed_in_window = true;
-            sc.driver_not_started_notified = true;
-            sc.status = Number(sc.delay_minutes) > 0 ? 'delayed' : 'arrived_on_time';
-          } else {
-            sc.driver_arrived = false;
-            sc.actual_arrival_time = null;
-            sc.arrived_at_live = null;
-            sc.status = 'not_started';
-          }
+          sc.is_active_for_current_trip = false;
         }
       });
     }
@@ -4256,9 +4487,9 @@ const db = {
   },
 
   // Schedule Monitor:
-  // 1) One-time Schedule Notification/Email to Driver (never repeats once sent for the schedule)
-  // 2) One-time Admin Notification when Driver has NOT pressed Start Trip at scheduled time
-  // 3) One-time Admin Delay Notification + Email when Driver does NOT reach destination on scheduled time
+  // 1) One-time Admin Notification when Driver has NOT pressed Start Trip at scheduled time
+  // 2) One-time Admin Delay Notification + Email + Delay Points when active trip exceeds scheduled arrival time
+  // NOTE: Driver Schedule Email is sent ONLY once when Admin creates the schedule in createSchedule()
   checkScheduledTripsNotStarted: async () => {
     const nowTs = Date.now();
     if (store._lastScheduleMonitorTs && nowTs - store._lastScheduleMonitorTs < 15000) {
@@ -4267,7 +4498,6 @@ const db = {
     store._lastScheduleMonitorTs = nowTs;
 
     const createdNotifications = [];
-    const { sendDriverScheduleEmail } = require('../services/otpService');
 
     for (const sc of store.schedules) {
       const shuttle = store.shuttles.find((s) => Number(s.id) === Number(sc.shuttle_id));
@@ -4277,49 +4507,14 @@ const db = {
       const driverUser = driver ? store.users.find((u) => u.id === driver.user_id) : null;
       const route = resolveRouteForShuttle(shuttle);
       const driverName = driver ? driverUser?.name || driver.name : 'Allocated Driver';
-      const driverEmail = driver ? driverUser?.email || driver.email : '';
       const startPt = shuttle.start_point || route?.start_point || 'Starting Point';
       const destPt = shuttle.destination || route?.end_point || 'Destination';
       const isOnTrip = shuttle.status === 'on_trip' || shuttle.status === 'delayed';
 
       const inWindow = isTimeWithinScheduleWindow(sc.departure_time, sc.arrival_time);
-      const minsUntilDep = getMinutesUntilDeparture(sc.departure_time);
-      const isApproaching = minsUntilDep !== null && minsUntilDep >= 0 && minsUntilDep <= 30;
       const minsPastArrival = getMinutesPastScheduledArrival(sc.departure_time, sc.arrival_time);
 
-      // A) Notify Driver strictly once if not already sent when schedule was created
-      if ((isApproaching || inWindow) && !sc.driver_schedule_reminder_sent && !isOnTrip && !sc.driver_arrived) {
-        sc.driver_schedule_reminder_sent = true;
-        await db.createNotification({
-          title: `⏰ Your Schedule Time is On (${sc.departure_time} – ${sc.arrival_time}) — Ready to Ride Safely!`,
-          message: `Hello ${driverName}, your scheduled trip on Bus ${shuttle.code} (${startPt} ➔ ${destPt}) is ${
-            inWindow ? 'active now' : `starting soon at ${sc.departure_time}`
-          } (${sc.departure_time} – ${sc.arrival_time}). Please be ready to ride safely and press START TRIP on time!`,
-          type: 'driver_schedule',
-          shuttle_id: shuttle.id,
-          user_id: driver?.user_id || null,
-          organization_name: shuttle.organization_name
-        });
-
-        if (driverEmail) {
-          sendDriverScheduleEmail({
-            email: driverEmail,
-            name: driverName,
-            shuttleCode: shuttle.code,
-            shuttleName: shuttle.name,
-            vehicleNumber: shuttle.vehicle_number,
-            startPoint: startPt,
-            destination: destPt,
-            routeName: route?.name || `${startPt} ➔ ${destPt}`,
-            departureTime: sc.departure_time,
-            arrivalTime: sc.arrival_time,
-            days: sc.days || 'Mon - Fri',
-            isReminder: true
-          }).catch(() => {});
-        }
-      }
-
-      // B) Notify Admin ONLY once if in scheduled time window AND driver has NOT started trip AND has NOT completed the trip
+      // A) Notify Admin ONLY once if in scheduled time window AND driver has NOT started trip AND has NOT completed the trip
       if (inWindow) {
         if (!isOnTrip && !sc.driver_arrived && !sc.trip_completed_in_window && !sc.driver_not_started_notified) {
           sc.driver_not_started_notified = true;
@@ -4334,13 +4529,19 @@ const db = {
         }
       }
 
-      // C) If Driver did NOT reach destination on scheduled arrival time while on_trip,
-      // notify Admin strictly ONCE that the bus is delayed (do NOT mark as arrived until GPS reaches destination!)
-      if (minsPastArrival > 0 && isOnTrip && !sc.driver_arrived && !sc.admin_delay_notified_for_trip) {
+      // B) If Driver is on this active schedule's trip and did NOT reach destination within scheduled arrival time,
+      // notify Admin strictly ONCE and award delay-adjusted points for this schedule
+      if (
+        sc.is_active_for_current_trip &&
+        minsPastArrival > 0 &&
+        isOnTrip &&
+        !sc.driver_arrived &&
+        !sc.admin_delay_notified_for_trip
+      ) {
         const delayAlertRes = await db.recordDriverDelayAlert(
           shuttle.id,
           Math.max(1, minsPastArrival),
-          { stillInTransitPastSchedule: true }
+          { scheduleId: sc.id, stillInTransitPastSchedule: true }
         );
         if (delayAlertRes?.notification) {
           createdNotifications.push(delayAlertRes.notification);
@@ -4350,7 +4551,7 @@ const db = {
     return createdNotifications;
   },
 
-  // Schedules with exact GPS-calculated distance, speed, ETA, arrival time & cumulative driver points
+  // Schedules with exact GPS-calculated distance, speed, ETA, arrival time, per-trip points & cumulative driver points
   // Ordered so newly added schedules appear first and the first-added schedule goes to the LAST of the list,
   // with sequential serial_number (1, 2, 3, 4...)
   getAllSchedules: async (orgName = null) => {
@@ -4410,12 +4611,15 @@ const db = {
             })
           : null;
 
-      // Cumulative all-trips points (Monthly & Yearly — persisted across all verified GPS trips)
+      // Per-trip points earned specifically for THIS schedule row
+      const perTripPoints = Number(sched.trip_points ?? sched.last_points_earned) || 0;
+
+      // Cumulative all-trips points on the driver
       const cumulativePoints =
         Number(driver?.driver_points) ||
         Number(driver?.monthly_points) ||
         Number(sched.driver_points) ||
-        Number(sched.monthly_points) ||
+        perTripPoints ||
         0;
       const monthlyPoints =
         Number(driver?.monthly_points) || Number(sched.monthly_points) || cumulativePoints;
@@ -4460,15 +4664,14 @@ const db = {
         actual_arrival_time: verifiedArrived ? sched.actual_arrival_time || null : null,
         arrived_at_live: verifiedArrived ? sched.arrived_at_live || null : null,
         delay_minutes: Number(sched.delay_minutes) || 0,
+        trip_points: perTripPoints,
+        last_points_earned: perTripPoints,
         total_trips: totalTrips,
         daily_trips: totalTrips,
         driver_points: cumulativePoints,
         monthly_points: monthlyPoints,
         yearly_points: yearlyPoints,
-        last_points_earned: Number(sched.last_points_earned) || Number(driver?.last_points_earned) || 0,
-        admin_delay_notified_for_trip: Boolean(
-          sched.admin_delay_notified_for_trip || shuttle?.admin_delay_notified_for_trip
-        ),
+        admin_delay_notified_for_trip: Boolean(sched.admin_delay_notified_for_trip),
         admin_offroute_notified_for_trip: Boolean(
           sched.admin_offroute_notified_for_trip || shuttle?.admin_offroute_notified_for_trip
         ),
@@ -4547,22 +4750,27 @@ const db = {
       trip_completed_in_window: false,
       driver_not_started_notified: false,
       driver_schedule_reminder_sent: true,
+      is_active_for_current_trip: Boolean(shuttle && (shuttle.status === 'on_trip' || shuttle.status === 'delayed')),
       actual_arrival_time: null,
       delay_minutes: 0,
+      trip_points: 0,
+      last_points_earned: 0,
+      point_awarded_for_trip: false,
+      points_awarded_value: 0,
+      trip_counted: false,
       total_trips: initialTrips,
       daily_trips: initialTrips,
       driver_points: initialPoints,
       monthly_points: initialPoints,
       yearly_points: initialYearly,
-      last_points_earned: 0,
       status: shuttle?.status === 'on_trip' ? 'on_trip' : 'not_started'
     };
 
     if (isPostgresConnected && pool) {
       try {
         const { rows } = await pool.query(
-          `INSERT INTO schedules (route_id, route_name, shuttle_id, departure_time, arrival_time, days, status, organization_name, driver_points, monthly_points, yearly_points, total_trips)
-           VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11)
+          `INSERT INTO schedules (route_id, route_name, shuttle_id, departure_time, arrival_time, days, status, organization_name, driver_points, monthly_points, yearly_points, total_trips, last_points_earned)
+           VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11, 0)
            RETURNING *`,
           [
             newSched.route_id,
@@ -4582,6 +4790,11 @@ const db = {
           newSched = {
             ...newSched,
             ...rows[0],
+            trip_points: 0,
+            last_points_earned: 0,
+            point_awarded_for_trip: false,
+            points_awarded_value: 0,
+            trip_counted: false,
             organization_name: orgName,
             status: shuttle?.status === 'on_trip' ? 'on_trip' : 'not_started'
           };
@@ -4591,8 +4804,7 @@ const db = {
 
     store.schedules.push(newSched);
 
-    // Notify the assigned Driver in Driver Login and send an Email from Admin to the Driver:
-    // "Your schedule time is on — please be ready to ride safely!"
+    // Notify the assigned Driver in Driver Login and send 1 Email from Admin to the Driver
     const fallbackDriverUser =
       !driverUser &&
       store.users.find(
@@ -4637,9 +4849,6 @@ const db = {
       } catch (_) {}
     }
 
-    // Immediately check if this new schedule is currently in its scheduled time window without driver having pressed Start Trip
-    await db.checkScheduledTripsNotStarted();
-
     return {
       ...newSched,
       driverName,
@@ -4670,9 +4879,10 @@ const db = {
   },
 
   // GPS-Verified Destination Arrival Handler:
-  // - ONLY marks "Driver Arrived", records actual_arrival_time, and awards points when the bus's real GPS
-  //   coordinates have reached the destination stop (hasShuttleReachedDestinationOnGps(shuttle) === true).
-  // - Never marks arrived if driver ends the trip early before reaching the destination on GPS!
+  // - Checks whether the driver reached the destination on time or with a delay compared to scheduled arrival_time
+  // - Awards full points (10 pts) if on time, or delay-based points (Math.max(1, 10 - delayMins)) if delayed
+  // - Updates ONLY the active schedule's per-trip points (`trip_points`) and immediately updates cumulative driver points (`driver_points`, `total_trips`)
+  // - If delayed, notifies Admin on website + email strictly ONCE per trip
   recordDriverDestinationArrival: async (shuttleId, customDelayMinutes = null, options = {}) => {
     const shuttle =
       store.shuttles.find((s) => Number(s.id) === Number(shuttleId)) ||
@@ -4687,15 +4897,9 @@ const db = {
 
     const driver = resolveDriverForShuttle(shuttle) || store.drivers[0] || null;
     const route = resolveRouteForShuttle(shuttle);
-    const matchingSchedules = store.schedules.filter(
-      (item) => Number(item.shuttle_id) === Number(shuttle.id)
-    );
-    const sc =
-      matchingSchedules.find((item) =>
-        isTimeWithinScheduleWindow(item.departure_time, item.arrival_time)
-      ) || matchingSchedules[0];
+    const sc = resolveActiveScheduleForShuttle(shuttle.id, options.scheduleId);
 
-    const reachedOnGps = hasShuttleReachedDestinationOnGps(shuttle);
+    const reachedOnGps = Boolean(options.forceReached || hasShuttleReachedDestinationOnGps(shuttle));
     if (!reachedOnGps) {
       return {
         shuttleId: shuttle.id,
@@ -4706,11 +4910,11 @@ const db = {
         reachedDestination: false,
         reachedOnTime: false,
         delayMinutes: Number(sc?.delay_minutes) || 0,
-        pointsEarned: 0,
-        totalDriverPoints: Number(sc?.driver_points) || Number(driver?.driver_points) || 0,
-        monthlyDriverPoints: Number(sc?.monthly_points) || Number(driver?.monthly_points) || 0,
-        yearlyDriverPoints: Number(sc?.yearly_points) || Number(driver?.yearly_points) || 0,
-        totalTripsCompleted: Number(sc?.total_trips) || Number(driver?.total_trips) || 0,
+        pointsEarned: Number(sc?.trip_points ?? sc?.last_points_earned) || 0,
+        totalDriverPoints: Number(driver?.driver_points) || Number(sc?.driver_points) || 0,
+        monthlyDriverPoints: Number(driver?.monthly_points) || Number(sc?.monthly_points) || 0,
+        yearlyDriverPoints: Number(driver?.yearly_points) || Number(sc?.yearly_points) || 0,
+        totalTripsCompleted: Number(driver?.total_trips) || Number(sc?.total_trips) || 0,
         alreadyDelayNotified: Boolean(
           sc?.admin_delay_notified_for_trip || shuttle?.admin_delay_notified_for_trip
         ),
@@ -4730,23 +4934,20 @@ const db = {
 
     let delayMins = 0;
     if (customDelayMinutes !== null && customDelayMinutes !== undefined && Number(customDelayMinutes) > 0) {
-      delayMins = Math.max(0, Number(customDelayMinutes));
+      delayMins = Math.max(0, Math.round(Number(customDelayMinutes)));
     } else if (sc && Number(sc.delay_minutes) > 0) {
-      delayMins = Number(sc.delay_minutes);
+      delayMins = Math.max(0, Math.round(Number(sc.delay_minutes)));
     } else if (activeTrip && Number(activeTrip.delay_minutes) > 0) {
-      delayMins = Number(activeTrip.delay_minutes);
+      delayMins = Math.max(0, Math.round(Number(activeTrip.delay_minutes)));
     } else if (minsPastSchedArr > 0) {
-      delayMins = minsPastSchedArr;
+      delayMins = Math.max(0, Math.round(minsPastSchedArr));
     }
 
-    const basePoints = delayMins === 0 ? 10 : Math.max(2, 10 - delayMins);
     const liveClockStr = new Date().toLocaleTimeString([], {
       hour: '2-digit',
       minute: '2-digit'
     });
 
-    let pointsEarned = 0;
-    let notification = null;
     const alreadyDelayNotified = Boolean(
       sc?.admin_delay_notified_for_trip || shuttle?.admin_delay_notified_for_trip
     );
@@ -4756,105 +4957,20 @@ const db = {
       sc.trip_completed_in_window = true;
       sc.driver_not_started_notified = true;
       sc.delay_minutes = delayMins;
-      sc.actual_arrival_time = liveClockStr;
-      sc.arrived_at_live = liveClockStr;
+      sc.actual_arrival_time = sc.actual_arrival_time || liveClockStr;
+      sc.arrived_at_live = sc.arrived_at_live || liveClockStr;
       sc.status = delayMins > 0 ? 'delayed' : 'arrived_on_time';
-
-      if (!sc.point_awarded_for_trip) {
-        pointsEarned = basePoints;
-        const prevCumulative =
-          Number(driver?.driver_points) ||
-          Number(driver?.monthly_points) ||
-          Number(sc.driver_points) ||
-          Number(sc.monthly_points) ||
-          0;
-        const prevYearly = Number(driver?.yearly_points) || Number(sc.yearly_points) || prevCumulative;
-        const prevTrips =
-          Number(driver?.total_trips) || Number(sc.total_trips) || Number(sc.daily_trips) || 0;
-
-        const nextMonthly = prevCumulative + pointsEarned;
-        const nextYearly = prevYearly + pointsEarned;
-        const nextTrips = prevTrips + 1;
-
-        sc.driver_points = nextMonthly;
-        sc.monthly_points = nextMonthly;
-        sc.yearly_points = nextYearly;
-        sc.last_points_earned = pointsEarned;
-        sc.total_trips = nextTrips;
-        sc.daily_trips = nextTrips;
-        sc.point_awarded_for_trip = true;
-
-        if (driver) {
-          driver.total_trips = nextTrips;
-          driver.driver_points = nextMonthly;
-          driver.monthly_points = nextMonthly;
-          driver.yearly_points = nextYearly;
-          driver.daily_points = nextMonthly;
-          driver.last_points_earned = pointsEarned;
-        }
-      } else {
-        pointsEarned = Number(sc.last_points_earned) || basePoints;
-      }
-
-      matchingSchedules.forEach((otherSc) => {
-        otherSc.driver_points = sc.driver_points;
-        otherSc.monthly_points = sc.monthly_points;
-        otherSc.yearly_points = sc.yearly_points;
-        otherSc.total_trips = sc.total_trips;
-        otherSc.daily_trips = sc.total_trips;
-        otherSc.last_points_earned = sc.last_points_earned;
-        if (otherSc.id !== sc.id) {
-          otherSc.driver_arrived = true;
-          otherSc.actual_arrival_time = liveClockStr;
-          otherSc.arrived_at_live = liveClockStr;
-          otherSc.trip_completed_in_window = true;
-          otherSc.driver_not_started_notified = true;
-        }
-      });
-
-      if (isPostgresConnected && pool) {
-        try {
-          await pool.query(
-            `UPDATE schedules
-             SET driver_points = $1, monthly_points = $2, yearly_points = $3,
-                 total_trips = $4, last_points_earned = $5, delay_minutes = $6, actual_arrival_time = $7
-             WHERE shuttle_id = $8`,
-            [
-              sc.driver_points,
-              sc.monthly_points,
-              sc.yearly_points,
-              sc.total_trips,
-              sc.last_points_earned,
-              sc.delay_minutes,
-              sc.actual_arrival_time,
-              shuttle.id
-            ]
-          );
-          if (driver) {
-            await pool.query(
-              `UPDATE drivers
-               SET driver_points = $1, monthly_points = $2, yearly_points = $3,
-                   total_trips = $4, last_points_earned = $5
-               WHERE id = $6`,
-              [
-                driver.driver_points,
-                driver.monthly_points,
-                driver.yearly_points,
-                driver.total_trips,
-                driver.last_points_earned,
-                driver.id
-              ]
-            );
-          }
-        } catch (_) {}
-      }
     }
 
+    const pointsEarned = await awardScheduleAndDriverPoints(sc, driver, delayMins);
+
+    let notification = null;
     let emailDelivery = null;
     if (delayMins > 0 && !alreadyDelayNotified) {
       const delayRes = await db.recordDriverDelayAlert(shuttle.id, delayMins, {
         ...options,
-        actualArrival: liveClockStr
+        scheduleId: sc?.id,
+        actualArrival: sc?.actual_arrival_time || liveClockStr
       });
       notification = delayRes?.notification || null;
       emailDelivery = {
@@ -4873,10 +4989,10 @@ const db = {
       reachedOnTime: delayMins === 0,
       delayMinutes: delayMins,
       pointsEarned,
-      totalDriverPoints: sc ? sc.driver_points : driver?.driver_points || 0,
-      monthlyDriverPoints: sc ? sc.monthly_points : driver?.monthly_points || 0,
-      yearlyDriverPoints: sc ? sc.yearly_points : driver?.yearly_points || 0,
-      totalTripsCompleted: sc ? sc.total_trips : driver?.total_trips || 0,
+      totalDriverPoints: Number(driver?.driver_points) || Number(sc?.driver_points) || pointsEarned,
+      monthlyDriverPoints: Number(driver?.monthly_points) || Number(sc?.monthly_points) || pointsEarned,
+      yearlyDriverPoints: Number(driver?.yearly_points) || Number(sc?.yearly_points) || pointsEarned,
+      totalTripsCompleted: Number(driver?.total_trips) || Number(sc?.total_trips) || 1,
       alreadyDelayNotified,
       notification,
       emailDeliveredVia: emailDelivery?.deliveredVia || null,
@@ -4885,9 +5001,9 @@ const db = {
     };
   },
 
-  // One-Time-Per-Trip Delay Alert Handler (when driver presses Delay button or bus does not reach within scheduled arrival time):
+  // One-Time-Per-Trip Delay Alert Handler (when driver presses Delay button, arrives late, or bus does not reach within scheduled arrival time):
+  // - Calculates & awards delay-based points for that particular schedule and updates driver's cumulative overall points immediately
   // - Sends Admin Notification + Admin Delay Email strictly ONCE per trip
-  // - Never marks the bus as "Driver Arrived"
   recordDriverDelayAlert: async (shuttleId, customDelayMinutes = 5, options = {}) => {
     const shuttle =
       store.shuttles.find((s) => Number(s.id) === Number(shuttleId)) ||
@@ -4902,15 +5018,9 @@ const db = {
 
     const driver = resolveDriverForShuttle(shuttle) || store.drivers[0] || null;
     const route = resolveRouteForShuttle(shuttle);
-    const matchingSchedules = store.schedules.filter(
-      (item) => Number(item.shuttle_id) === Number(shuttle.id)
-    );
-    const sc =
-      matchingSchedules.find((item) =>
-        isTimeWithinScheduleWindow(item.departure_time, item.arrival_time)
-      ) || matchingSchedules[0];
+    const sc = resolveActiveScheduleForShuttle(shuttle.id, options.scheduleId);
 
-    const delayMins = Math.max(1, Number(customDelayMinutes) || 5);
+    const delayMins = Math.max(1, Math.round(Number(customDelayMinutes) || 5));
     const alreadyDelayNotified = Boolean(
       sc?.admin_delay_notified_for_trip || shuttle?.admin_delay_notified_for_trip
     );
@@ -4922,6 +5032,11 @@ const db = {
       shuttle.status = 'delayed';
     }
 
+    // Calculate & award delay-adjusted points for this particular trip and update driver's cumulative points immediately
+    const pointsEarned = await awardScheduleAndDriverPoints(sc, driver, delayMins);
+    const totalDriverPoints = Number(driver?.driver_points) || Number(sc?.driver_points) || pointsEarned;
+    const totalTripsCompleted = Number(driver?.total_trips) || Number(sc?.total_trips) || 1;
+
     if (alreadyDelayNotified) {
       return {
         shuttleId: shuttle.id,
@@ -4930,6 +5045,9 @@ const db = {
         destination: shuttle.destination || route?.end_point || 'Destination',
         driverArrived: Boolean(sc?.driver_arrived),
         delayMinutes: delayMins,
+        pointsEarned,
+        totalDriverPoints,
+        totalTripsCompleted,
         alreadyDelayNotified: true,
         notification: null,
         emailDeliveredVia: null,
@@ -4959,10 +5077,10 @@ const db = {
         : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     const notification = await db.createNotification({
-      title: `⏰ Driver Delayed: Bus ${busCode} (${driverName})`,
+      title: `⏰ Driver Delayed: Bus ${busCode} (${driverName}) • +${pointsEarned} Pts`,
       message: options.customReason
-        ? `${options.customReason} — Bus ${busCode} (Driver: ${driverName}) is delayed by +${delayMins} min(s) heading to "${destName}". GPS ETA: ${telemetry.etaMinutes} min (${liveEtaClock}).`
-        : `Driver ${driverName} on Bus ${busCode} did not reach destination "${destName}" within scheduled arrival time (${schedArr}) — delayed by +${delayMins} min(s). Live GPS ETA: ${telemetry.etaMinutes} min (${liveEtaClock}).`,
+        ? `${options.customReason} — Bus ${busCode} (Driver: ${driverName}) is delayed by +${delayMins} min(s) heading to "${destName}". Delay-adjusted Trip Points: +${pointsEarned} pts (Overall: ${totalDriverPoints} pts). GPS ETA: ${telemetry.etaMinutes} min (${liveEtaClock}).`
+        : `Driver ${driverName} on Bus ${busCode} did not reach destination "${destName}" within scheduled arrival time (${schedArr}) — delayed by +${delayMins} min(s). Delay-adjusted Trip Points: +${pointsEarned} pts (Overall: ${totalDriverPoints} pts). Live GPS ETA: ${telemetry.etaMinutes} min (${liveEtaClock}).`,
       type: 'delay',
       shuttle_id: shuttle.id,
       organization_name: shuttle.organization_name
@@ -4998,8 +5116,8 @@ const db = {
         scheduledArrival: schedArr,
         actualArrival: options.actualArrival || `In Transit (GPS ETA: ${liveEtaClock})`,
         delayMinutes: delayMins,
-        pointsEarned: 0,
-        totalDriverPoints: Number(sc?.driver_points) || Number(driver?.driver_points) || 0,
+        pointsEarned,
+        totalDriverPoints,
         reason: notification.message,
         organizationName: orgName
       });
@@ -5017,6 +5135,9 @@ const db = {
       destination: destName,
       driverArrived: Boolean(sc?.driver_arrived),
       delayMinutes: delayMins,
+      pointsEarned,
+      totalDriverPoints,
+      totalTripsCompleted,
       alreadyDelayNotified: false,
       notification,
       emailDeliveredVia: emailDelivery?.deliveredVia || null,

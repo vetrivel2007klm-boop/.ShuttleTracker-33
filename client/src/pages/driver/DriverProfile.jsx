@@ -41,10 +41,31 @@ export const DriverProfile = () => {
     fetchProfile();
   }, []);
 
-  // Real-time sync when Admin uploads/updates license photo or Passenger submits feedback
+  // Real-time sync when Admin uploads/updates license photo, points update, or Passenger submits feedback
   useEffect(() => {
     if (!socket) return;
-    const handleSync = () => fetchProfile();
+    const handleSync = (payload) => {
+      if (payload && (payload.totalDriverPoints !== undefined || payload.totalTripsCompleted !== undefined)) {
+        setDriver((prev) =>
+          prev
+            ? {
+                ...prev,
+                driver_points: payload.totalDriverPoints ?? prev.driver_points,
+                driverPoints: payload.totalDriverPoints ?? prev.driverPoints,
+                monthly_points: payload.totalDriverPoints ?? prev.monthly_points,
+                yearly_points: payload.totalDriverPoints ?? prev.yearly_points,
+                total_trips: payload.totalTripsCompleted ?? prev.total_trips,
+                totalTripsCompleted: payload.totalTripsCompleted ?? prev.totalTripsCompleted,
+                last_points_earned: payload.pointsEarned ?? prev.last_points_earned,
+                lastPointsEarned: payload.pointsEarned ?? prev.lastPointsEarned,
+                delay_minutes: payload.delayMinutes ?? prev.delay_minutes,
+                delayMinutes: payload.delayMinutes ?? prev.delayMinutes
+              }
+            : prev
+        );
+      }
+      fetchProfile();
+    };
     const handleFeedbackUpdated = (payload) => {
       if (payload && payload.driverId) {
         setDriver((prev) =>
@@ -117,10 +138,19 @@ export const DriverProfile = () => {
 
   const shuttle = driver?.assignedShuttle;
   const driverCode = driver?.driver_code || `DRV-${100 + Number(driver?.id || 1)}`;
-  const monthlyPoints = driver?.monthlyPoints ?? driver?.monthly_points ?? driver?.driver_points ?? driver?.dailyPoints ?? 10;
-  const yearlyPoints = driver?.yearlyPoints ?? driver?.yearly_points ?? driver?.driver_points ?? monthlyPoints;
-  const totalTripsCompleted = driver?.totalTripsCompleted ?? driver?.total_trips ?? 1;
-  const lastPointsEarned = driver?.lastPointsEarned ?? driver?.last_points_earned ?? 10;
+  const overallPoints = Number(
+    driver?.driverPoints ??
+      driver?.driver_points ??
+      driver?.monthlyPoints ??
+      driver?.monthly_points ??
+      0
+  );
+  const totalTripsCompleted = Number(
+    driver?.totalTripsCompleted ?? driver?.total_trips ?? 0
+  );
+  const lastPointsEarned = Number(
+    driver?.lastPointsEarned ?? driver?.last_points_earned ?? 0
+  );
   const delayMins = Number(driver?.delayMinutes ?? driver?.delay_minutes ?? 0);
   const avatarUrl =
     driver?.avatar_url ||
@@ -149,12 +179,12 @@ export const DriverProfile = () => {
             Driver Profile
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            View your profile details, driving license, cumulative all-trips points (Monthly & Yearly), and passenger feedback history
+            View your profile details, driving license, cumulative overall points with number of trips, and passenger feedback history
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="px-3 py-1 rounded-full bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 text-xs font-extrabold">
-            Monthly: {monthlyPoints} pts • Yearly: {yearlyPoints} pts ({totalTripsCompleted} Trips)
+            Overall Points: {overallPoints} pts ({totalTripsCompleted} {totalTripsCompleted === 1 ? 'Trip' : 'Trips'})
           </span>
           <Badge status="active">Verified Operator</Badge>
         </div>
@@ -235,13 +265,17 @@ export const DriverProfile = () => {
 
           <div className="p-4 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/70 flex flex-col justify-between space-y-1">
             <span className="text-amber-700 dark:text-amber-400 block font-bold uppercase tracking-wider text-[10px]">
-              All-Trips Points (Monthly / Yearly)
+              Overall Points & Number of Trips
             </span>
             <span className="font-black text-amber-700 dark:text-amber-300 text-sm">
-              Monthly: {monthlyPoints} pts • Yearly: {yearlyPoints} pts
+              Overall Points: {overallPoints} pts ({totalTripsCompleted} {totalTripsCompleted === 1 ? 'Trip' : 'Trips'})
             </span>
             <span className="text-[11px] font-semibold text-amber-700/80 dark:text-amber-400/80">
-              {totalTripsCompleted} Trips • Last Trip: {delayMins > 0 ? `+${lastPointsEarned} pts (${delayMins}m delay)` : '+10 pts On-Time'}
+              {lastPointsEarned > 0
+                ? delayMins > 0
+                  ? `Last Trip: +${lastPointsEarned} pts (+${delayMins}m delay)`
+                  : `Last Trip: +${lastPointsEarned} pts (On-Time)`
+                : '10 pts On-Time • Delay-Based Points on Late Arrival'}
             </span>
           </div>
 

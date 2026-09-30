@@ -620,9 +620,9 @@ router.post('/relay-email', async (req, res) => {
 router.get('/pending-relays', (req, res) => {
   try {
     const pending = getPendingEmailRelays();
-    return res.status(200).json({ success: true, count: pending.length, data: pending });
+    return res.status(200).json({ success: true, count: pending.length, data: pending, relays: pending });
   } catch (err) {
-    return res.status(500).json({ success: false, data: [] });
+    return res.status(500).json({ success: false, data: [], relays: [] });
   }
 });
 

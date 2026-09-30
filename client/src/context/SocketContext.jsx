@@ -45,6 +45,14 @@ export const SocketProvider = ({ children }) => {
     if (relayedEmailIdsRef.current.has(relayKey)) {
       return;
     }
+    try {
+      const storageKey = `shuttle_relayed_${relayKey}`;
+      if (window.localStorage.getItem(storageKey)) {
+        relayedEmailIdsRef.current.add(relayKey);
+        return;
+      }
+      window.localStorage.setItem(storageKey, String(Date.now()));
+    } catch (_) {}
     relayedEmailIdsRef.current.add(relayKey);
     fetch('http://localhost:5000/api/auth/relay-email', {
       method: 'POST',

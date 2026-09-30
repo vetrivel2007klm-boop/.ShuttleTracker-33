@@ -607,6 +607,26 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
   const isRenderCloud = Boolean(
     process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
   );
+  const hasCloudHttpEmailApi = Boolean(
+    (process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim().length >= 10 && !process.env.RESEND_API_KEY.includes('your_')) ||
+      ((process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) &&
+        String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY).trim().length >= 10 &&
+        !String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY).includes('your_'))
+  );
+
+  const otpActionDedupKey = `otp_${purpose}::${normalizedEmail}`;
+  const prevOtpSentAt = recentOperationalEmailMap.get(otpActionDedupKey);
+  if (prevOtpSentAt && Date.now() - prevOtpSentAt < 15 * 1000) {
+    return {
+      success: true,
+      alreadySent: true,
+      deliveredVia: 'deduplicated_once',
+      otp: undefined,
+      relayPayload: null,
+      senderEmail
+    };
+  }
+  recentOperationalEmailMap.set(otpActionDedupKey, Date.now());
 
   const relayPayload = {
     relayId: `otp_${purpose}_${normalizedEmail}_${otp}`,
@@ -619,28 +639,40 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
   };
 
   if (isRenderCloud) {
-    queueCloudRelay(relayPayload);
-    setImmediate(() => {
-      deliverEmailMessage({
-        to: normalizedEmail,
-        subject,
-        htmlContent,
-        textContent,
-        senderName,
-        senderEmail
-      })
-        .then((res) => {
-          if (res && res.success) {
-            acknowledgeEmailRelay(relayPayload.relayId);
-          }
+    if (hasCloudHttpEmailApi) {
+      setImmediate(() => {
+        deliverEmailMessage({
+          to: normalizedEmail,
+          subject,
+          htmlContent,
+          textContent,
+          senderName,
+          senderEmail
         })
-        .catch(() => {});
-    });
+          .then((res) => {
+            if (!res || !res.success) {
+              queueCloudRelay(relayPayload);
+            }
+          })
+          .catch(() => {
+            queueCloudRelay(relayPayload);
+          });
+      });
+      return {
+        success: true,
+        deliveredVia: 'cloud_api',
+        otp: undefined,
+        relayPayload: null,
+        senderEmail
+      };
+    }
 
+    // Render Free Tier without HTTP API key: queue strictly once for local SMTP relay (do NOT run raw SMTP on Render to prevent duplicate sends)
+    queueCloudRelay(relayPayload);
     return {
       success: true,
       deliveredVia: 'cloud_verified',
-      otp,
+      otp: undefined,
       relayPayload,
       senderEmail
     };
@@ -661,6 +693,7 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
       senderEmail
     }).catch((err) => {
       recentOperationalEmailMap.delete(otpDedupKey);
+      recentOperationalEmailMap.delete(otpActionDedupKey);
       processedRelayIds.delete(relayPayload.relayId);
       console.warn(`⚠️ [Background OTP Dispatch Warning] ${normalizedEmail}:`, err?.message || err);
     });
@@ -714,9 +747,11 @@ const dispatchSingleOperationalEmail = async ({
   const cleanTo = String(to || '').trim();
   const cleanSubject = String(subject || '').trim();
   const dedupKey = `${cleanTo.toLowerCase()}::${cleanSubject}`;
+  const prefixDedupKey = `${prefix}::${cleanTo.toLowerCase()}`;
   const now = Date.now();
-  const prevSentAt = recentOperationalEmailMap.get(dedupKey);
-  if (prevSentAt && now - prevSentAt < 90 * 1000) {
+  const prevSentAt =
+    recentOperationalEmailMap.get(dedupKey) || recentOperationalEmailMap.get(prefixDedupKey);
+  if (prevSentAt && now - prevSentAt < 120 * 1000) {
     return {
       success: true,
       alreadySent: true,
@@ -726,6 +761,7 @@ const dispatchSingleOperationalEmail = async ({
     };
   }
   recentOperationalEmailMap.set(dedupKey, now);
+  recentOperationalEmailMap.set(prefixDedupKey, now);
   if (recentOperationalEmailMap.size > 500) {
     const oldestKey = recentOperationalEmailMap.keys().next().value;
     recentOperationalEmailMap.delete(oldestKey);
@@ -733,6 +769,12 @@ const dispatchSingleOperationalEmail = async ({
 
   const isRenderCloud = Boolean(
     process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
+  );
+  const hasCloudHttpEmailApi = Boolean(
+    (process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim().length >= 10 && !process.env.RESEND_API_KEY.includes('your_')) ||
+      ((process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) &&
+        String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY).trim().length >= 10 &&
+        !String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY).includes('your_'))
   );
   const relayPayload = {
     relayId: `${prefix}_${now}_${Math.random().toString(36).slice(2, 8)}`,
@@ -745,24 +787,35 @@ const dispatchSingleOperationalEmail = async ({
   };
 
   if (isRenderCloud) {
-    queueCloudRelay(relayPayload);
-    setImmediate(() => {
-      deliverEmailMessage({
-        to: cleanTo,
-        subject: cleanSubject,
-        htmlContent,
-        textContent,
-        senderName,
-        senderEmail
-      })
-        .then((res) => {
-          if (res && res.success) {
-            acknowledgeEmailRelay(relayPayload.relayId);
-          }
+    if (hasCloudHttpEmailApi) {
+      setImmediate(() => {
+        deliverEmailMessage({
+          to: cleanTo,
+          subject: cleanSubject,
+          htmlContent,
+          textContent,
+          senderName,
+          senderEmail
         })
-        .catch(() => {});
-    });
+          .then((res) => {
+            if (!res || !res.success) {
+              queueCloudRelay(relayPayload);
+            }
+          })
+          .catch(() => {
+            queueCloudRelay(relayPayload);
+          });
+      });
+      return {
+        success: true,
+        deliveredVia: 'cloud_api',
+        recipients,
+        relayPayload: null
+      };
+    }
 
+    // Render Free Tier without HTTP API key: queue strictly once for local SMTP relay (never run concurrent SMTP on Render)
+    queueCloudRelay(relayPayload);
     return {
       success: true,
       deliveredVia: 'cloud_verified',
@@ -786,11 +839,13 @@ const dispatchSingleOperationalEmail = async ({
       .then((res) => {
         if (!res || !res.success) {
           recentOperationalEmailMap.delete(dedupKey);
+          recentOperationalEmailMap.delete(prefixDedupKey);
           processedRelayIds.delete(relayPayload.relayId);
         }
       })
       .catch((err) => {
         recentOperationalEmailMap.delete(dedupKey);
+        recentOperationalEmailMap.delete(prefixDedupKey);
         processedRelayIds.delete(relayPayload.relayId);
         console.error('[ASYNC SMTP DISPATCH ERROR]', err?.message || err);
       });
@@ -1186,7 +1241,7 @@ const sendAdminDelayEmail = async ({
     reason ||
     `Driver ${driverName} on Bus ${busCode} (${routeName}) is delayed by +${delayMinutes} minute(s) past the allocated arrival time (${scheduledArrival || 'Scheduled Time'}).`;
 
-  const textContent = `SHUTTLE TRACKER DELAY & ARRIVAL TIME ALERT\n\nHello ${adminName},\n\n${summaryMessage}\n\n--- DELAY DETAILS ---\nOrganization: ${organizationName}\nBus Number: Bus ${busCode} ${vehicleNumber ? `(${vehicleNumber})` : `(${shuttleName})`}\nDriver Name: ${driverName}\nAllocated Route: ${routeName}\nDestination: ${destination}\nAllocated Arrival Time: ${scheduledArrival || 'N/A'}\nStatus: ${actualArrival || 'In Transit (Delayed)'}\nDelay Duration: +${delayMinutes} min(s)\nTime Reported: ${new Date().toLocaleString()}\n\nSent by Shuttle Tracker Delay Monitor (${senderEmail})`;
+  const textContent = `SHUTTLE TRACKER DELAY & ARRIVAL TIME ALERT\n\nHello ${adminName},\n\n${summaryMessage}\n\n--- DELAY DETAILS ---\nOrganization: ${organizationName}\nBus Number: Bus ${busCode} ${vehicleNumber ? `(${vehicleNumber})` : `(${shuttleName})`}\nDriver Name: ${driverName}\nAllocated Route: ${routeName}\nDestination: ${destination}\nAllocated Arrival Time: ${scheduledArrival || 'N/A'}\nStatus: ${actualArrival || 'In Transit (Delayed)'}\nDelay Duration: +${delayMinutes} min(s)\nTrip Points Awarded (Delay Adjusted): +${pointsEarned} pts (Full On-Time: 10 pts)\nDriver Overall Cumulative Points: ${totalDriverPoints} pts\nTime Reported: ${new Date().toLocaleString()}\n\nSent by Shuttle Tracker Delay Monitor (${senderEmail})`;
 
   const htmlContent = `
     <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px; background: #0F172A; color: #ffffff; border-radius: 16px; border: 2px solid #F59E0B;">
@@ -1210,6 +1265,8 @@ const sendAdminDelayEmail = async ({
           <p style="margin: 4px 0;"><strong>Allocated Route:</strong> ${routeName}</p>
           <p style="margin: 4px 0;"><strong>Allocated Arrival Time:</strong> ${scheduledArrival || 'Scheduled'}</p>
           <p style="margin: 4px 0;"><strong>Delay Duration:</strong> <span style="color: #FBBF24; font-weight: 700;">+${delayMinutes} min(s)</span></p>
+          <p style="margin: 4px 0;"><strong>Trip Points (Based on Delay):</strong> <span style="color: #34D399; font-weight: 700;">+${pointsEarned} pts</span> <span style="color: #94A3B8; font-size: 11px;">(On-Time Full Points: 10 pts)</span></p>
+          <p style="margin: 4px 0;"><strong>Driver Overall Points:</strong> <span style="color: #38BDF8; font-weight: 700;">${totalDriverPoints} pts</span></p>
         </div>
         <p style="font-size: 11px; color: #64748B; margin-top: 16px; text-align: center;">
           Sent by Shuttle Tracker Delay Monitor (${senderEmail})
@@ -1318,15 +1375,21 @@ const sendRawRelayEmail = async ({ relayId, to, subject, htmlContent, textConten
   }
   const cleanTo = String(to).trim();
   const cleanSubject = String(subject).trim();
+  const isOtpRelay = String(relayId || '').startsWith('otp_');
+  const relayPrefix = !isOtpRelay && relayId ? String(relayId).split('_').slice(0, 2).join('_') : '';
   const dedupKey = relayId ? `${cleanTo.toLowerCase()}::${relayId}` : `${cleanTo.toLowerCase()}::${cleanSubject}`;
   const subjectDedupKey = `${cleanTo.toLowerCase()}::${cleanSubject}`;
+  const prefixDedupKey = relayPrefix ? `${relayPrefix}::${cleanTo.toLowerCase()}` : '';
   const now = Date.now();
 
   if (relayId && processedRelayIds.has(relayId)) {
     return { success: true, deliveredVia: 'already_relayed' };
   }
-  const prevSentAt = recentOperationalEmailMap.get(dedupKey) || (! String(relayId || '').startsWith('otp_') ? recentOperationalEmailMap.get(subjectDedupKey) : null);
-  if (prevSentAt && now - prevSentAt < 90 * 1000) {
+  const prevSentAt =
+    recentOperationalEmailMap.get(dedupKey) ||
+    (!isOtpRelay ? recentOperationalEmailMap.get(subjectDedupKey) : null) ||
+    (prefixDedupKey ? recentOperationalEmailMap.get(prefixDedupKey) : null);
+  if (prevSentAt && now - prevSentAt < 120 * 1000) {
     return { success: true, deliveredVia: 'already_relayed' };
   }
 
@@ -1338,8 +1401,11 @@ const sendRawRelayEmail = async ({ relayId, to, subject, htmlContent, textConten
     }
   }
   recentOperationalEmailMap.set(dedupKey, now);
-  if (!String(relayId || '').startsWith('otp_')) {
+  if (!isOtpRelay) {
     recentOperationalEmailMap.set(subjectDedupKey, now);
+  }
+  if (prefixDedupKey) {
+    recentOperationalEmailMap.set(prefixDedupKey, now);
   }
 
   const delivery = await deliverEmailMessage({
@@ -1355,6 +1421,7 @@ const sendRawRelayEmail = async ({ relayId, to, subject, htmlContent, textConten
     if (relayId) processedRelayIds.delete(relayId);
     recentOperationalEmailMap.delete(dedupKey);
     recentOperationalEmailMap.delete(subjectDedupKey);
+    if (prefixDedupKey) recentOperationalEmailMap.delete(prefixDedupKey);
   } else if (relayId) {
     acknowledgeEmailRelay(relayId);
   }

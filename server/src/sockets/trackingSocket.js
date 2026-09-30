@@ -523,6 +523,7 @@ function setupTrackingSocket(io) {
         });
         const schedules = await db.getAllSchedules();
         io.emit('schedule:updated', { schedules });
+        io.emit('driver:updated', { schedules });
         const shuttles = await db.getAllShuttles();
         shuttles.forEach((sh) => io.emit('shuttle:updated', sh));
       }
@@ -881,6 +882,12 @@ function setupTrackingSocket(io) {
             const arrivalResult = await db.recordDriverDestinationArrival(sId);
             if (arrivalResult) {
               io.emit('schedule:updated', arrivalResult);
+              io.emit('driver:updated', {
+                shuttleId: sId,
+                pointsEarned: arrivalResult.pointsEarned,
+                totalDriverPoints: arrivalResult.totalDriverPoints,
+                totalTripsCompleted: arrivalResult.totalTripsCompleted
+              });
               if (arrivalResult.notification) {
                 io.emit('notification:new', arrivalResult.notification);
               }

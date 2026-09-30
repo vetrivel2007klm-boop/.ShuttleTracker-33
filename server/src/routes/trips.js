@@ -151,6 +151,12 @@ router.post('/destination-arrival', optionalOrAuth, async (req, res) => {
     const io = req.app.get('io');
     if (io && arrivalResult) {
       io.emit('schedule:updated', arrivalResult);
+      io.emit('driver:updated', {
+        shuttleId: sId,
+        pointsEarned: arrivalResult.pointsEarned,
+        totalDriverPoints: arrivalResult.totalDriverPoints,
+        totalTripsCompleted: arrivalResult.totalTripsCompleted
+      });
       if (arrivalResult.notification) {
         io.emit('notification:new', arrivalResult.notification);
       }
@@ -231,6 +237,12 @@ async function handleEndTripAnySituation(req, res) {
         driverArrived: Boolean(arrivalResult?.driverArrived)
       });
       io.emit('schedule:updated', { ...arrivalResult, schedules });
+      io.emit('driver:updated', {
+        shuttleId: sId,
+        pointsEarned: arrivalResult?.pointsEarned || 0,
+        totalDriverPoints: arrivalResult?.totalDriverPoints,
+        totalTripsCompleted: arrivalResult?.totalTripsCompleted
+      });
       if (arrivalResult?.notification) {
         io.emit('notification:new', arrivalResult.notification);
       }
@@ -310,6 +322,12 @@ router.post('/:id/delay', authenticate, authorize('driver', 'admin'), async (req
       }
       if (delayResult) {
         io.emit('schedule:updated', delayResult);
+        io.emit('driver:updated', {
+          shuttleId,
+          pointsEarned: delayResult.pointsEarned,
+          totalDriverPoints: delayResult.totalDriverPoints,
+          totalTripsCompleted: delayResult.totalTripsCompleted
+        });
         if (delayResult.notification) {
           io.emit('notification:new', delayResult.notification);
         }

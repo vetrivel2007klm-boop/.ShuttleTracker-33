@@ -641,11 +641,11 @@ export const DriverDashboard = () => {
     const arrivedOnGps = Boolean(endData?.driverArrived);
     if (arrivedOnGps) {
       const ptsEarned = Number(endData?.pointsEarned) || 0;
-      const monthlyPts = Number(endData?.monthlyDriverPoints ?? endData?.totalDriverPoints ?? 0);
-      const yearlyPts = Number(endData?.yearlyDriverPoints ?? monthlyPts);
+      const overallPts = Number(endData?.totalDriverPoints ?? endData?.monthlyDriverPoints ?? 0);
+      const tripsDone = Number(endData?.totalTripsCompleted ?? 1);
       addToast({
         title: `Destination Reached on GPS (+${ptsEarned} Pts)`,
-        message: `Bus ${assignedShuttle.code} reached destination on GPS! +${ptsEarned} points added (Monthly: ${monthlyPts} pts • Yearly: ${yearlyPts} pts).`,
+        message: `Bus ${assignedShuttle.code} reached destination! +${ptsEarned} points added (Overall Points: ${overallPts} pts • ${tripsDone} ${tripsDone === 1 ? 'Trip' : 'Trips'}).`,
         type: 'success'
       });
     } else {
@@ -657,7 +657,7 @@ export const DriverDashboard = () => {
     }
   };
 
-  // Report Delay — Instant UI response (Notifies Admin in Admin Site + Admin Email cleancodeuniverse@gmail.com strictly 1x per trip)
+  // Report Delay — Instant UI response (Notifies Admin in Admin Site + Admin Email cleancodeuniverse@gmail.com strictly 1x per trip & awards delay-adjusted points)
   const handleReportDelay = async (e) => {
     e.preventDefault();
     if (delayNotifiedForTrip) {
@@ -666,9 +666,10 @@ export const DriverDashboard = () => {
     }
     setDelayNotifiedForTrip(true);
     setIsDelayModalOpen(false);
+    const estDelayPts = Math.max(1, 10 - Math.round(Number(delayMinutes) || 5));
     addToast({
-      title: 'Delay Alert Sent Once to Admin (Site & Email)',
-      message: `Admin (cleancodeuniverse@gmail.com) and passengers notified once of +${delayMinutes} min delay on Bus ${assignedShuttle.code}.`,
+      title: `Delay Alert Sent Once to Admin (+${estDelayPts} Pts)`,
+      message: `Admin (cleancodeuniverse@gmail.com) notified once of +${delayMinutes} min delay on Bus ${assignedShuttle.code}. Delay-adjusted trip points: +${estDelayPts} pts.`,
       type: 'warning'
     });
 
@@ -680,6 +681,24 @@ export const DriverDashboard = () => {
       });
       if (res.data?.emailRelayPayload) {
         relayCloudEmail?.(res.data.emailRelayPayload);
+      }
+      const delayRes = res.data?.data?.arrivalResult;
+      if (delayRes && delayRes.totalDriverPoints !== undefined) {
+        setDriverData((prev) =>
+          prev
+            ? {
+                ...prev,
+                driver_points: delayRes.totalDriverPoints,
+                driverPoints: delayRes.totalDriverPoints,
+                monthly_points: delayRes.totalDriverPoints,
+                yearly_points: delayRes.totalDriverPoints,
+                total_trips: delayRes.totalTripsCompleted,
+                totalTripsCompleted: delayRes.totalTripsCompleted,
+                last_points_earned: delayRes.pointsEarned,
+                lastPointsEarned: delayRes.pointsEarned
+              }
+            : prev
+        );
       }
       fetchDriver();
     } catch (err) {
@@ -773,11 +792,8 @@ export const DriverDashboard = () => {
       : null;
 
   const assignedSchedules = Array.isArray(driverData?.schedules) ? driverData.schedules : [];
-  const monthlyPoints = Number(
-    driverData?.monthlyPoints ?? driverData?.monthly_points ?? driverData?.driver_points ?? 0
-  );
-  const yearlyPoints = Number(
-    driverData?.yearlyPoints ?? driverData?.yearly_points ?? driverData?.driver_points ?? monthlyPoints
+  const overallPoints = Number(
+    driverData?.driverPoints ?? driverData?.driver_points ?? driverData?.monthlyPoints ?? driverData?.monthly_points ?? 0
   );
   const totalTripsCompleted = Number(driverData?.totalTripsCompleted ?? driverData?.total_trips ?? 0);
   const lastPointsEarned = Number(driverData?.lastPointsEarned ?? driverData?.last_points_earned ?? 0);
@@ -818,14 +834,15 @@ export const DriverDashboard = () => {
           </div>
         </div>
 
-        {/* GPS Status, All-Trips Points (Monthly & Yearly) & Admin-Verified License Badge */}
+        {/* GPS Status, Overall Points with Trips & Admin-Verified License Badge */}
         <div className="flex flex-col items-center sm:items-end gap-2">
           <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2">
             <div className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-xs font-extrabold text-amber-700 dark:text-amber-300">
               <Award className="w-4 h-4 text-amber-500" />
-              <span>Monthly: {monthlyPoints} pts • Yearly: {yearlyPoints} pts</span>
+              <span>Overall Points: {overallPoints} pts</span>
               <span className="text-[10px] font-bold opacity-80">
-                ({totalTripsCompleted} Trips{lastPointsEarned > 0 ? ` • Last: +${lastPointsEarned} pts` : ''})
+                ({totalTripsCompleted} {totalTripsCompleted === 1 ? 'Trip' : 'Trips'}
+                {lastPointsEarned > 0 ? ` • Last: +${lastPointsEarned} pts` : ''})
               </span>
             </div>
 

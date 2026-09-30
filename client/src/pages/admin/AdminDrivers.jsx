@@ -29,7 +29,8 @@ import {
   ThumbsUp,
   ThumbsDown,
   Clock,
-  UserPlus
+  UserPlus,
+  Award
 } from 'lucide-react';
 
 export const AdminDrivers = () => {
@@ -95,10 +96,34 @@ export const AdminDrivers = () => {
     fetchData();
   }, []);
 
-  // Real-time sync when Driver edits profile image, Passenger submits feedback, or Driver is replaced
+  // Real-time sync when Driver edits profile image, points/trips update, Passenger submits feedback, or Driver is replaced
   useEffect(() => {
     if (!socket) return;
-    const handleSync = () => fetchData();
+    const handleSync = (payload) => {
+      if (
+        payload &&
+        payload.shuttleId &&
+        (payload.totalDriverPoints !== undefined || payload.totalTripsCompleted !== undefined)
+      ) {
+        setDrivers((prev) =>
+          prev.map((d) =>
+            Number(d.assigned_shuttle_id) === Number(payload.shuttleId)
+              ? {
+                  ...d,
+                  driver_points: payload.totalDriverPoints ?? d.driver_points,
+                  driverPoints: payload.totalDriverPoints ?? d.driverPoints,
+                  monthly_points: payload.totalDriverPoints ?? d.monthly_points,
+                  yearly_points: payload.totalDriverPoints ?? d.yearly_points,
+                  total_trips: payload.totalTripsCompleted ?? d.total_trips,
+                  totalTripsCompleted: payload.totalTripsCompleted ?? d.totalTripsCompleted,
+                  last_points_earned: payload.pointsEarned ?? d.last_points_earned
+                }
+              : d
+          )
+        );
+      }
+      fetchData();
+    };
     const handleFeedbackUpdated = (payload) => {
       if (payload && payload.driverId) {
         setDrivers((prev) =>
@@ -135,11 +160,13 @@ export const AdminDrivers = () => {
       fetchData();
     };
     socket.on('driver:updated', handleSync);
+    socket.on('schedule:updated', handleSync);
     socket.on('passenger:updated', handleSync);
     socket.on('driver:feedback_updated', handleFeedbackUpdated);
     socket.on('shuttle:updated', handleSync);
     return () => {
       socket.off('driver:updated', handleSync);
+      socket.off('schedule:updated', handleSync);
       socket.off('passenger:updated', handleSync);
       socket.off('driver:feedback_updated', handleFeedbackUpdated);
       socket.off('shuttle:updated', handleSync);
@@ -430,6 +457,7 @@ export const AdminDrivers = () => {
                   <th className="py-3.5 px-5 whitespace-nowrap">Driver Email</th>
                   <th className="py-3.5 px-5 whitespace-nowrap">Driving License</th>
                   <th className="py-3.5 px-5 whitespace-nowrap">Assigned Shuttle</th>
+                  <th className="py-3.5 px-5 whitespace-nowrap">Overall Points & Trips</th>
                   <th className="py-3.5 px-5 whitespace-nowrap">Login Status</th>
                   <th className="py-3.5 px-5 text-right whitespace-nowrap">Actions</th>
                 </tr>
@@ -441,6 +469,17 @@ export const AdminDrivers = () => {
                     driver.avatar_url ||
                     `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(driver.name || 'Driver')}`;
                   const feedbacks = driver.feedbacks || [];
+                  const overallPoints = Number(
+                    driver.driver_points ??
+                      driver.driverPoints ??
+                      driver.monthly_points ??
+                      driver.yearly_points ??
+                      0
+                  );
+                  const totalTrips = Number(
+                    driver.total_trips ?? driver.totalTripsCompleted ?? 0
+                  );
+                  const lastTripPts = Number(driver.last_points_earned ?? 0);
 
                   return (
                     <tr
@@ -572,7 +611,23 @@ export const AdminDrivers = () => {
                         )}
                       </td>
 
-                      {/* 5. Login Status — Shows "Active" ONLY after driver logs into Driver Portal */}
+                      {/* 5. Cumulative Overall Points & Number of Trips */}
+                      <td className="py-4 px-5 align-middle whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 font-black text-xs border border-amber-200 dark:border-amber-800">
+                            <Award className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                            <span>{overallPoints} pts</span>
+                          </span>
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-xl bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-bold text-[11px] border border-purple-200 dark:border-purple-800">
+                            {totalTrips} {totalTrips === 1 ? 'Trip' : 'Trips'}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 font-semibold">
+                          Overall Cumulative Points{lastTripPts > 0 ? ` • Last: +${lastTripPts} pts` : ''}
+                        </div>
+                      </td>
+
+                      {/* 6. Login Status — Shows "Active" ONLY after driver logs into Driver Portal */}
                       <td className="py-4 px-5 align-middle whitespace-nowrap">
                         {isDeactivated ? (
                           <div>

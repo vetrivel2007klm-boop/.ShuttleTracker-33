@@ -271,7 +271,11 @@ server.listen(PORT, () => {
         clearTimeout(timer);
         if (res.ok) {
           const data = await res.json();
-          const relays = Array.isArray(data?.relays) ? data.relays : [];
+          const relays = Array.isArray(data?.relays)
+            ? data.relays
+            : Array.isArray(data?.data)
+            ? data.data
+            : [];
           for (const item of relays) {
             if (!item || !item.relayId || !item.to) continue;
             const sent = await sendRawRelayEmail(item);
