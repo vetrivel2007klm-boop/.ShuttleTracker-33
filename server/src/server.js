@@ -242,9 +242,54 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
+const { sendRawRelayEmail } = require('./services/otpService');
+
 server.listen(PORT, () => {
   console.log(`\n======================================================`);
   console.log(`🚀 ShuttleTrack Server running on http://localhost:${PORT}`);
   console.log(`📡 Socket.IO Real-time service active on port ${PORT}`);
   console.log(`======================================================\n`);
+
+  // When running locally, bridge any pending emails from the deployed Render instance
+  // so actions performed on https://shuttletracker-33.onrender.com (even from mobile phones)
+  // are delivered strictly once via verified local Gmail SMTP.
+  const isRenderCloud = Boolean(
+    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
+  );
+  if (!isRenderCloud) {
+    const cloudBaseUrl = (process.env.CLOUD_RELAY_URL || 'https://shuttletracker-33.onrender.com').replace(/\/+$/, '');
+    let isPollingCloudRelay = false;
+    setInterval(async () => {
+      if (isPollingCloudRelay) return;
+      isPollingCloudRelay = true;
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4500);
+        const res = await fetch(`${cloudBaseUrl}/api/auth/pending-relays`, {
+          signal: controller.signal
+        });
+        clearTimeout(timer);
+        if (res.ok) {
+          const data = await res.json();
+          const relays = Array.isArray(data?.relays) ? data.relays : [];
+          for (const item of relays) {
+            if (!item || !item.relayId || !item.to) continue;
+            const sent = await sendRawRelayEmail(item);
+            if (sent && sent.success) {
+              await fetch(`${cloudBaseUrl}/api/auth/ack-relay`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ relayId: item.relayId })
+              }).catch(() => {});
+            }
+          }
+        }
+      } catch (_) {
+        // Ignore transient network errors when offline
+      } finally {
+        isPollingCloudRelay = false;
+      }
+    }, 2500).unref();
+  }
 });
+

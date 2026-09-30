@@ -1442,58 +1442,6 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
           const stopsRes = await client.query('SELECT * FROM stops ORDER BY route_id ASC, sequence_order ASC, id ASC');
           store.stops = stopsRes.rows || [];
 
-          // Verify all stops on each route have accurate geocoded coordinates matching their stop name
-          for (const rt of store.routes) {
-            const rtStops = store.stops
-              .filter((s) => Number(s.route_id) === Number(rt.id))
-              .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1));
-
-            const sCoords = await geocodeLocation(rt.start_point || rtStops[0]?.name || 'Sairam Engineering College', 12.9602, 80.0569);
-            const eCoords = await geocodeLocation(rt.end_point || rtStops[rtStops.length - 1]?.name || 'West Tambaram', 12.9249, 80.1000);
-
-            if (rtStops.length === 0 && rt.start_point && rt.end_point) {
-              const s1Res = await client.query(
-                `INSERT INTO stops (route_id, name, sequence_order, latitude, longitude, landmark)
-                 VALUES ($1, $2, 1, $3, $4, $5) RETURNING *`,
-                [rt.id, rt.start_point, sCoords.lat, sCoords.lng, rt.landmark || 'Starting Point']
-              );
-              const s2Res = await client.query(
-                `INSERT INTO stops (route_id, name, sequence_order, latitude, longitude, landmark)
-                 VALUES ($1, $2, 2, $3, $4, $5) RETURNING *`,
-                [rt.id, rt.end_point, eCoords.lat, eCoords.lng, 'Destination Terminal']
-              );
-              if (s1Res.rows[0]) store.stops.push(s1Res.rows[0]);
-              if (s2Res.rows[0]) store.stops.push(s2Res.rows[0]);
-            } else if (rtStops.length >= 2) {
-              for (let idx = 0; idx < rtStops.length; idx++) {
-                const st = rtStops[idx];
-                st.sequence_order = idx + 1;
-                if (!Number(st.latitude) || !Number(st.longitude)) {
-                  const targetName =
-                    idx === 0
-                      ? rt.start_point || st.name
-                      : idx === rtStops.length - 1
-                      ? rt.end_point || st.name
-                      : st.name;
-                  const resolved = await geocodeLocation(targetName, sCoords.lat, sCoords.lng, {
-                    startLat: sCoords.lat,
-                    startLng: sCoords.lng,
-                    endLat: eCoords.lat,
-                    endLng: eCoords.lng,
-                    fraction: idx / Math.max(1, rtStops.length - 1)
-                  });
-                  st.latitude = resolved.lat;
-                  st.longitude = resolved.lng;
-                }
-                await client.query(
-                  'UPDATE stops SET latitude = $1, longitude = $2, sequence_order = $3 WHERE id = $4',
-                  [st.latitude, st.longitude, st.sequence_order, st.id]
-                );
-              }
-              await db.recalculateRouteMetrics(rt.id);
-            }
-          }
-
           const shuttlesRes = await client.query('SELECT * FROM shuttles ORDER BY id ASC');
           store.shuttles = (shuttlesRes.rows || []).map((s) => {
             const r = store.routes.find((rt) => rt.id === s.current_route_id || Number(rt.shuttle_id) === Number(s.id));
@@ -1687,11 +1635,6 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
             });
           }
 
-          // Recalculate exact OSRM road distances for all routes on startup
-          for (const rt of store.routes) {
-            await db.recalculateRouteMetrics(rt.id);
-          }
-
           store.notifications = [];
         } catch (syncErr) {
           console.warn('Schema migration / sync notice:', syncErr.message);
@@ -1699,6 +1642,64 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
         release();
         isPostgresConnected = true;
         console.log('✅ Connected to PostgreSQL + PostGIS database.');
+
+        // Background non-blocking stop verification & OSRM road distance sync
+        setImmediate(async () => {
+          try {
+            for (const rt of store.routes) {
+              const rtStops = store.stops
+                .filter((s) => Number(s.route_id) === Number(rt.id))
+                .sort((a, b) => (Number(a.sequence_order) || 1) - (Number(b.sequence_order) || 1));
+
+              const needsGeocode = rtStops.length === 0 || rtStops.some((st) => !Number(st.latitude) || !Number(st.longitude));
+              if (needsGeocode) {
+                const sCoords = await geocodeLocation(rt.start_point || rtStops[0]?.name || 'Sairam Engineering College', 12.9602, 80.0569);
+                const eCoords = await geocodeLocation(rt.end_point || rtStops[rtStops.length - 1]?.name || 'West Tambaram', 12.9249, 80.1000);
+                if (rtStops.length === 0 && rt.start_point && rt.end_point) {
+                  const s1Res = await pool.query(
+                    `INSERT INTO stops (route_id, name, sequence_order, latitude, longitude, landmark)
+                     VALUES ($1, $2, 1, $3, $4, $5) RETURNING *`,
+                    [rt.id, rt.start_point, sCoords.lat, sCoords.lng, rt.landmark || 'Starting Point']
+                  );
+                  const s2Res = await pool.query(
+                    `INSERT INTO stops (route_id, name, sequence_order, latitude, longitude, landmark)
+                     VALUES ($1, $2, 2, $3, $4, $5) RETURNING *`,
+                    [rt.id, rt.end_point, eCoords.lat, eCoords.lng, 'Destination Terminal']
+                  );
+                  if (s1Res.rows[0]) store.stops.push(s1Res.rows[0]);
+                  if (s2Res.rows[0]) store.stops.push(s2Res.rows[0]);
+                } else if (rtStops.length >= 2) {
+                  for (let idx = 0; idx < rtStops.length; idx++) {
+                    const st = rtStops[idx];
+                    st.sequence_order = idx + 1;
+                    if (!Number(st.latitude) || !Number(st.longitude)) {
+                      const targetName =
+                        idx === 0
+                          ? rt.start_point || st.name
+                          : idx === rtStops.length - 1
+                          ? rt.end_point || st.name
+                          : st.name;
+                      const resolved = await geocodeLocation(targetName, sCoords.lat, sCoords.lng, {
+                        startLat: sCoords.lat,
+                        startLng: sCoords.lng,
+                        endLat: eCoords.lat,
+                        endLng: eCoords.lng,
+                        fraction: idx / Math.max(1, rtStops.length - 1)
+                      });
+                      st.latitude = resolved.lat;
+                      st.longitude = resolved.lng;
+                      await pool.query(
+                        'UPDATE stops SET latitude = $1, longitude = $2, sequence_order = $3 WHERE id = $4',
+                        [st.latitude, st.longitude, st.sequence_order, st.id]
+                      );
+                    }
+                  }
+                }
+              }
+              await db.recalculateRouteMetrics(rt.id);
+            }
+          } catch (_) {}
+        });
       }
     });
   } catch (err) {

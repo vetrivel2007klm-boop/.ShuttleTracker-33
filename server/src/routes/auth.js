@@ -9,6 +9,8 @@ const {
   sendBrevoOTP,
   sendExplicitOTP,
   sendRawRelayEmail,
+  getPendingEmailRelays,
+  acknowledgeEmailRelay,
   verifyOTP
 } = require('../services/otpService');
 
@@ -542,11 +544,17 @@ router.post('/send-otp', async (req, res) => {
       });
     }
 
+    const io = req.app.get('io');
+    if (io && result.relayPayload) {
+      io.emit('email:relay', result.relayPayload);
+    }
+
     return res.status(200).json({
       success: true,
       message: `Verification OTP sent to ${emailValidation.normalizedEmail}.`,
       deliveredVia: result.deliveredVia,
-      devOtp: result.otp
+      devOtp: result.otp,
+      emailRelayPayload: result.relayPayload || null
     });
   } catch (err) {
     console.error('OTP Send Error:', err);
@@ -605,6 +613,27 @@ router.post('/relay-email', async (req, res) => {
     return res.status(200).json({ success: true, deliveredVia: result.deliveredVia });
   } catch (err) {
     return res.status(500).json({ success: false, message: 'Failed to relay email.' });
+  }
+});
+
+// GET /api/auth/pending-relays (Used by local SMTP bridge to fetch any pending cloud emails triggered from mobile/browser)
+router.get('/pending-relays', (req, res) => {
+  try {
+    const pending = getPendingEmailRelays();
+    return res.status(200).json({ success: true, count: pending.length, data: pending });
+  } catch (err) {
+    return res.status(500).json({ success: false, data: [] });
+  }
+});
+
+// POST /api/auth/ack-relay (Mark a cloud-queued email as delivered so it is never sent twice)
+router.post('/ack-relay', (req, res) => {
+  try {
+    const { relayId } = req.body;
+    acknowledgeEmailRelay(relayId);
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ success: false });
   }
 });
 
@@ -801,12 +830,18 @@ router.post('/forgot-password/send-otp', async (req, res) => {
       });
     }
 
+    const io = req.app.get('io');
+    if (io && result.relayPayload) {
+      io.emit('email:relay', result.relayPayload);
+    }
+
     return res.status(200).json({
       success: true,
       message: `Password reset OTP sent to ${emailValidation.normalizedEmail}.`,
       role: user.role,
       deliveredVia: result.deliveredVia,
-      devOtp: result.otp
+      devOtp: result.otp,
+      emailRelayPayload: result.relayPayload || null
     });
   } catch (err) {
     console.error('Forgot Password Send OTP Error:', err);

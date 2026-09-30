@@ -6,6 +6,8 @@ const activeSimulations = new Map();
 const activeRealGpsDrivers = new Map();
 // Track last GPS coordinate per shuttle to compute real speed (km/h) when device speed is null
 const lastDriverGpsPoint = new Map();
+// Rolling 6-second GPS history per shuttle for accurate real speed calculation across 1-second ticks
+const driverGpsHistory = new Map();
 // Cache OSRM road-following geometry by stop coordinates signature
 const roadGeometryCache = new Map();
 // Track last off-route alert per shuttle to prevent spamming
@@ -17,7 +19,7 @@ const stationaryStartTime = new Map();
 // Track stops already notified for passenger traffic delay during current trip
 const notifiedTrafficStopsPerShuttle = new Map();
 
-// Helper to calculate distance in kilometers between two geo coordinates (Haversine formula)
+// Helper to calculate exact distance in kilometers between two geo coordinates (Haversine formula, 0.1m precision)
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const R = 6371; // Radius of earth in km
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -29,7 +31,7 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
       Math.sin(dLon / 2) *
       Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Number((R * c).toFixed(2));
+  return Number((R * c).toFixed(6));
 }
 
 // Calculate bearing/heading in degrees (0-360) from point A to point B
@@ -485,17 +487,27 @@ function setupTrackingSocket(io) {
     { name: 'West Tambaram', latitude: 12.9249, longitude: 80.1000 }
   ];
 
-  // Helper to compute shortest distance (km) from point P to segment A-B
-  const pointToSegmentDistanceKm = (pLat, pLng, aLat, aLng, bLat, bLng) => {
+  // Helper to project point P onto segment A-B and return { lat, lng, distKm, t }
+  const projectOntoSegment = (pLat, pLng, aLat, aLng, bLat, bLng) => {
     const dx = bLng - aLng;
     const dy = bLat - aLat;
     if (dx === 0 && dy === 0) {
-      return calculateDistance(pLat, pLng, aLat, aLng);
+      return {
+        lat: aLat,
+        lng: aLng,
+        distKm: calculateDistance(pLat, pLng, aLat, aLng),
+        t: 0
+      };
     }
     const t = Math.max(0, Math.min(1, ((pLng - aLng) * dx + (pLat - aLat) * dy) / (dx * dx + dy * dy)));
     const projLat = aLat + t * dy;
     const projLng = aLng + t * dx;
-    return calculateDistance(pLat, pLng, projLat, projLng);
+    return {
+      lat: projLat,
+      lng: projLng,
+      distKm: calculateDistance(pLat, pLng, projLat, projLng),
+      t
+    };
   };
 
   // Periodically check if any shuttle is at its scheduled time without the Driver pressing Start Trip or has exceeded arrival time
@@ -560,7 +572,7 @@ function setupTrackingSocket(io) {
     // Handle real-time driver GPS coordinate update from driver's phone/browser (second-by-second live GPS)
     socket.on('driver:location_update', async (data) => {
       try {
-        const { shuttleId, latitude, longitude, speed, heading } = data;
+        const { shuttleId, latitude, longitude, speed, heading, accuracy } = data;
         if (!shuttleId || latitude === undefined || longitude === undefined) return;
 
         const sId = Number(shuttleId);
@@ -584,41 +596,73 @@ function setupTrackingSocket(io) {
         const rawLat = Number(latitude);
         const rawLng = Number(longitude);
         if (!Number.isFinite(rawLat) || !Number.isFinite(rawLng)) return;
+        const accuracyMeters = Number(accuracy) > 0 ? Number(accuracy) : 25;
 
-        // Calculate exact movement distance, speed (km/h) & heading from consecutive GPS fixes
+        // Maintain rolling 6-second GPS history for this shuttle to compute accurate real moving speed
+        const history = (driverGpsHistory.get(sId) || []).filter((pt) => now - pt.time <= 6500);
+        history.push({ lat: rawLat, lng: rawLng, time: now, speed: Number(speed) || 0 });
+        driverGpsHistory.set(sId, history);
+
         let effectiveLat = rawLat;
         let effectiveLng = rawLng;
-        let computedSpeed = Number(speed) >= 0.8 ? Math.round(Number(speed)) : 0;
+        let clientSpeed = Number(speed) >= 0.8 ? Math.round(Number(speed)) : 0;
+        let computedSpeed = clientSpeed;
         let computedHeading = Number(heading) || Number(shuttle.heading) || 0;
         let cumulativeMovedKm = Number(shuttle.distance_covered_km) || 0;
 
         const prevGps = lastDriverGpsPoint.get(sId);
         if (prevGps) {
-          const dtHours = Math.max(0.00027, (now - prevGps.time) / 3600000);
+          const dtHours = Math.max(0.00014, (now - prevGps.time) / 3600000);
           const movedKm = calculateDistance(prevGps.lat, prevGps.lng, rawLat, rawLng);
 
-          // Noise filter: if moved < 3 meters (0.003 km) and hardware speed is ~0, driver is stationary:
-          // Stay at exact location without drifting and report 0 km/h
-          if (movedKm < 0.003 && computedSpeed < 1) {
+          // Rolling window displacement across the last 1s - 6s
+          let windowMovedKm = movedKm;
+          let windowDtHours = dtHours;
+          if (history.length >= 2) {
+            let anchorPt = history[0];
+            for (let i = 0; i < history.length - 1; i++) {
+              if (now - history[i].time >= 1000) {
+                anchorPt = history[i];
+              }
+            }
+            windowMovedKm = calculateDistance(anchorPt.lat, anchorPt.lng, rawLat, rawLng);
+            windowDtHours = Math.max(0.000277, (now - anchorPt.time) / 3600000);
+          }
+
+          const isStationary = movedKm < 0.0006 && windowMovedKm < 0.0015 && clientSpeed < 1;
+
+          if (isStationary) {
             effectiveLat = prevGps.lat;
             effectiveLng = prevGps.lng;
-            computedSpeed = 0;
+            const idleMs = now - (prevGps.lastMoveTime || prevGps.time || now);
+            // Hold last moving speed for up to 5 seconds between GPS hardware ticks before decaying to 0
+            computedSpeed = idleMs <= 5000 ? (prevGps.speed || 0) : 0;
             cumulativeMovedKm = prevGps.cumulativeMovedKm || 0;
+            lastDriverGpsPoint.set(sId, {
+              ...prevGps,
+              speed: computedSpeed,
+              time: now
+            });
           } else {
-            // Driver moved: update shuttle position by the exact same distance moved
             effectiveLat = rawLat;
             effectiveLng = rawLng;
-            cumulativeMovedKm = Number(((prevGps.cumulativeMovedKm || 0) + movedKm).toFixed(3));
+            cumulativeMovedKm = Number(((prevGps.cumulativeMovedKm || 0) + movedKm).toFixed(4));
             if (computedSpeed < 1) {
-              computedSpeed = Math.min(85, Math.max(1, Math.round(movedKm / dtHours)));
+              const rollingCalcSpeed =
+                windowMovedKm >= 0.001
+                  ? Math.round(windowMovedKm / windowDtHours)
+                  : Math.round(movedKm / dtHours);
+              computedSpeed = Math.min(95, Math.max(1, rollingCalcSpeed));
             }
-            if (movedKm >= 0.002) {
+            if (movedKm >= 0.0008) {
               computedHeading = calculateHeading(prevGps.lat, prevGps.lng, effectiveLat, effectiveLng);
             }
             lastDriverGpsPoint.set(sId, {
               lat: effectiveLat,
               lng: effectiveLng,
               time: now,
+              lastMoveTime: now,
+              speed: computedSpeed,
               cumulativeMovedKm
             });
           }
@@ -627,6 +671,8 @@ function setupTrackingSocket(io) {
             lat: effectiveLat,
             lng: effectiveLng,
             time: now,
+            lastMoveTime: now,
+            speed: computedSpeed,
             cumulativeMovedKm: 0
           });
         }
@@ -639,11 +685,16 @@ function setupTrackingSocket(io) {
         let reachedDestination = false;
         const totalRouteKm = computeTotalRouteDistanceKm(shuttle.stops);
 
-        // Speed used for ETA analysis: use real live GPS speed when moving (>= 5 km/h), or 25 km/h reference speed when stationary
-        const speedForEta = computedSpeed >= 5 ? computedSpeed : 25;
+        // Speed used for ETA analysis: use real live GPS speed when moving (>= 3 km/h), or recent moving speed / 25 km/h reference
+        const speedForEta =
+          computedSpeed >= 3
+            ? computedSpeed
+            : prevGps?.speed >= 3
+            ? prevGps.speed
+            : 25;
 
         if (shuttle.stops && shuttle.stops.length > 0) {
-          // Find nearest stop on the Admin-allocated route relative to current live GPS position
+          // Find nearest stop and closest route segment on the Admin-allocated route
           let nearestIdx = 0;
           let nearestDist = Infinity;
           shuttle.stops.forEach((st, idx) => {
@@ -659,13 +710,16 @@ function setupTrackingSocket(io) {
             }
           });
 
-          // Check minimum distance to allocated route segments on the map to detect off-route travel
           let minRouteCorridorDistKm = nearestDist;
+          let bestSegmentIdx = Math.min(nearestIdx, Math.max(0, shuttle.stops.length - 2));
+          let bestProjLat = effectiveLat;
+          let bestProjLng = effectiveLng;
+
           if (shuttle.stops.length >= 2) {
             for (let i = 0; i < shuttle.stops.length - 1; i++) {
               const sA = shuttle.stops[i];
               const sB = shuttle.stops[i + 1];
-              const segDist = pointToSegmentDistanceKm(
+              const proj = projectOntoSegment(
                 effectiveLat,
                 effectiveLng,
                 Number(sA.latitude),
@@ -673,16 +727,27 @@ function setupTrackingSocket(io) {
                 Number(sB.latitude),
                 Number(sB.longitude)
               );
-              if (segDist < minRouteCorridorDistKm) {
-                minRouteCorridorDistKm = segDist;
+              if (proj.distKm < minRouteCorridorDistKm) {
+                minRouteCorridorDistKm = proj.distKm;
+                bestSegmentIdx = i;
+                bestProjLat = proj.lat;
+                bestProjLng = proj.lng;
               }
             }
           }
 
-          // If driver travels > 0.45 km outside allocated route corridor while moving on trip, notify Admin & send Admin Email
+          // If GPS is within 300m of the allocated route corridor OR has coarse cell-tower accuracy (> 90m),
+          // keep the shuttle cleanly positioned on the allocated route corridor
+          if (shuttle.stops.length >= 2 && (minRouteCorridorDistKm <= 0.30 || accuracyMeters > 90)) {
+            effectiveLat = bestProjLat;
+            effectiveLng = bestProjLng;
+          }
+
+          // If driver travels > 0.45 km outside allocated route corridor with high-accuracy GPS while moving on trip, notify Admin & send Admin Email
           const lastOffAlertTime = lastOffRouteAlert.get(sId) || 0;
           if (
             minRouteCorridorDistKm > 0.45 &&
+            accuracyMeters <= 90 &&
             (cumulativeMovedKm >= 0.05 || computedSpeed >= 10) &&
             now - lastOffAlertTime > 60000
           ) {
@@ -712,39 +777,63 @@ function setupTrackingSocket(io) {
             }
           }
 
-          const targetStopIdx =
-            nearestDist <= 0.08 && nearestIdx < shuttle.stops.length - 1
-              ? nearestIdx + 1
-              : nearestIdx === 0 && shuttle.stops.length > 1 && nearestDist <= 0.25
-              ? 1
-              : nearestIdx;
+          // Determine next target stop along the route sequence
+          let targetStopIdx = Math.min(shuttle.stops.length - 1, bestSegmentIdx + 1);
+          const candidateStop = shuttle.stops[targetStopIdx];
+          if (candidateStop) {
+            const distToCandidate = calculateDistance(
+              effectiveLat,
+              effectiveLng,
+              Number(candidateStop.latitude),
+              Number(candidateStop.longitude)
+            );
+            if (distToCandidate <= 0.08 && targetStopIdx < shuttle.stops.length - 1) {
+              targetStopIdx += 1;
+            }
+          }
           const currentStop = shuttle.stops[targetStopIdx] || shuttle.stops[shuttle.stops.length - 1];
-
           const finalStop = shuttle.stops[shuttle.stops.length - 1];
+
           const rawDistToDest = calculateDistance(
             effectiveLat,
             effectiveLng,
             Number(finalStop.latitude),
             Number(finalStop.longitude)
           );
-          distanceToDest = Number((rawDistToDest * 1.24).toFixed(2));
+
+          // Compute exact remaining route distance along remaining stops (current -> targetStop -> ... -> finalStop)
+          const rawNext = currentStop
+            ? calculateDistance(
+                effectiveLat,
+                effectiveLng,
+                Number(currentStop.latitude),
+                Number(currentStop.longitude)
+              )
+            : rawDistToDest;
+          distanceToNext = Number((rawNext * 1.22).toFixed(2));
+
+          let remainingAfterTargetKm = 0;
+          for (let i = targetStopIdx; i < shuttle.stops.length - 1; i++) {
+            remainingAfterTargetKm +=
+              calculateDistance(
+                Number(shuttle.stops[i].latitude),
+                Number(shuttle.stops[i].longitude),
+                Number(shuttle.stops[i + 1].latitude),
+                Number(shuttle.stops[i + 1].longitude)
+              ) * 1.22;
+          }
+          distanceToDest = Number((distanceToNext + remainingAfterTargetKm).toFixed(2));
 
           // Only mark destination reached if driver actually moved along the trip and is within 80m of final stop
           if (cumulativeMovedKm >= 0.05 && rawDistToDest <= 0.08) {
             reachedDestination = true;
             nextStopName = `${finalStop.name} (Driver Arrived)`;
             distanceToNext = 0;
+            distanceToDest = 0;
             calculatedEta = 0;
             destinationEta = 0;
           } else if (currentStop) {
             nextStopName = currentStop.name;
-            const rawNext = calculateDistance(
-              effectiveLat,
-              effectiveLng,
-              Number(currentStop.latitude),
-              Number(currentStop.longitude)
-            );
-            distanceToNext = Number((rawNext * 1.22).toFixed(2));
             calculatedEta = Math.max(1, Math.round((Math.max(0.05, distanceToNext) / speedForEta) * 60));
             destinationEta = Math.max(calculatedEta, Math.round((Math.max(0.05, distanceToDest) / speedForEta) * 60));
           }

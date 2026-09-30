@@ -958,9 +958,42 @@ const LiveMapInner = ({
       }
     }
 
+    const snapToRoadPolyline = (rawLat, rawLng) => {
+      const poly = currentRoadLatLngsRef.current;
+      if (!Array.isArray(poly) || poly.length < 2) {
+        return [rawLat, rawLng];
+      }
+      let bestLat = rawLat;
+      let bestLng = rawLng;
+      let minDistKm = Infinity;
+      for (let i = 0; i < poly.length - 1; i++) {
+        const aLat = Number(poly[i][0]);
+        const aLng = Number(poly[i][1]);
+        const bLat = Number(poly[i + 1][0]);
+        const bLng = Number(poly[i + 1][1]);
+        const dx = bLng - aLng;
+        const dy = bLat - aLat;
+        const lenSq = dx * dx + dy * dy;
+        const t =
+          lenSq === 0
+            ? 0
+            : Math.max(0, Math.min(1, ((rawLng - aLng) * dx + (rawLat - aLat) * dy) / lenSq));
+        const pLat = aLat + t * dy;
+        const pLng = aLng + t * dx;
+        const dKm = calcHaversineKm(rawLat, rawLng, pLat, pLng);
+        if (dKm < minDistKm) {
+          minDistKm = dKm;
+          bestLat = pLat;
+          bestLng = pLng;
+        }
+      }
+      return minDistKm <= 0.42 ? [bestLat, bestLng] : [rawLat, rawLng];
+    };
+
     shuttles.forEach((shuttle) => {
-      const lat = Number(shuttle.current_lat) || center[0];
-      const lng = Number(shuttle.current_lng) || center[1];
+      const rawLat = Number(shuttle.current_lat) || center[0];
+      const rawLng = Number(shuttle.current_lng) || center[1];
+      const [lat, lng] = snapToRoadPolyline(rawLat, rawLng);
       const isSelected = Boolean(selectedShuttleId && Number(shuttle.id) === Number(selectedShuttleId));
       const isArrived =
         String(shuttle.next_stop_name || '').includes('Arrived') ||

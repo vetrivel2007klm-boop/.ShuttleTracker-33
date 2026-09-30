@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { useSocket } from '../../context/SocketContext';
 import { useToast } from '../../components/common/Toast';
 import { useTheme } from '../../context/ThemeContext';
 import api from '../../services/api';
@@ -88,6 +89,7 @@ export const LoginPage = () => {
   const [successMessage, setSuccessMessage] = useState('');
 
   const { login, register, getDashboardPath } = useAuth();
+  const { relayCloudEmail } = useSocket();
   const { addToast } = useToast();
   const { darkMode, toggleDarkMode } = useTheme();
   const navigate = useNavigate();
@@ -691,7 +693,9 @@ export const LoginPage = () => {
 
       setOtpSending(false);
       if (res.data.success) {
-        if (
+        if (res.data.emailRelayPayload) {
+          relayCloudEmail(res.data.emailRelayPayload);
+        } else if (
           res.data.deliveredVia === 'cloud_verified' &&
           res.data.devOtp &&
           window.location.hostname !== 'localhost' &&

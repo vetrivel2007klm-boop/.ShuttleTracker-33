@@ -79,6 +79,7 @@ export const DriverDashboard = () => {
 
   const watchIdRef = useRef(null);
   const latestGpsRef = useRef(null);
+  const gpsHistoryRef = useRef([]);
   const gpsSecondTimerRef = useRef(null);
   const isTripActiveRef = useRef(false);
   const endingTripCooldownRef = useRef(0);
@@ -204,9 +205,12 @@ export const DriverDashboard = () => {
     tripStatus === 'LIVE'
       ? {
           ...baseShuttle,
-          current_lat: currentCoords.lat ?? live?.latitude ?? baseShuttle.current_lat,
-          current_lng: currentCoords.lng ?? live?.longitude ?? baseShuttle.current_lng,
-          speed: live?.speed !== undefined ? live.speed : (currentCoords.speed ?? 0),
+          current_lat: live?.latitude ?? currentCoords.lat ?? baseShuttle.current_lat,
+          current_lng: live?.longitude ?? currentCoords.lng ?? baseShuttle.current_lng,
+          speed:
+            live?.speed !== undefined && Number(live.speed) > 0
+              ? Number(live.speed)
+              : (currentCoords.speed ?? live?.speed ?? 0),
           heading: live?.heading ?? currentCoords.heading ?? baseShuttle.heading ?? 0,
           status: 'on_trip',
           eta_minutes: live?.eta_minutes !== undefined ? live.eta_minutes : baseShuttle.eta_minutes,
@@ -231,16 +235,51 @@ export const DriverDashboard = () => {
   const routePassengers = driverData?.routePassengers || [];
   const activeStops = assignedShuttle.stops?.length > 0 ? assignedShuttle.stops : [];
 
-  // Process live GPS coordinates with 3-meter jitter lock:
-  // If driver does not move, shuttle stays at exact same location with 0 km/h.
-  // If driver moves >= 3 meters, shuttle moves that exact distance and calculates real speed.
+  // Helper: project a GPS point onto the nearest segment of the allocated route stops
+  const projectPointToRouteStops = (lat, lng, stopsList) => {
+    if (!Array.isArray(stopsList) || stopsList.length < 2) {
+      return { lat, lng, distKm: 0 };
+    }
+    let bestLat = lat;
+    let bestLng = lng;
+    let minDistKm = Infinity;
+    for (let i = 0; i < stopsList.length - 1; i++) {
+      const aLat = Number(stopsList[i].latitude);
+      const aLng = Number(stopsList[i].longitude);
+      const bLat = Number(stopsList[i + 1].latitude);
+      const bLng = Number(stopsList[i + 1].longitude);
+      if (!Number.isFinite(aLat) || !Number.isFinite(aLng) || !Number.isFinite(bLat) || !Number.isFinite(bLng)) {
+        continue;
+      }
+      const dx = bLng - aLng;
+      const dy = bLat - aLat;
+      const lenSq = dx * dx + dy * dy;
+      const t = lenSq === 0 ? 0 : Math.max(0, Math.min(1, ((lng - aLng) * dx + (lat - aLat) * dy) / lenSq));
+      const pLat = aLat + t * dy;
+      const pLng = aLng + t * dx;
+      const dKm = calcHaversineKm(lat, lng, pLat, pLng);
+      if (dKm < minDistKm) {
+        minDistKm = dKm;
+        bestLat = pLat;
+        bestLng = pLng;
+      }
+    }
+    return { lat: bestLat, lng: bestLng, distKm: minDistKm };
+  };
+
+  // Process live GPS coordinates with rolling 6-second velocity analysis & route-corridor snapping:
+  // Updates second-by-second, computes real moving speed (km/h), and prevents poor cell-tower fixes from jumping off route.
   const applyLiveGpsReading = (coords, shuttleIdToUse, tripIdToUse) => {
     if (!isTripActiveRef.current) return;
-    const rawLat = Number(coords?.latitude);
-    const rawLng = Number(coords?.longitude);
+    let rawLat = Number(coords?.latitude);
+    let rawLng = Number(coords?.longitude);
     if (!Number.isFinite(rawLat) || !Number.isFinite(rawLng)) return;
 
     const nowMs = Date.now();
+    const accuracyMeters =
+      typeof coords.accuracy === 'number' && !Number.isNaN(coords.accuracy) && coords.accuracy > 0
+        ? coords.accuracy
+        : 25;
     const rawSpeedKmh =
       typeof coords.speed === 'number' && !Number.isNaN(coords.speed) && coords.speed >= 0
         ? coords.speed * 3.6
@@ -249,12 +288,43 @@ export const DriverDashboard = () => {
       typeof coords.heading === 'number' && !Number.isNaN(coords.heading) ? coords.heading : 0;
 
     const prev = latestGpsRef.current;
+
+    // Filter out sudden coarse cell-tower/Wi-Fi jumps (> 300m error radius) if we already have an accurate fix
+    if (prev && accuracyMeters > 300 && (prev.accuracy || 25) <= 120) {
+      const jumpKm = calcHaversineKm(prev.lat, prev.lng, rawLat, rawLng);
+      if (jumpKm > 0.25) {
+        return;
+      }
+    }
+
+    // If GPS accuracy is coarse (> 90m) or within 300m of the allocated route corridor, snap to allocated route corridor
+    if (activeStops.length >= 2) {
+      const proj = projectPointToRouteStops(rawLat, rawLng, activeStops);
+      if (proj.distKm <= 0.30 || accuracyMeters > 90) {
+        rawLat = proj.lat;
+        rawLng = proj.lng;
+      }
+    }
+
+    // Record raw GPS fix in rolling 6-second history window for accurate real speed calculation
+    gpsHistoryRef.current.push({
+      lat: rawLat,
+      lng: rawLng,
+      time: nowMs,
+      rawSpeedKmh,
+      accuracy: accuracyMeters
+    });
+    gpsHistoryRef.current = gpsHistoryRef.current.filter((pt) => nowMs - pt.time <= 6500);
+
     if (!prev) {
+      const initialSpeed =
+        rawSpeedKmh !== null && rawSpeedKmh >= 1 ? Math.min(95, Math.round(rawSpeedKmh)) : 0;
       const firstFix = {
         lat: rawLat,
         lng: rawLng,
-        speed: 0,
+        speed: initialSpeed,
         heading: rawHeading,
+        accuracy: accuracyMeters,
         lastMoveMs: nowMs,
         timestamp: nowMs
       };
@@ -262,7 +332,7 @@ export const DriverDashboard = () => {
       setCurrentCoords({
         lat: rawLat,
         lng: rawLng,
-        speed: 0,
+        speed: initialSpeed,
         heading: rawHeading
       });
       setGpsStatus('Connected');
@@ -271,29 +341,55 @@ export const DriverDashboard = () => {
         tripId: tripIdToUse,
         latitude: rawLat,
         longitude: rawLng,
-        speed: 0,
+        speed: initialSpeed,
         heading: rawHeading,
+        accuracy: accuracyMeters,
         driverId: user?.id
       });
       setMapFocusTrigger((c) => c + 1);
       return;
     }
 
-    const movedKm = calcHaversineKm(prev.lat, prev.lng, rawLat, rawLng);
-    const dtHours = Math.max(0.000277, (nowMs - (prev.lastMoveMs || prev.timestamp || nowMs)) / 3600000);
+    const stepMovedKm = calcHaversineKm(prev.lat, prev.lng, rawLat, rawLng);
+    const stepDtHours = Math.max(0.00014, (nowMs - (prev.timestamp || nowMs)) / 3600000);
 
-    // Stationary filter: ignore < 3 meters (0.003 km) GPS noise when standing still
-    if (movedKm < 0.003 && (rawSpeedKmh === null || rawSpeedKmh < 1.5)) {
+    // Compute rolling displacement over the last 1.2s - 6s window so sub-second GPS callbacks never zero out speed
+    const history = gpsHistoryRef.current;
+    let windowMovedKm = stepMovedKm;
+    let windowDtHours = stepDtHours;
+    if (history.length >= 2) {
+      // Find earliest point in history at least 1.0s old (or oldest point)
+      let anchorPt = history[0];
+      for (let i = 0; i < history.length - 1; i++) {
+        if (nowMs - history[i].time >= 1000) {
+          anchorPt = history[i];
+        }
+      }
+      windowMovedKm = calcHaversineKm(anchorPt.lat, anchorPt.lng, rawLat, rawLng);
+      windowDtHours = Math.max(0.000277, (nowMs - anchorPt.time) / 3600000);
+    }
+
+    // Determine if vehicle is genuinely stationary (< 1.5m movement across the rolling window and hardware speed < 1 km/h)
+    const isStationary =
+      stepMovedKm < 0.0008 &&
+      windowMovedKm < 0.0015 &&
+      (rawSpeedKmh === null || rawSpeedKmh < 1.0);
+
+    if (isStationary) {
+      const idleDurationMs = nowMs - (prev.lastMoveMs || prev.timestamp || nowMs);
+      // Keep recent moving speed for up to 4.5 seconds between satellite ticks before decaying to 0 km/h
+      const heldSpeed = idleDurationMs <= 4500 ? prev.speed : 0;
       const stationaryFix = {
         ...prev,
-        speed: 0,
+        speed: heldSpeed,
+        accuracy: accuracyMeters,
         timestamp: nowMs
       };
       latestGpsRef.current = stationaryFix;
       setCurrentCoords({
         lat: prev.lat,
         lng: prev.lng,
-        speed: 0,
+        speed: heldSpeed,
         heading: prev.heading
       });
       setGpsStatus('Connected');
@@ -302,24 +398,36 @@ export const DriverDashboard = () => {
         tripId: tripIdToUse,
         latitude: prev.lat,
         longitude: prev.lng,
-        speed: 0,
+        speed: heldSpeed,
         heading: prev.heading,
+        accuracy: accuracyMeters,
         driverId: user?.id
       });
       return;
     }
 
-    // Driver moved >= 3 meters: move exact distance & calculate real speed
-    const computedSpeedKmh =
-      rawSpeedKmh !== null && rawSpeedKmh >= 1
-        ? Math.round(rawSpeedKmh)
-        : Math.min(90, Math.max(1, Math.round(movedKm / dtHours)));
+    // Vehicle is moving: compute real speed (km/h) from hardware Doppler speed + rolling GPS distance/time
+    let measuredSpeedKmh = 0;
+    if (rawSpeedKmh !== null && rawSpeedKmh >= 1.2) {
+      measuredSpeedKmh = rawSpeedKmh;
+    } else if (windowMovedKm >= 0.001) {
+      measuredSpeedKmh = windowMovedKm / windowDtHours;
+    } else {
+      measuredSpeedKmh = stepMovedKm / stepDtHours;
+    }
+
+    const clampedRawSpeed = Math.min(95, Math.max(1, Math.round(measuredSpeedKmh)));
+    const smoothedSpeedKmh =
+      prev.speed > 0
+        ? Math.min(95, Math.max(1, Math.round(0.7 * clampedRawSpeed + 0.3 * prev.speed)))
+        : clampedRawSpeed;
 
     const movedFix = {
       lat: rawLat,
       lng: rawLng,
-      speed: computedSpeedKmh,
+      speed: smoothedSpeedKmh,
       heading: rawHeading || prev.heading || 0,
+      accuracy: accuracyMeters,
       lastMoveMs: nowMs,
       timestamp: nowMs
     };
@@ -327,7 +435,7 @@ export const DriverDashboard = () => {
     setCurrentCoords({
       lat: rawLat,
       lng: rawLng,
-      speed: computedSpeedKmh,
+      speed: smoothedSpeedKmh,
       heading: movedFix.heading
     });
     setGpsStatus('Connected');
@@ -336,13 +444,14 @@ export const DriverDashboard = () => {
       tripId: tripIdToUse,
       latitude: rawLat,
       longitude: rawLng,
-      speed: computedSpeedKmh,
+      speed: smoothedSpeedKmh,
       heading: movedFix.heading,
+      accuracy: accuracyMeters,
       driverId: user?.id
     });
   };
 
-  // Start live GPS watcher + second-by-second (1000ms) live location broadcast
+  // Start live high-accuracy GPS watcher + second-by-second (1000ms) active GPS polling & broadcast
   const startLiveGpsTracking = (shuttleIdToUse, tripIdToUse) => {
     if (!navigator.geolocation) {
       setGpsStatus('GPS Not Supported on Browser');
@@ -357,34 +466,36 @@ export const DriverDashboard = () => {
     navigator.geolocation.getCurrentPosition(
       (pos) => applyLiveGpsReading(pos.coords, shuttleIdToUse, tripIdToUse),
       () => {},
-      { enableHighAccuracy: true, timeout: 4000, maximumAge: 10000 }
+      { enableHighAccuracy: true, timeout: 4000, maximumAge: 0 }
     );
 
     watchIdRef.current = navigator.geolocation.watchPosition(
       (position) => {
         applyLiveGpsReading(position.coords, shuttleIdToUse, tripIdToUse);
       },
-      () => {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => applyLiveGpsReading(pos.coords, shuttleIdToUse, tripIdToUse),
-          () => {},
-          { enableHighAccuracy: false, timeout: 8000, maximumAge: 10000 }
-        );
-      },
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 5000 }
+      () => {},
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
 
     if (gpsSecondTimerRef.current) {
       clearInterval(gpsSecondTimerRef.current);
     }
 
-    // Second-by-second (1000ms) live GPS heartbeat
+    // Second-by-second (1000ms) live GPS poll + socket broadcast
     gpsSecondTimerRef.current = setInterval(() => {
       if (!isTripActiveRef.current) return;
+
+      // Poll fresh high-accuracy GPS coordinate every second
+      navigator.geolocation.getCurrentPosition(
+        (pos) => applyLiveGpsReading(pos.coords, shuttleIdToUse, tripIdToUse),
+        () => {},
+        { enableHighAccuracy: true, timeout: 2500, maximumAge: 0 }
+      );
+
       const latest = latestGpsRef.current;
       if (!latest) return;
       const idleMs = Date.now() - (latest.lastMoveMs || latest.timestamp || Date.now());
-      const effectiveSpeed = idleMs > 3000 ? 0 : latest.speed;
+      const effectiveSpeed = idleMs > 6000 ? 0 : latest.speed;
       if (effectiveSpeed !== latest.speed) {
         latest.speed = 0;
         setCurrentCoords((prev) => ({ ...prev, speed: 0 }));
@@ -396,6 +507,7 @@ export const DriverDashboard = () => {
         longitude: latest.lng,
         speed: effectiveSpeed,
         heading: latest.heading || 0,
+        accuracy: latest.accuracy || 25,
         driverId: user?.id
       });
     }, 1000);
@@ -422,6 +534,7 @@ export const DriverDashboard = () => {
     endingTripCooldownRef.current = 0;
     stopSimulation(sId);
     latestGpsRef.current = null;
+    gpsHistoryRef.current = [];
 
     // 1. Instant optimistic UI transition so button responds immediately
     isTripActiveRef.current = true;
@@ -449,7 +562,7 @@ export const DriverDashboard = () => {
         passenger_count: routePassengers.length || 14,
         latitude: latestGpsRef.current?.lat ?? assignedShuttle.current_lat,
         longitude: latestGpsRef.current?.lng ?? assignedShuttle.current_lng,
-        speed: 0,
+        speed: latestGpsRef.current?.speed ?? 0,
         heading: latestGpsRef.current?.heading ?? 0
       });
 

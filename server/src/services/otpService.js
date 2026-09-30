@@ -337,7 +337,7 @@ const getCredentials = () => {
   return { user, pass };
 };
 
-// Persistent pooled SMTP transporters so sending OTP reuses warm TLS connections
+// Persistent pooled SMTP transporters so sending OTP & operational emails reuses warm TLS connections
 let cachedTransporters = null;
 const getSmtpTransporters = () => {
   if (cachedTransporters) return cachedTransporters;
@@ -346,11 +346,11 @@ const getSmtpTransporters = () => {
 
   const baseTimeouts = {
     pool: true,
-    maxConnections: 3,
-    maxMessages: 100,
-    connectionTimeout: 3500,
-    greetingTimeout: 3500,
-    socketTimeout: 5000,
+    maxConnections: 5,
+    maxMessages: 200,
+    connectionTimeout: 25000,
+    greetingTimeout: 25000,
+    socketTimeout: 30000,
     family: 4
   };
 
@@ -376,6 +376,61 @@ const getSmtpTransporters = () => {
   return cachedTransporters;
 };
 
+// Pre-warm Gmail SMTP TLS connection on startup (when not on Render free tier where SMTP ports are blocked)
+const isRenderCloudEnv = Boolean(
+  process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
+);
+if (!isRenderCloudEnv) {
+  setImmediate(() => {
+    const transporters = getSmtpTransporters();
+    if (transporters[0]) {
+      transporters[0]
+        .verify()
+        .then(() => console.log('📧 [Gmail SMTP Pool] Warm TLS connection ready (cleancodeuniverse@gmail.com)'))
+        .catch(() => {});
+    }
+  });
+}
+
+// Deduplication & Pending Cloud Relay Queue to guarantee every email is sent strictly ONE time
+const recentOperationalEmailMap = new Map(); // key: `${to.toLowerCase()}::${subject}` -> timestamp
+const processedRelayIds = new Set();
+const pendingRelayQueue = new Map(); // key: relayId -> { relayPayload, createdAt }
+
+const queueCloudRelay = (relayPayload) => {
+  if (!relayPayload || !relayPayload.relayId) return;
+  pendingRelayQueue.set(relayPayload.relayId, {
+    relayPayload,
+    createdAt: Date.now()
+  });
+  // Prune entries older than 5 minutes
+  const now = Date.now();
+  for (const [k, v] of pendingRelayQueue.entries()) {
+    if (now - v.createdAt > 5 * 60 * 1000) {
+      pendingRelayQueue.delete(k);
+    }
+  }
+};
+
+const acknowledgeEmailRelay = (relayId) => {
+  if (!relayId) return false;
+  processedRelayIds.add(relayId);
+  return pendingRelayQueue.delete(relayId);
+};
+
+const getPendingEmailRelays = () => {
+  const now = Date.now();
+  const list = [];
+  for (const [k, v] of pendingRelayQueue.entries()) {
+    if (now - v.createdAt > 5 * 60 * 1000 || processedRelayIds.has(k)) {
+      pendingRelayQueue.delete(k);
+    } else {
+      list.push(v.relayPayload);
+    }
+  }
+  return list;
+};
+
 /**
  * Send email via available HTTPS APIs (Resend / Brevo) or pooled Gmail SMTP
  */
@@ -395,7 +450,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
         },
         body: JSON.stringify({
           from: resendFrom,
-          to: [to],
+          to: String(to).split(',').map((e) => e.trim()).filter(Boolean),
           reply_to: senderEmail,
           subject,
           html: htmlContent,
@@ -418,6 +473,11 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
   const brevoKey = (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || '').trim();
   if (brevoKey && brevoKey.length >= 10 && !brevoKey.includes('your_')) {
     try {
+      const toList = String(to)
+        .split(',')
+        .map((e) => e.trim())
+        .filter(Boolean)
+        .map((emailAddr) => ({ email: emailAddr }));
       const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
         headers: {
@@ -427,7 +487,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
         },
         body: JSON.stringify({
           sender: { name: senderName, email: senderEmail },
-          to: [{ email: to }],
+          to: toList,
           subject,
           htmlContent,
           textContent
@@ -548,22 +608,69 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
     process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
   );
 
-  // 2. Dispatch email in the background so the button responds IMMEDIATELY (< 50ms) after validation!
-  deliverEmailMessage({
+  const relayPayload = {
+    relayId: `otp_${purpose}_${normalizedEmail}_${otp}`,
     to: normalizedEmail,
     subject,
     htmlContent,
     textContent,
     senderName,
     senderEmail
-  }).catch((err) => {
-    console.warn(`⚠️ [Background OTP Dispatch Warning] ${normalizedEmail}:`, err?.message || err);
+  };
+
+  if (isRenderCloud) {
+    queueCloudRelay(relayPayload);
+    setImmediate(() => {
+      deliverEmailMessage({
+        to: normalizedEmail,
+        subject,
+        htmlContent,
+        textContent,
+        senderName,
+        senderEmail
+      })
+        .then((res) => {
+          if (res && res.success) {
+            acknowledgeEmailRelay(relayPayload.relayId);
+          }
+        })
+        .catch(() => {});
+    });
+
+    return {
+      success: true,
+      deliveredVia: 'cloud_verified',
+      otp,
+      relayPayload,
+      senderEmail
+    };
+  }
+
+  // Localhost: record dedup key for this exact OTP so browser relay never duplicates it, then send via warm Gmail SMTP
+  const otpDedupKey = `${normalizedEmail}::${subject}::${otp}`;
+  recentOperationalEmailMap.set(otpDedupKey, Date.now());
+  processedRelayIds.add(relayPayload.relayId);
+
+  setImmediate(() => {
+    deliverEmailMessage({
+      to: normalizedEmail,
+      subject,
+      htmlContent,
+      textContent,
+      senderName,
+      senderEmail
+    }).catch((err) => {
+      recentOperationalEmailMap.delete(otpDedupKey);
+      processedRelayIds.delete(relayPayload.relayId);
+      console.warn(`⚠️ [Background OTP Dispatch Warning] ${normalizedEmail}:`, err?.message || err);
+    });
   });
 
   return {
     success: true,
-    deliveredVia: isRenderCloud ? 'cloud_verified' : 'email',
-    otp: isRenderCloud ? otp : undefined,
+    deliveredVia: 'email',
+    otp: undefined,
+    relayPayload: null,
     senderEmail
   };
 };
@@ -593,10 +700,6 @@ const verifyOTP = (email, candidateOtp, consume = true) => {
   }
   return { valid: true };
 };
-
-// Deduplication map to guarantee every operational email is sent strictly ONE time per operation
-const recentOperationalEmailMap = new Map(); // key: `${to.toLowerCase()}::${subject}` -> timestamp
-const processedRelayIds = new Set();
 
 const dispatchSingleOperationalEmail = async ({
   prefix = 'op',
@@ -642,7 +745,7 @@ const dispatchSingleOperationalEmail = async ({
   };
 
   if (isRenderCloud) {
-    // Non-blocking background dispatch for sub-10ms API response latency
+    queueCloudRelay(relayPayload);
     setImmediate(() => {
       deliverEmailMessage({
         to: cleanTo,
@@ -651,12 +754,18 @@ const dispatchSingleOperationalEmail = async ({
         textContent,
         senderName,
         senderEmail
-      }).catch(() => {});
+      })
+        .then((res) => {
+          if (res && res.success) {
+            acknowledgeEmailRelay(relayPayload.relayId);
+          }
+        })
+        .catch(() => {});
     });
 
     return {
       success: true,
-      deliveredVia: 'cloud_async_verified',
+      deliveredVia: 'cloud_verified',
       recipients,
       relayPayload
     };
@@ -664,6 +773,7 @@ const dispatchSingleOperationalEmail = async ({
 
   // Local server: fire SMTP delivery asynchronously in background so API buttons respond in < 5ms
   // Do NOT return relayPayload on local server so client never triggers a second copy
+  processedRelayIds.add(relayPayload.relayId);
   setImmediate(() => {
     deliverEmailMessage({
       to: cleanTo,
@@ -672,14 +782,23 @@ const dispatchSingleOperationalEmail = async ({
       textContent,
       senderName,
       senderEmail
-    }).catch((err) => {
-      console.error('[ASYNC SMTP DISPATCH ERROR]', err?.message || err);
-    });
+    })
+      .then((res) => {
+        if (!res || !res.success) {
+          recentOperationalEmailMap.delete(dedupKey);
+          processedRelayIds.delete(relayPayload.relayId);
+        }
+      })
+      .catch((err) => {
+        recentOperationalEmailMap.delete(dedupKey);
+        processedRelayIds.delete(relayPayload.relayId);
+        console.error('[ASYNC SMTP DISPATCH ERROR]', err?.message || err);
+      });
   });
 
   return {
     success: true,
-    deliveredVia: 'async_smtp_queued',
+    deliveredVia: 'email',
     recipients,
     relayPayload: null
   };
@@ -1199,13 +1318,14 @@ const sendRawRelayEmail = async ({ relayId, to, subject, htmlContent, textConten
   }
   const cleanTo = String(to).trim();
   const cleanSubject = String(subject).trim();
-  const dedupKey = `${cleanTo.toLowerCase()}::${cleanSubject}`;
+  const dedupKey = relayId ? `${cleanTo.toLowerCase()}::${relayId}` : `${cleanTo.toLowerCase()}::${cleanSubject}`;
+  const subjectDedupKey = `${cleanTo.toLowerCase()}::${cleanSubject}`;
   const now = Date.now();
 
   if (relayId && processedRelayIds.has(relayId)) {
     return { success: true, deliveredVia: 'already_relayed' };
   }
-  const prevSentAt = recentOperationalEmailMap.get(dedupKey);
+  const prevSentAt = recentOperationalEmailMap.get(dedupKey) || (! String(relayId || '').startsWith('otp_') ? recentOperationalEmailMap.get(subjectDedupKey) : null);
   if (prevSentAt && now - prevSentAt < 90 * 1000) {
     return { success: true, deliveredVia: 'already_relayed' };
   }
@@ -1218,8 +1338,11 @@ const sendRawRelayEmail = async ({ relayId, to, subject, htmlContent, textConten
     }
   }
   recentOperationalEmailMap.set(dedupKey, now);
+  if (!String(relayId || '').startsWith('otp_')) {
+    recentOperationalEmailMap.set(subjectDedupKey, now);
+  }
 
-  return deliverEmailMessage({
+  const delivery = await deliverEmailMessage({
     to: cleanTo,
     subject: cleanSubject,
     htmlContent: htmlContent || `<p>${textContent || ''}</p>`,
@@ -1227,10 +1350,20 @@ const sendRawRelayEmail = async ({ relayId, to, subject, htmlContent, textConten
     senderName: senderName || 'Shuttle Tracker',
     senderEmail: senderEmail || DEFAULT_EMAIL_USER
   });
+
+  if (!delivery || !delivery.success) {
+    if (relayId) processedRelayIds.delete(relayId);
+    recentOperationalEmailMap.delete(dedupKey);
+    recentOperationalEmailMap.delete(subjectDedupKey);
+  } else if (relayId) {
+    acknowledgeEmailRelay(relayId);
+  }
+
+  return delivery;
 };
 
 /**
- * Deliver an already-generated OTP code to the validated email via Gmail SMTP
+ * Deliver an already-generated OTP code to the validated email via Gmail SMTP (strictly once per OTP code)
  */
 const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup') => {
   const validation = await validateEmailAddress(email);
@@ -1276,7 +1409,9 @@ const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup') => {
     </div>
   `;
 
-  return deliverEmailMessage({
+  const relayId = `otp_${purpose}_${normalizedEmail}_${otp}`;
+  return sendRawRelayEmail({
+    relayId,
     to: normalizedEmail,
     subject,
     htmlContent,
@@ -1291,6 +1426,8 @@ module.exports = {
   sendBrevoOTP,
   sendExplicitOTP,
   sendRawRelayEmail,
+  getPendingEmailRelays,
+  acknowledgeEmailRelay,
   verifyOTP,
   sendDriverCredentialsEmail,
   sendDriverScheduleEmail,
@@ -1299,4 +1436,5 @@ module.exports = {
   sendAdminDelayEmail,
   sendPassengerTripStartedEmail
 };
+
 
