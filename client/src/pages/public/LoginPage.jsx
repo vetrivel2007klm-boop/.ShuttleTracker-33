@@ -591,18 +591,14 @@ export const LoginPage = () => {
         setOtpSent(true);
         setOtpTimer(60);
 
-        if (res.data.devOtp) {
-          setOtp(res.data.devOtp);
-        }
+        // Do not auto-fill: keep OTP blank for manual entry by user from their email inbox
+        setOtp('');
 
-        const isCloudOtp = res.data.devOtp && (res.data.deliveredVia === 'cloud_secure_otp' || res.data.deliveredVia === 'cloud_verified');
-        const noticeMsg = isCloudOtp
-          ? `6-digit OTP code: ${res.data.devOtp} (Sent to ${email.trim()})`
-          : `6-digit OTP has been sent to ${email.trim()}. Please check your email inbox.`;
+        const noticeMsg = `A 6-digit verification OTP has been sent to ${email.trim()}. Please check your email inbox and enter the code below.`;
 
         setSuccessMessage(noticeMsg);
         addToast({
-          title: 'OTP Sent',
+          title: 'OTP Sent to Email',
           message: noticeMsg,
           type: 'success'
         });
