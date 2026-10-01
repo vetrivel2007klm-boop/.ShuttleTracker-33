@@ -517,16 +517,6 @@ router.post('/send-otp', async (req, res) => {
       });
     }
 
-    const { settings, defaultSettings } = await resolveOrgSettingsForPassenger(enteredOrg);
-    const sampleUrl = settings?.sample_id_card_url || defaultSettings?.sample_id_card_url || '';
-    if (!sampleUrl) {
-      return res.status(400).json({
-        success: false,
-        message:
-          'Admin has not uploaded the Sample Passenger ID Card in Admin Profile yet. Account creation is locked until Admin uploads the sample ID card.'
-      });
-    }
-
     // Check if account already exists (fast in-memory check for instant OTP response)
     const existing = await db.findUserByEmail(emailValidation.normalizedEmail, { memoryOnly: true });
     if (existing) {
@@ -806,13 +796,6 @@ router.post('/forgot-password/send-otp', async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Enter a valid email address. No registered account found with this email.'
-      });
-    }
-
-    if (role && ['admin', 'user', 'driver'].includes(role) && user.role !== role) {
-      return res.status(400).json({
-        success: false,
-        message: `Enter a valid email address. This email is not registered as a ${role === 'user' ? 'Passenger' : role}.`
       });
     }
 

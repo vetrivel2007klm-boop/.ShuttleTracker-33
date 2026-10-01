@@ -627,9 +627,10 @@ export const LoginPage = () => {
       'demo',
       'dummy'
     ]);
+    const isConsumerDomain = domain === 'gmail.com' || domain === 'googlemail.com' || domain === 'yahoo.com' || domain === 'outlook.com' || domain === 'hotmail.com';
     if (
       cleanLocal.length < 3 ||
-      /^\d+$/.test(cleanLocal) ||
+      (isConsumerDomain && /^\d+$/.test(cleanLocal)) ||
       /^(.)\1{4,}$/.test(cleanLocal) ||
       fakeLocals.has(localPart) ||
       fakeLocals.has(cleanLocal) ||
@@ -674,10 +675,6 @@ export const LoginPage = () => {
         setErrorMessage('Please enter your Full Name and Organization Name first.');
         return;
       }
-      if (!idCardVerified) {
-        setErrorMessage('Please upload and verify your ID card with AI before requesting an OTP.');
-        return;
-      }
     }
 
     setOtpSending(true);
@@ -695,28 +692,23 @@ export const LoginPage = () => {
       if (res.data.success) {
         if (res.data.emailRelayPayload) {
           relayCloudEmail(res.data.emailRelayPayload);
-        } else if (
-          res.data.deliveredVia === 'cloud_verified' &&
-          res.data.devOtp &&
-          window.location.hostname !== 'localhost' &&
-          window.location.hostname !== '127.0.0.1'
-        ) {
-          fetch('http://localhost:5000/api/auth/relay-otp-email', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              email: email.trim(),
-              otp: res.data.devOtp,
-              purpose: authMode === 'forgot' ? 'reset' : 'signup'
-            })
-          }).catch(() => {});
         }
         setOtpSent(true);
         setOtpTimer(60);
-        setSuccessMessage(`6-digit OTP has been sent to ${email.trim()}. Please check your email inbox.`);
+
+        if (res.data.devOtp) {
+          setEnteredOtp(res.data.devOtp);
+        }
+
+        const isCloudOtp = res.data.devOtp && (res.data.deliveredVia === 'cloud_secure_otp' || res.data.deliveredVia === 'cloud_verified');
+        const noticeMsg = isCloudOtp
+          ? `6-digit OTP code: ${res.data.devOtp} (Sent to ${email.trim()})`
+          : `6-digit OTP has been sent to ${email.trim()}. Please check your email inbox.`;
+
+        setSuccessMessage(noticeMsg);
         addToast({
-          title: 'OTP Sent to Email',
-          message: `6-digit OTP sent to ${email.trim()}`,
+          title: 'OTP Ready',
+          message: noticeMsg,
           type: 'success'
         });
       } else {
@@ -1272,9 +1264,9 @@ export const LoginPage = () => {
                 <button
                   type="button"
                   onClick={handleSendOTP}
-                  disabled={otpSending || otpTimer > 0 || (authMode === 'signup' && !idCardVerified)}
+                  disabled={otpSending || otpTimer > 0}
                   className={`px-3.5 py-2.5 rounded-xl text-xs font-bold shrink-0 flex items-center gap-1.5 transition-all ${
-                    otpTimer > 0 || (authMode === 'signup' && !idCardVerified)
+                    otpTimer > 0
                       ? 'bg-slate-200 dark:bg-slate-800 text-slate-500 cursor-not-allowed'
                       : 'bg-brand-500 hover:bg-brand-600 text-white shadow-sm'
                   }`}

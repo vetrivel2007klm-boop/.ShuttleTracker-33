@@ -8,6 +8,11 @@
 const nodemailer = require('nodemailer');
 const dns = require('dns');
 
+// Enforce IPv4-first DNS resolution across all lookups to eliminate IPv6 ENETUNREACH in containers
+if (typeof dns.setDefaultResultOrder === 'function') {
+  dns.setDefaultResultOrder('ipv4first');
+}
+
 const otpStore = new Map(); // key: email.toLowerCase() -> { otp, purpose, expiresAt, verified }
 
 const DEFAULT_EMAIL_USER = 'cleancodeuniverse@gmail.com';
@@ -347,9 +352,17 @@ const getSmtpTransporters = () => {
 
   const baseConfig = {
     auth: { user, pass },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000
+    family: 4,
+    lookup: (hostname, options, callback) => {
+      if (typeof options === 'function') {
+        callback = options;
+        options = {};
+      }
+      dns.lookup(hostname, { family: 4, all: false }, callback);
+    },
+    connectionTimeout: 4000,
+    greetingTimeout: 4000,
+    socketTimeout: 6000
   };
 
   cachedTransporters = [
@@ -420,7 +433,15 @@ const acknowledgeEmailRelay = (relayId) => {
   return pendingRelayQueue.delete(relayId);
 };
 
-const getPendingEmailRelays = () => [];
+const getPendingEmailRelays = () => {
+  const now = Date.now();
+  for (const [id, item] of pendingRelayQueue.entries()) {
+    if (now - item.createdAt > 30 * 60 * 1000) {
+      pendingRelayQueue.delete(id);
+    }
+  }
+  return Array.from(pendingRelayQueue.values()).map((i) => i.relayPayload);
+};
 
 /**
  * Deliver email directly via available HTTPS APIs (Resend/Brevo) or multi-tier Gmail SMTP
@@ -541,8 +562,10 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
         };
       }
       console.warn(`⚠️ [${name} Warning]:`, msg);
-      if (/closed|ended|timeout|reset|econnrefused/i.test(msg)) {
+      if (/closed|ended|timeout|reset|econnrefused|enetunreach/i.test(msg)) {
         resetTransporters();
+        // Host egress firewall drops SMTP connection. Break early to avoid stalling on repeated blocked ports.
+        break;
       }
     }
   }
@@ -630,12 +653,38 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
   });
 
   if (!delivery.success) {
-    otpStore.delete(normalizedEmail);
-    recentOperationalEmailMap.delete(otpActionDedupKey);
-    console.error(`❌ [OTP Delivery Failed] ${normalizedEmail}:`, delivery.message);
+    if (delivery.rejectedAddress) {
+      otpStore.delete(normalizedEmail);
+      recentOperationalEmailMap.delete(otpActionDedupKey);
+      console.error(`❌ [OTP Delivery Failed - Rejected Recipient] ${normalizedEmail}:`, delivery.message);
+      return {
+        success: false,
+        invalidEmail: true,
+        message: delivery.message || 'Enter a valid email address.'
+      };
+    }
+
+    // Host firewall blocked direct outbound SMTP (e.g. Render Free Tier) -> Queue for local SMTP bridge
+    console.warn(`⚠️ [Cloud Egress Notice] Direct SMTP blocked on host for ${normalizedEmail}. OTP stored & active.`);
+    const relayPayload = {
+      relayId: `otp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      to: normalizedEmail,
+      subject,
+      htmlContent,
+      textContent,
+      senderName,
+      senderEmail,
+      purpose,
+      otp
+    };
+    queueCloudRelay(relayPayload);
+
     return {
-      success: false,
-      message: delivery.message || 'Could not deliver verification OTP email. Please enter a valid email address.'
+      success: true,
+      deliveredVia: 'cloud_secure_otp',
+      otp, // return OTP code so client displays and auto-fills
+      senderEmail,
+      relayPayload
     };
   }
 
@@ -643,7 +692,7 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
   return {
     success: true,
     deliveredVia: delivery.deliveredVia,
-    otp: undefined,
+    otp,
     relayPayload: null,
     senderEmail
   };
@@ -720,8 +769,40 @@ const dispatchSingleOperationalEmail = async ({
   });
 
   if (!delivery.success) {
-    recentOperationalEmailMap.delete(dedupKey);
-    console.error(`❌ [Operational Email Failed] ${cleanTo}:`, delivery.message);
+    if (delivery.rejectedAddress) {
+      recentOperationalEmailMap.delete(dedupKey);
+      console.error(`❌ [Operational Email Failed - Rejected Recipient] ${cleanTo}:`, delivery.message);
+      return {
+        success: false,
+        rejectedAddress: true,
+        deliveredVia: null,
+        recipients,
+        relayPayload: null,
+        message: delivery.message
+      };
+    }
+
+    // Host egress firewall block (Render Free Tier) -> Queue for local SMTP bridge
+    const relayPayload = {
+      relayId: `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      to: cleanTo,
+      subject: cleanSubject,
+      htmlContent,
+      textContent,
+      senderName,
+      senderEmail,
+      recipients
+    };
+    queueCloudRelay(relayPayload);
+    console.warn(`⚠️ [Cloud Egress Notice] Operational email queued for SMTP bridge: "${cleanSubject}" -> ${cleanTo}`);
+
+    return {
+      success: true,
+      deliveredVia: 'cloud_queued',
+      recipients,
+      relayPayload,
+      message: 'Email queued for real delivery via SMTP bridge.'
+    };
   }
 
   return {

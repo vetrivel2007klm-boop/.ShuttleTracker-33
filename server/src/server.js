@@ -243,6 +243,53 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
+// Local SMTP Bridge Worker: syncs & dispatches pending emails queued on Render Cloud
+if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
+  const { sendRawRelayEmail, sendExplicitOTP } = require('./services/otpService');
+  const CLOUD_API_BASE = 'https://shuttletracker-33.onrender.com/api/auth';
+  let isSyncing = false;
+
+  const syncCloudPendingEmails = async () => {
+    if (isSyncing) return;
+    isSyncing = true;
+    try {
+      const res = await fetch(`${CLOUD_API_BASE}/pending-relays`, { signal: AbortSignal.timeout(4000) });
+      if (!res.ok) {
+        isSyncing = false;
+        return;
+      }
+      const data = await res.json();
+      const relays = data?.data || data?.relays || [];
+      for (const relay of relays) {
+        if (!relay || !relay.relayId) continue;
+        console.log(`📬 [SMTP Bridge] Processing queued cloud email: ${relay.relayId} -> ${relay.to}`);
+        let sent = null;
+        if (relay.otp) {
+          sent = await sendExplicitOTP(relay.to, relay.otp, relay.purpose || 'signup');
+        } else {
+          sent = await sendRawRelayEmail(relay);
+        }
+        if (sent?.success) {
+          console.log(`✅ [SMTP Bridge] Delivered ${relay.relayId} to ${relay.to} via local Gmail SMTP`);
+          await fetch(`${CLOUD_API_BASE}/ack-relay`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ relayId: relay.relayId }),
+            signal: AbortSignal.timeout(4000)
+          }).catch(() => {});
+        }
+      }
+    } catch (_) {
+      // Quietly ignore network/idle issues
+    } finally {
+      isSyncing = false;
+    }
+  };
+
+  setInterval(syncCloudPendingEmails, 4000).unref();
+  console.log('🔄 [SMTP Cloud Bridge] Active — Polling Render cloud for pending emails to deliver via Gmail SMTP');
+}
+
 server.listen(PORT, () => {
   console.log(`\n======================================================`);
   console.log(`🚀 ShuttleTrack Server running on http://localhost:${PORT}`);
