@@ -544,17 +544,11 @@ router.post('/send-otp', async (req, res) => {
       });
     }
 
-    const io = req.app.get('io');
-    if (io && result.relayPayload) {
-      io.emit('email:relay', result.relayPayload);
-    }
-
     return res.status(200).json({
       success: true,
       message: `Verification OTP sent to ${emailValidation.normalizedEmail}.`,
       deliveredVia: result.deliveredVia,
-      devOtp: result.otp,
-      emailRelayPayload: result.relayPayload || null
+      devOtp: result.otp
     });
   } catch (err) {
     console.error('OTP Send Error:', err);
@@ -830,18 +824,12 @@ router.post('/forgot-password/send-otp', async (req, res) => {
       });
     }
 
-    const io = req.app.get('io');
-    if (io && result.relayPayload) {
-      io.emit('email:relay', result.relayPayload);
-    }
-
     return res.status(200).json({
       success: true,
       message: `Password reset OTP sent to ${emailValidation.normalizedEmail}.`,
       role: user.role,
       deliveredVia: result.deliveredVia,
-      devOtp: result.otp,
-      emailRelayPayload: result.relayPayload || null
+      devOtp: result.otp
     });
   } catch (err) {
     console.error('Forgot Password Send OTP Error:', err);

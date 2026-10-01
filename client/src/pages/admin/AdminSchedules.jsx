@@ -323,12 +323,10 @@ export const AdminSchedules = () => {
         route_name: resolvedRouteName,
         departure_time: normalizedDeparture,
         arrival_time: computedArrival,
-        days: formData.days
+        days: formData.days,
+        driver_name: selectedBusObj?.driver_name || '',
+        driver_email: selectedBusObj?.driver_email || ''
       });
-
-      if (res.data?.emailRelayPayload && relayCloudEmail) {
-        relayCloudEmail(res.data.emailRelayPayload);
-      }
 
       if (res.data?.data) {
         setSchedules((prev) =>

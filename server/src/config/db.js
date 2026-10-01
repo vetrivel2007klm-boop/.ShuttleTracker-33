@@ -4805,18 +4805,41 @@ const db = {
     store.schedules.push(newSched);
 
     // Notify the assigned Driver in Driver Login and send 1 Email from Admin to the Driver
-    const fallbackDriverUser =
-      !driverUser &&
-      store.users.find(
+    const isRealEmail = (em) =>
+      Boolean(
+        em &&
+          String(em).includes('@') &&
+          !String(em).toLowerCase().endsWith('@shuttletrack.com') &&
+          !String(em).toLowerCase().endsWith('@shuttletracker.com')
+      );
+
+    let driverName =
+      schedData.driver_name ||
+      (driver ? driverUser?.name || driver.name : null);
+    let driverEmail =
+      schedData.driver_email ||
+      (driver ? driverUser?.email || driver.email : null);
+
+    if (!isRealEmail(driverEmail)) {
+      const realDriverUser = store.users.find(
         (u) =>
           u.role === 'driver' &&
           matchesOrg(u.organization_name, orgName) &&
-          u.email &&
-          !u.email.toLowerCase().endsWith('@shuttletrack.com')
+          isRealEmail(u.email)
       );
-    const driverName = driver ? driverUser?.name || driver.name : fallbackDriverUser?.name || 'Driver';
-    const driverEmail =
-      (driver && (driverUser?.email || driver.email)) || fallbackDriverUser?.email || '';
+      if (realDriverUser) {
+        driverEmail = realDriverUser.email;
+        driverName = driverName || realDriverUser.name;
+      } else {
+        const anyRealDriver = store.drivers.find((d) => isRealEmail(d.email));
+        if (anyRealDriver) {
+          driverEmail = anyRealDriver.email;
+          driverName = driverName || anyRealDriver.name;
+        }
+      }
+    }
+
+    const resolvedDriverName = driverName || 'Driver';
     const busCode = shuttle?.code || `S0${sId}`;
 
     const driverNotification = await db.createNotification({
@@ -4824,17 +4847,17 @@ const db = {
       message: `Admin has set your schedule for Bus ${busCode} (${resolvedStart || 'Start'} ➔ ${resolvedDest || 'Destination'}) from ${newSched.departure_time} to ${newSched.arrival_time} (${newSched.days}). Your schedule time is on — please be ready to ride safely!`,
       type: 'driver_schedule',
       shuttle_id: sId,
-      user_id: driver?.user_id || fallbackDriverUser?.id || null,
+      user_id: driver?.user_id || null,
       organization_name: orgName
     });
 
     let emailDelivery = null;
-    if (driverEmail) {
+    if (isRealEmail(driverEmail)) {
       try {
         const { sendDriverScheduleEmail } = require('../services/otpService');
         emailDelivery = await sendDriverScheduleEmail({
           email: driverEmail,
-          name: driverName,
+          name: resolvedDriverName,
           shuttleCode: busCode,
           shuttleName: shuttle?.name || 'Campus Shuttle',
           vehicleNumber: shuttle?.vehicle_number || '',
@@ -4846,20 +4869,22 @@ const db = {
           days: newSched.days,
           isReminder: false
         });
-      } catch (_) {}
+      } catch (err) {
+        console.warn('⚠️ [Driver Schedule Email Warning]:', err?.message || err);
+      }
     }
 
     return {
       ...newSched,
-      driverName,
-      driverEmail,
-      driverUserId: driver?.user_id || fallbackDriverUser?.id || null,
+      driverName: resolvedDriverName,
+      driverEmail: driverEmail || '',
+      driverUserId: driver?.user_id || null,
       shuttleCode: busCode,
       startPoint: resolvedStart,
       destination: resolvedDest,
       driverNotification,
       emailDeliveredVia: emailDelivery?.deliveredVia || null,
-      emailRelayPayload: emailDelivery?.relayPayload || null
+      emailRelayPayload: null
     };
   },
 

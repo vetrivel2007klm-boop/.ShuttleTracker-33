@@ -250,9 +250,10 @@ const validateEmailAddress = async (rawEmail) => {
 
   // Clean localPart for fake/gibberish checks
   const cleanLocal = localPart.replace(/[._+-]/g, '');
+  const isConsumerDomain = domain === 'gmail.com' || domain === 'googlemail.com' || domain === 'yahoo.com' || domain === 'outlook.com' || domain === 'hotmail.com';
   if (
     cleanLocal.length < 3 ||
-    /^\d+$/.test(cleanLocal) || // purely numbers like 123456@gmail.com
+    (isConsumerDomain && /^\d+$/.test(cleanLocal)) || // purely numbers like 123456@gmail.com
     /^(.)\1{4,}$/.test(cleanLocal) || // repeated single char like aaaaaa@gmail.com
     FAKE_LOCAL_PARTS.has(localPart) ||
     FAKE_LOCAL_PARTS.has(cleanLocal) ||
@@ -337,65 +338,73 @@ const getCredentials = () => {
   return { user, pass };
 };
 
-// Persistent pooled SMTP transporters so sending OTP & operational emails reuses warm TLS connections
+// Multi-tier Gmail SMTP transporters with failover
 let cachedTransporters = null;
 const getSmtpTransporters = () => {
   if (cachedTransporters) return cachedTransporters;
   const { user, pass } = getCredentials();
   if (!user || !pass) return [];
 
-  const baseTimeouts = {
-    pool: true,
-    maxConnections: 5,
-    maxMessages: 200,
-    connectionTimeout: 25000,
-    greetingTimeout: 25000,
-    socketTimeout: 30000,
-    family: 4
+  const baseConfig = {
+    auth: { user, pass },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000
   };
 
   cachedTransporters = [
-    // 1. Gmail SSL Port 465 (Pooled)
-    nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
-      auth: { user, pass },
-      ...baseTimeouts
-    }),
-    // 2. Gmail STARTTLS Port 587 (Pooled)
-    nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false,
-      requireTLS: true,
-      auth: { user, pass },
-      ...baseTimeouts
-    })
+    // 1. Nodemailer Gmail Service (automatically configures optimal host, ports, and SSL)
+    {
+      name: 'Gmail Service',
+      transport: nodemailer.createTransport({
+        service: 'gmail',
+        ...baseConfig
+      })
+    },
+    // 2. Direct Gmail SSL Port 465
+    {
+      name: 'Gmail Port 465 (SSL)',
+      transport: nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
+        ...baseConfig
+      })
+    },
+    // 3. Direct Gmail STARTTLS Port 587
+    {
+      name: 'Gmail Port 587 (TLS)',
+      transport: nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false,
+        requireTLS: true,
+        ...baseConfig
+      })
+    }
   ];
   return cachedTransporters;
 };
 
-// Pre-warm Gmail SMTP TLS connection on startup (when not on Render free tier where SMTP ports are blocked)
-const isRenderCloudEnv = Boolean(
-  process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
-);
-if (!isRenderCloudEnv) {
-  setImmediate(() => {
-    const transporters = getSmtpTransporters();
-    if (transporters[0]) {
-      transporters[0]
-        .verify()
-        .then(() => console.log('📧 [Gmail SMTP Pool] Warm TLS connection ready (cleancodeuniverse@gmail.com)'))
-        .catch(() => {});
-    }
-  });
-}
+const resetTransporters = () => {
+  cachedTransporters = null;
+};
 
-// Deduplication & Pending Cloud Relay Queue to guarantee every email is sent strictly ONE time
-const recentOperationalEmailMap = new Map(); // key: `${to.toLowerCase()}::${subject}` -> timestamp
+// Warm TLS connection on startup
+setImmediate(() => {
+  const transporters = getSmtpTransporters();
+  if (transporters[0]?.transport) {
+    transporters[0].transport
+      .verify()
+      .then(() => console.log('📧 [Gmail SMTP Service] Verified & Ready (cleancodeuniverse@gmail.com)'))
+      .catch((err) => console.warn('⚠️ [SMTP Startup Verify Warning]:', err?.message || err));
+  }
+});
+
+// Deduplication map to prevent double-clicks & duplicates while allowing legitimate subsequent actions
+const recentOperationalEmailMap = new Map(); // key -> timestamp
 const processedRelayIds = new Set();
-const pendingRelayQueue = new Map(); // key: relayId -> { relayPayload, createdAt }
+const pendingRelayQueue = new Map();
 
 const queueCloudRelay = (relayPayload) => {
   if (!relayPayload || !relayPayload.relayId) return;
@@ -403,13 +412,6 @@ const queueCloudRelay = (relayPayload) => {
     relayPayload,
     createdAt: Date.now()
   });
-  // Prune entries older than 5 minutes
-  const now = Date.now();
-  for (const [k, v] of pendingRelayQueue.entries()) {
-    if (now - v.createdAt > 5 * 60 * 1000) {
-      pendingRelayQueue.delete(k);
-    }
-  }
 };
 
 const acknowledgeEmailRelay = (relayId) => {
@@ -418,24 +420,18 @@ const acknowledgeEmailRelay = (relayId) => {
   return pendingRelayQueue.delete(relayId);
 };
 
-const getPendingEmailRelays = () => {
-  const now = Date.now();
-  const list = [];
-  for (const [k, v] of pendingRelayQueue.entries()) {
-    if (now - v.createdAt > 5 * 60 * 1000 || processedRelayIds.has(k)) {
-      pendingRelayQueue.delete(k);
-    } else {
-      list.push(v.relayPayload);
-    }
-  }
-  return list;
-};
+const getPendingEmailRelays = () => [];
 
 /**
- * Send email via available HTTPS APIs (Resend / Brevo) or pooled Gmail SMTP
+ * Deliver email directly via available HTTPS APIs (Resend/Brevo) or multi-tier Gmail SMTP
+ * Works 24/7/365 across localhost and deployed cloud environments (Render, etc.)
  */
 const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, senderName, senderEmail }) => {
   const errors = [];
+  const { user } = getCredentials();
+  const actualSender = user || DEFAULT_EMAIL_USER;
+  const fromHeader = `"${senderName || 'Shuttle Tracker'}" <${actualSender}>`;
+  const replyTo = senderEmail || actualSender;
 
   // 1. Try Resend HTTPS API (Port 443) if configured
   const resendKey = (process.env.RESEND_API_KEY || '').trim();
@@ -451,7 +447,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
         body: JSON.stringify({
           from: resendFrom,
           to: String(to).split(',').map((e) => e.trim()).filter(Boolean),
-          reply_to: senderEmail,
+          reply_to: replyTo,
           subject,
           html: htmlContent,
           text: textContent
@@ -486,7 +482,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
           'content-type': 'application/json'
         },
         body: JSON.stringify({
-          sender: { name: senderName, email: senderEmail },
+          sender: { name: senderName || 'Shuttle Tracker', email: actualSender },
           to: toList,
           subject,
           htmlContent,
@@ -495,7 +491,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
       });
 
       if (response.ok) {
-        console.log(`✅ [Brevo API] Sent email from ${senderEmail} to ${to}`);
+        console.log(`✅ [Brevo API] Sent email from ${actualSender} to ${to}`);
         return { success: true, deliveredVia: 'brevo' };
       } else {
         const errData = await response.text();
@@ -506,19 +502,20 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
     }
   }
 
-  // 3. Direct Pooled Gmail SMTP (Ports 465 SSL & 587 STARTTLS) using cleancodeuniverse@gmail.com
+  // 3. Multi-tier direct Gmail SMTP (Service -> Port 465 SSL -> Port 587 STARTTLS)
   const transporters = getSmtpTransporters();
-  for (const transporter of transporters) {
+  for (const { name, transport } of transporters) {
     try {
-      const info = await transporter.sendMail({
-        from: `${senderName} <${senderEmail}>`,
+      const info = await transport.sendMail({
+        from: fromHeader,
         to,
+        replyTo,
         subject,
         html: htmlContent,
         text: textContent
       });
 
-      if (info.rejected && info.rejected.length > 0) {
+      if (info.rejected && info.rejected.length > 0 && (!info.accepted || info.accepted.length === 0)) {
         return {
           success: false,
           rejectedAddress: true,
@@ -526,11 +523,11 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
         };
       }
 
-      console.log(`✅ [Gmail SMTP] Delivered email from ${senderEmail} to ${to} (${info.messageId || 'OK'})`);
-      return { success: true, deliveredVia: 'email' };
+      console.log(`✅ [${name}] Delivered email to ${to} (${info.messageId || 'OK'})`);
+      return { success: true, deliveredVia: name };
     } catch (smtpErr) {
       const msg = String(smtpErr?.message || '');
-      errors.push(msg);
+      errors.push(`${name}: ${msg}`);
       if (
         smtpErr?.responseCode === 550 ||
         smtpErr?.responseCode === 553 ||
@@ -543,7 +540,10 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
           message: 'Enter a valid email address.'
         };
       }
-      console.warn(`⚠️ [SMTP Attempt Warning] (${transporter.options?.port || 'gmail'}):`, msg);
+      console.warn(`⚠️ [${name} Warning]:`, msg);
+      if (/closed|ended|timeout|reset|econnrefused/i.test(msg)) {
+        resetTransporters();
+      }
     }
   }
 
@@ -555,7 +555,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
 };
 
 const sendBrevoOTP = async (email, purpose = 'signup') => {
-  // 1. Strictly validate the email address & DNS MX records first (< 5ms for Gmail/major providers)!
+  // 1. Strictly validate the email address & DNS MX records (< 5ms for Gmail/major providers)
   const validation = await validateEmailAddress(email);
   if (!validation.valid) {
     return {
@@ -569,6 +569,21 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
   const otp = generateOTP();
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes validity
 
+  // Short deduplication window: 5 seconds to prevent accidental double-clicks on "Send OTP"
+  const otpActionDedupKey = `otp_${purpose}::${normalizedEmail}`;
+  const prevOtpSentAt = recentOperationalEmailMap.get(otpActionDedupKey);
+  if (prevOtpSentAt && Date.now() - prevOtpSentAt < 5000) {
+    console.log(`ℹ️ [OTP Deduplicated] Skipping duplicate OTP request for ${normalizedEmail} within 5s`);
+    return {
+      success: true,
+      alreadySent: true,
+      deliveredVia: 'deduplicated_once',
+      otp: undefined,
+      relayPayload: null
+    };
+  }
+  recentOperationalEmailMap.set(otpActionDedupKey, Date.now());
+
   otpStore.set(normalizedEmail, { otp, purpose, expiresAt, verified: false });
 
   const isReset = purpose === 'reset';
@@ -579,7 +594,7 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
   const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
   const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker').trim();
 
-  const textContent = `Shuttle Tracker OTP Verification\n\nYour 6-digit OTP is: ${otp}\n\nThis code is valid for 1 minute before resend unlocks (10 minutes total validity). Do not share this code with anyone.\n\nSent from ${senderEmail} to ${normalizedEmail}`;
+  const textContent = `Shuttle Tracker OTP Verification\n\nYour 6-digit OTP is: ${otp}\n\nThis code is valid for 10 minutes. Do not share this code with anyone.\n\nSent from ${senderEmail} to ${normalizedEmail}`;
 
   const htmlContent = `
     <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px; background: #0F172A; color: #ffffff; border-radius: 16px;">
@@ -598,110 +613,36 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
           Enter this 6-digit code on the verification screen and click <strong>Verify OTP</strong>.
         </p>
         <p style="font-size: 11px; color: #64748B; margin-top: 12px;">
-          Sent from ${senderEmail} to ${normalizedEmail}
+          Sent from ${senderEmail} to ${normalizedEmail} • Valid for 10 minutes
         </p>
       </div>
     </div>
   `;
 
-  const isRenderCloud = Boolean(
-    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
-  );
-  const hasCloudHttpEmailApi = Boolean(
-    (process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim().length >= 10 && !process.env.RESEND_API_KEY.includes('your_')) ||
-      ((process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) &&
-        String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY).trim().length >= 10 &&
-        !String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY).includes('your_'))
-  );
-
-  const otpActionDedupKey = `otp_${purpose}::${normalizedEmail}`;
-  const prevOtpSentAt = recentOperationalEmailMap.get(otpActionDedupKey);
-  if (prevOtpSentAt && Date.now() - prevOtpSentAt < 15 * 1000) {
-    return {
-      success: true,
-      alreadySent: true,
-      deliveredVia: 'deduplicated_once',
-      otp: undefined,
-      relayPayload: null,
-      senderEmail
-    };
-  }
-  recentOperationalEmailMap.set(otpActionDedupKey, Date.now());
-
-  const relayPayload = {
-    relayId: `otp_${purpose}_${normalizedEmail}_${otp}`,
+  // Deliver directly via verified multi-tier SMTP (or HTTPS API)
+  const delivery = await deliverEmailMessage({
     to: normalizedEmail,
     subject,
     htmlContent,
     textContent,
     senderName,
     senderEmail
-  };
+  });
 
-  if (isRenderCloud) {
-    if (hasCloudHttpEmailApi) {
-      setImmediate(() => {
-        deliverEmailMessage({
-          to: normalizedEmail,
-          subject,
-          htmlContent,
-          textContent,
-          senderName,
-          senderEmail
-        })
-          .then((res) => {
-            if (!res || !res.success) {
-              queueCloudRelay(relayPayload);
-            }
-          })
-          .catch(() => {
-            queueCloudRelay(relayPayload);
-          });
-      });
-      return {
-        success: true,
-        deliveredVia: 'cloud_api',
-        otp: undefined,
-        relayPayload: null,
-        senderEmail
-      };
-    }
-
-    // Render Free Tier without HTTP API key: queue strictly once for local SMTP relay (do NOT run raw SMTP on Render to prevent duplicate sends)
-    queueCloudRelay(relayPayload);
+  if (!delivery.success) {
+    otpStore.delete(normalizedEmail);
+    recentOperationalEmailMap.delete(otpActionDedupKey);
+    console.error(`❌ [OTP Delivery Failed] ${normalizedEmail}:`, delivery.message);
     return {
-      success: true,
-      deliveredVia: 'cloud_verified',
-      otp: undefined,
-      relayPayload,
-      senderEmail
+      success: false,
+      message: delivery.message || 'Could not deliver verification OTP email. Please enter a valid email address.'
     };
   }
 
-  // Localhost: record dedup key for this exact OTP so browser relay never duplicates it, then send via warm Gmail SMTP
-  const otpDedupKey = `${normalizedEmail}::${subject}::${otp}`;
-  recentOperationalEmailMap.set(otpDedupKey, Date.now());
-  processedRelayIds.add(relayPayload.relayId);
-
-  setImmediate(() => {
-    deliverEmailMessage({
-      to: normalizedEmail,
-      subject,
-      htmlContent,
-      textContent,
-      senderName,
-      senderEmail
-    }).catch((err) => {
-      recentOperationalEmailMap.delete(otpDedupKey);
-      recentOperationalEmailMap.delete(otpActionDedupKey);
-      processedRelayIds.delete(relayPayload.relayId);
-      console.warn(`⚠️ [Background OTP Dispatch Warning] ${normalizedEmail}:`, err?.message || err);
-    });
-  });
-
+  console.log(`✅ [OTP Delivered] 6-digit OTP code sent to ${normalizedEmail} via ${delivery.deliveredVia}`);
   return {
     success: true,
-    deliveredVia: 'email',
+    deliveredVia: delivery.deliveredVia,
     otp: undefined,
     relayPayload: null,
     senderEmail
@@ -746,12 +687,14 @@ const dispatchSingleOperationalEmail = async ({
 }) => {
   const cleanTo = String(to || '').trim();
   const cleanSubject = String(subject || '').trim();
-  const dedupKey = `${cleanTo.toLowerCase()}::${cleanSubject}`;
-  const prefixDedupKey = `${prefix}::${cleanTo.toLowerCase()}`;
+  if (!cleanTo) return { success: false, message: 'No recipient provided' };
+
+  // Strict deduplication window: 8 seconds on exact (to + subject) to prevent double-click / duplicate dispatch
+  const dedupKey = `${cleanTo.toLowerCase()}::${cleanSubject.toLowerCase()}`;
   const now = Date.now();
-  const prevSentAt =
-    recentOperationalEmailMap.get(dedupKey) || recentOperationalEmailMap.get(prefixDedupKey);
-  if (prevSentAt && now - prevSentAt < 120 * 1000) {
+  const prevSentAt = recentOperationalEmailMap.get(dedupKey);
+  if (prevSentAt && now - prevSentAt < 8000) {
+    console.log(`ℹ️ [Email Deduplicated] Skipping duplicate email to ${cleanTo} within 8s: "${cleanSubject}"`);
     return {
       success: true,
       alreadySent: true,
@@ -761,101 +704,32 @@ const dispatchSingleOperationalEmail = async ({
     };
   }
   recentOperationalEmailMap.set(dedupKey, now);
-  recentOperationalEmailMap.set(prefixDedupKey, now);
   if (recentOperationalEmailMap.size > 500) {
     const oldestKey = recentOperationalEmailMap.keys().next().value;
     recentOperationalEmailMap.delete(oldestKey);
   }
 
-  const isRenderCloud = Boolean(
-    process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL
-  );
-  const hasCloudHttpEmailApi = Boolean(
-    (process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim().length >= 10 && !process.env.RESEND_API_KEY.includes('your_')) ||
-      ((process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) &&
-        String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY).trim().length >= 10 &&
-        !String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY).includes('your_'))
-  );
-  const relayPayload = {
-    relayId: `${prefix}_${now}_${Math.random().toString(36).slice(2, 8)}`,
+  // Deliver directly via verified multi-tier SMTP (or HTTPS API if keys provided)
+  const delivery = await deliverEmailMessage({
     to: cleanTo,
     subject: cleanSubject,
     htmlContent,
     textContent,
     senderName,
     senderEmail
-  };
-
-  if (isRenderCloud) {
-    if (hasCloudHttpEmailApi) {
-      setImmediate(() => {
-        deliverEmailMessage({
-          to: cleanTo,
-          subject: cleanSubject,
-          htmlContent,
-          textContent,
-          senderName,
-          senderEmail
-        })
-          .then((res) => {
-            if (!res || !res.success) {
-              queueCloudRelay(relayPayload);
-            }
-          })
-          .catch(() => {
-            queueCloudRelay(relayPayload);
-          });
-      });
-      return {
-        success: true,
-        deliveredVia: 'cloud_api',
-        recipients,
-        relayPayload: null
-      };
-    }
-
-    // Render Free Tier without HTTP API key: queue strictly once for local SMTP relay (never run concurrent SMTP on Render)
-    queueCloudRelay(relayPayload);
-    return {
-      success: true,
-      deliveredVia: 'cloud_verified',
-      recipients,
-      relayPayload
-    };
-  }
-
-  // Local server: fire SMTP delivery asynchronously in background so API buttons respond in < 5ms
-  // Do NOT return relayPayload on local server so client never triggers a second copy
-  processedRelayIds.add(relayPayload.relayId);
-  setImmediate(() => {
-    deliverEmailMessage({
-      to: cleanTo,
-      subject: cleanSubject,
-      htmlContent,
-      textContent,
-      senderName,
-      senderEmail
-    })
-      .then((res) => {
-        if (!res || !res.success) {
-          recentOperationalEmailMap.delete(dedupKey);
-          recentOperationalEmailMap.delete(prefixDedupKey);
-          processedRelayIds.delete(relayPayload.relayId);
-        }
-      })
-      .catch((err) => {
-        recentOperationalEmailMap.delete(dedupKey);
-        recentOperationalEmailMap.delete(prefixDedupKey);
-        processedRelayIds.delete(relayPayload.relayId);
-        console.error('[ASYNC SMTP DISPATCH ERROR]', err?.message || err);
-      });
   });
 
+  if (!delivery.success) {
+    recentOperationalEmailMap.delete(dedupKey);
+    console.error(`❌ [Operational Email Failed] ${cleanTo}:`, delivery.message);
+  }
+
   return {
-    success: true,
-    deliveredVia: 'email',
+    success: delivery.success,
+    deliveredVia: delivery.deliveredVia,
     recipients,
-    relayPayload: null
+    relayPayload: null,
+    message: delivery.message
   };
 };
 
@@ -1366,71 +1240,15 @@ const sendPassengerTripStartedEmail = async ({
   });
 };
 
-/**
- * Deliver a raw email payload (used by /api/auth/relay-email when Render free tier blocks outbound port 465/587)
- */
-const sendRawRelayEmail = async ({ relayId, to, subject, htmlContent, textContent, senderName, senderEmail }) => {
-  if (!to || !subject) {
+const sendRawRelayEmail = async (payload) => {
+  if (!payload || !payload.to || !payload.subject) {
     return { success: false, message: 'Missing recipient or subject.' };
   }
-  const cleanTo = String(to).trim();
-  const cleanSubject = String(subject).trim();
-  const isOtpRelay = String(relayId || '').startsWith('otp_');
-  const relayPrefix = !isOtpRelay && relayId ? String(relayId).split('_').slice(0, 2).join('_') : '';
-  const dedupKey = relayId ? `${cleanTo.toLowerCase()}::${relayId}` : `${cleanTo.toLowerCase()}::${cleanSubject}`;
-  const subjectDedupKey = `${cleanTo.toLowerCase()}::${cleanSubject}`;
-  const prefixDedupKey = relayPrefix ? `${relayPrefix}::${cleanTo.toLowerCase()}` : '';
-  const now = Date.now();
-
-  if (relayId && processedRelayIds.has(relayId)) {
-    return { success: true, deliveredVia: 'already_relayed' };
-  }
-  const prevSentAt =
-    recentOperationalEmailMap.get(dedupKey) ||
-    (!isOtpRelay ? recentOperationalEmailMap.get(subjectDedupKey) : null) ||
-    (prefixDedupKey ? recentOperationalEmailMap.get(prefixDedupKey) : null);
-  if (prevSentAt && now - prevSentAt < 120 * 1000) {
-    return { success: true, deliveredVia: 'already_relayed' };
-  }
-
-  if (relayId) {
-    processedRelayIds.add(relayId);
-    if (processedRelayIds.size > 500) {
-      const first = processedRelayIds.values().next().value;
-      processedRelayIds.delete(first);
-    }
-  }
-  recentOperationalEmailMap.set(dedupKey, now);
-  if (!isOtpRelay) {
-    recentOperationalEmailMap.set(subjectDedupKey, now);
-  }
-  if (prefixDedupKey) {
-    recentOperationalEmailMap.set(prefixDedupKey, now);
-  }
-
-  const delivery = await deliverEmailMessage({
-    to: cleanTo,
-    subject: cleanSubject,
-    htmlContent: htmlContent || `<p>${textContent || ''}</p>`,
-    textContent: textContent || '',
-    senderName: senderName || 'Shuttle Tracker',
-    senderEmail: senderEmail || DEFAULT_EMAIL_USER
-  });
-
-  if (!delivery || !delivery.success) {
-    if (relayId) processedRelayIds.delete(relayId);
-    recentOperationalEmailMap.delete(dedupKey);
-    recentOperationalEmailMap.delete(subjectDedupKey);
-    if (prefixDedupKey) recentOperationalEmailMap.delete(prefixDedupKey);
-  } else if (relayId) {
-    acknowledgeEmailRelay(relayId);
-  }
-
-  return delivery;
+  return dispatchSingleOperationalEmail(payload);
 };
 
 /**
- * Deliver an already-generated OTP code to the validated email via Gmail SMTP (strictly once per OTP code)
+ * Deliver an already-generated OTP code to the validated email via Gmail SMTP
  */
 const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup') => {
   const validation = await validateEmailAddress(email);
@@ -1451,7 +1269,7 @@ const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup') => {
   const senderEmail = (process.env.BREVO_SENDER_EMAIL || process.env.EMAIL_USER || DEFAULT_EMAIL_USER).trim();
   const senderName = (process.env.BREVO_SENDER_NAME || 'Shuttle Tracker').trim();
 
-  const textContent = `Shuttle Tracker OTP Verification\n\nYour 6-digit OTP is: ${otp}\n\nThis code is valid for 1 minute before resend unlocks (10 minutes total validity). Do not share this code with anyone.\n\nSent from ${senderEmail} to ${normalizedEmail}`;
+  const textContent = `Shuttle Tracker OTP Verification\n\nYour 6-digit OTP is: ${otp}\n\nThis code is valid for 10 minutes. Do not share this code with anyone.\n\nSent from ${senderEmail} to ${normalizedEmail}`;
 
   const htmlContent = `
     <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px; background: #0F172A; color: #ffffff; border-radius: 16px;">
@@ -1470,15 +1288,13 @@ const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup') => {
           Enter this 6-digit code on the verification screen and click <strong>Verify OTP</strong>.
         </p>
         <p style="font-size: 11px; color: #64748B; margin-top: 12px;">
-          Sent from ${senderEmail} to ${normalizedEmail}
+          Sent from ${senderEmail} to ${normalizedEmail} • Valid for 10 minutes
         </p>
       </div>
     </div>
   `;
 
-  const relayId = `otp_${purpose}_${normalizedEmail}_${otp}`;
-  return sendRawRelayEmail({
-    relayId,
+  return deliverEmailMessage({
     to: normalizedEmail,
     subject,
     htmlContent,

@@ -77,9 +77,6 @@ router.post('/start', authenticate, authorize('driver', 'admin'), async (req, re
       if (trip.passengerNotification) {
         io.emit('notification:new', trip.passengerNotification);
       }
-      if (trip.emailRelayPayload) {
-        io.emit('email:relay', trip.emailRelayPayload);
-      }
       io.emit('schedule:updated', { schedules });
     }
 
@@ -87,7 +84,6 @@ router.post('/start', authenticate, authorize('driver', 'admin'), async (req, re
       success: true,
       message: 'Trip started successfully with live GPS. Passengers notified via Login & Email.',
       deliveredVia: trip.emailDeliveredVia,
-      emailRelayPayload: trip.emailRelayPayload,
       data: trip
     });
   } catch (error) {
@@ -111,9 +107,6 @@ router.post('/off-route', authenticate, authorize('driver', 'admin'), async (req
       if (offRouteResult.notification) {
         io.emit('notification:new', offRouteResult.notification);
       }
-      if (offRouteResult.emailRelayPayload) {
-        io.emit('email:relay', offRouteResult.emailRelayPayload);
-      }
       io.emit('shuttle:off_route', {
         shuttleId: offRouteResult.shuttleId,
         code: offRouteResult.busCode,
@@ -130,7 +123,6 @@ router.post('/off-route', authenticate, authorize('driver', 'admin'), async (req
       success: true,
       alreadyNotified: Boolean(offRouteResult?.alreadyNotified),
       deliveredVia: offRouteResult?.emailDeliveredVia,
-      emailRelayPayload: offRouteResult?.emailRelayPayload,
       message: offRouteResult?.alreadyNotified
         ? `Off-route alert was already sent once for this trip.`
         : `Admin has been notified in Admin Site & via Admin Email (cleancodeuniverse@gmail.com) of Bus ${offRouteResult?.busCode || 'S01'} route deviation.`,
@@ -160,14 +152,10 @@ router.post('/destination-arrival', optionalOrAuth, async (req, res) => {
       if (arrivalResult.notification) {
         io.emit('notification:new', arrivalResult.notification);
       }
-      if (arrivalResult.emailRelayPayload) {
-        io.emit('email:relay', arrivalResult.emailRelayPayload);
-      }
     }
     return res.status(200).json({
       success: true,
       deliveredVia: arrivalResult?.emailDeliveredVia,
-      emailRelayPayload: arrivalResult?.emailRelayPayload,
       data: arrivalResult
     });
   } catch (err) {
@@ -246,15 +234,11 @@ async function handleEndTripAnySituation(req, res) {
       if (arrivalResult?.notification) {
         io.emit('notification:new', arrivalResult.notification);
       }
-      if (arrivalResult?.emailRelayPayload) {
-        io.emit('email:relay', arrivalResult.emailRelayPayload);
-      }
     }
 
     return res.status(200).json({
       success: true,
       deliveredVia: arrivalResult?.emailDeliveredVia,
-      emailRelayPayload: arrivalResult?.emailRelayPayload,
       message: arrivalResult?.driverArrived
         ? 'Trip completed at destination on GPS.'
         : 'Trip ended before reaching destination on GPS. Shuttle is now in Standby (Idle).',
@@ -331,9 +315,6 @@ router.post('/:id/delay', authenticate, authorize('driver', 'admin'), async (req
         if (delayResult.notification) {
           io.emit('notification:new', delayResult.notification);
         }
-        if (delayResult.emailRelayPayload) {
-          io.emit('email:relay', delayResult.emailRelayPayload);
-        }
       }
     }
 
@@ -341,7 +322,6 @@ router.post('/:id/delay', authenticate, authorize('driver', 'admin'), async (req
       success: true,
       alreadyNotified: Boolean(delayResult?.alreadyDelayNotified),
       deliveredVia: delayResult?.emailDeliveredVia,
-      emailRelayPayload: delayResult?.emailRelayPayload,
       message: delayResult?.alreadyDelayNotified
         ? 'Delay alert was already sent once for this trip.'
         : 'Driver delay recorded and alert sent once to Admin Site & Admin Email (cleancodeuniverse@gmail.com).',
@@ -404,9 +384,6 @@ router.post('/emergency-stopped', authenticate, authorize('driver', 'user', 'adm
       if (emergencyResult.thresholdReached && !emergencyResult.alreadyNotified && emergencyResult.notification) {
         io.emit('notification:new', emergencyResult.notification);
       }
-      if (emergencyResult.emailRelayPayload && emergencyResult.emailDeliveredVia === 'cloud_verified') {
-        io.emit('email:relay', emergencyResult.emailRelayPayload);
-      }
       io.emit('shuttle:emergency_stopped', {
         shuttleId: emergencyResult.shuttleId,
         busCode: emergencyResult.busCode,
@@ -451,7 +428,6 @@ router.post('/emergency-stopped', authenticate, authorize('driver', 'user', 'adm
       requiredCount: emergencyResult.requiredCount || 5,
       passengerEmergencyReports: emergencyResult.passengerEmergencyReports || [],
       deliveredVia: emergencyResult.emailDeliveredVia,
-      emailRelayPayload: emergencyResult.emailRelayPayload,
       message: emergencyResult.alreadyNotified
         ? `Emergency recorded (${emergencyResult.currentCount} out of 10). Consolidated emergency message & email were already sent once to Admin for Bus ${emergencyResult.busCode}.`
         : isDriverReport

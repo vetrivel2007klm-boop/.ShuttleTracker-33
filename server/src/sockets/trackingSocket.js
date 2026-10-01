@@ -517,9 +517,6 @@ function setupTrackingSocket(io) {
       if (Array.isArray(notifications) && notifications.length > 0) {
         notifications.forEach((notif) => {
           io.emit('notification:new', notif);
-          if (notif.emailRelayPayload) {
-            io.emit('email:relay', notif.emailRelayPayload);
-          }
         });
         const schedules = await db.getAllSchedules();
         io.emit('schedule:updated', { schedules });
@@ -762,9 +759,6 @@ function setupTrackingSocket(io) {
               if (offRouteResult.notification) {
                 io.emit('notification:new', offRouteResult.notification);
               }
-              if (offRouteResult.emailRelayPayload) {
-                io.emit('email:relay', offRouteResult.emailRelayPayload);
-              }
               io.emit('shuttle:off_route', {
                 shuttleId: offRouteResult.shuttleId,
                 code: offRouteResult.busCode,
@@ -855,9 +849,6 @@ function setupTrackingSocket(io) {
               });
               if (emergencyResult && !emergencyResult.alreadyNotified && emergencyResult.notification) {
                 io.emit('notification:new', emergencyResult.notification);
-                if (emergencyResult.emailRelayPayload) {
-                  io.emit('email:relay', emergencyResult.emailRelayPayload);
-                }
                 io.emit('shuttle:emergency_stopped', {
                   shuttleId: emergencyResult.shuttleId,
                   busCode: emergencyResult.busCode,
@@ -890,9 +881,6 @@ function setupTrackingSocket(io) {
               });
               if (arrivalResult.notification) {
                 io.emit('notification:new', arrivalResult.notification);
-              }
-              if (arrivalResult.emailRelayPayload) {
-                io.emit('email:relay', arrivalResult.emailRelayPayload);
               }
             }
           }

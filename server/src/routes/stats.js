@@ -39,9 +39,6 @@ router.get('/schedules', optionalAuthenticate, async (req, res) => {
         if (io && Array.isArray(newNotifs) && newNotifs.length > 0) {
           newNotifs.forEach((n) => {
             io.emit('notification:new', n);
-            if (n.emailRelayPayload) {
-              io.emit('email:relay', n.emailRelayPayload);
-            }
           });
         }
       } catch (_) {}
@@ -54,7 +51,7 @@ router.get('/schedules', optionalAuthenticate, async (req, res) => {
 // POST /api/stats/schedules - Create a new schedule slot, notify driver in Driver Login & email driver
 router.post('/schedules', authenticate, authorize('admin'), async (req, res) => {
   try {
-    const { shuttle_id, route_id, route_name, departure_time, arrival_time, days, organization_name } = req.body;
+    const { shuttle_id, route_id, route_name, departure_time, arrival_time, days, organization_name, driver_name, driver_email } = req.body;
     if (!departure_time) {
       return res.status(400).json({ success: false, message: 'Departure time is required.' });
     }
@@ -66,7 +63,9 @@ router.post('/schedules', authenticate, authorize('admin'), async (req, res) => 
       departure_time,
       arrival_time,
       days,
-      organization_name: orgName
+      organization_name: orgName,
+      driver_name,
+      driver_email
     });
     const io = req.app.get('io');
     if (io) {
@@ -88,9 +87,6 @@ router.post('/schedules', authenticate, authorize('admin'), async (req, res) => 
         message: `Your schedule time (${created.departure_time} – ${created.arrival_time}) is set for Bus ${created.shuttleCode}. Please be ready to ride safely!`
       });
       io.emit('driver:updated', { shuttleId: created.shuttle_id });
-      if (created.emailRelayPayload && created.emailDeliveredVia === 'cloud_verified') {
-        io.emit('email:relay', created.emailRelayPayload);
-      }
       const notifications = await db.getNotifications(null, orgName);
       if (notifications.length > 0 && notifications[0]?.title?.includes('Driver Not Started Trip')) {
         io.emit('notification:new', notifications[0]);
@@ -100,7 +96,6 @@ router.post('/schedules', authenticate, authorize('admin'), async (req, res) => 
       success: true,
       message: `Schedule slot created (${created.departure_time} – ${created.arrival_time}). Driver ${created.driverName || ''} notified in Driver Login & via Email ("Ready to ride safely!").`,
       deliveredVia: created.emailDeliveredVia,
-      emailRelayPayload: created.emailRelayPayload,
       data: created
     });
   } catch (error) {

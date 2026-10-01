@@ -220,15 +220,10 @@ router.post('/', authenticate, authorize('admin'), async (req, res) => {
       routeName: shuttleObj ? `${shuttleObj.start_point} ➔ ${shuttleObj.destination}` : 'Campus Transit Route'
     });
 
-    if (io && emailStatus?.relayPayload) {
-      io.emit('email:relay', emailStatus.relayPayload);
-    }
-
     res.status(201).json({
       success: true,
       message: `Driver ${newDriver.name} registered and login password (${generatedPassword}) sent to ${newDriver.email}!`,
       deliveredVia: emailStatus?.deliveredVia || null,
-      emailRelayPayload: emailStatus?.relayPayload || null,
       data: { ...newDriver, plain_password: generatedPassword }
     });
   } catch (error) {
@@ -345,15 +340,10 @@ router.post('/:id/replace', authenticate, authorize('admin'), async (req, res) =
       routeName: shuttleObj ? `${shuttleObj.start_point} ➔ ${shuttleObj.destination}` : 'Campus Transit Route'
     });
 
-    if (io && emailStatus?.relayPayload) {
-      io.emit('email:relay', emailStatus.relayPayload);
-    }
-
     res.status(201).json({
       success: true,
       message: `Old driver permanently removed. Replacement driver ${newDriver.name} assigned and login password (${generatedPassword}) emailed to ${newDriver.email}!`,
       deliveredVia: emailStatus?.deliveredVia || null,
-      emailRelayPayload: emailStatus?.relayPayload || null,
       data: newDriver
     });
   } catch (error) {
