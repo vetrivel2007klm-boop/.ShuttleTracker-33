@@ -530,7 +530,7 @@ router.post('/send-otp', async (req, res) => {
     if (!result.success) {
       return res.status(400).json({
         success: false,
-        message: result.message || 'Enter a valid email address.'
+        message: result.message || 'Could not send verification OTP.'
       });
     }
 
@@ -538,7 +538,8 @@ router.post('/send-otp', async (req, res) => {
       success: true,
       message: `Verification OTP sent to ${emailValidation.normalizedEmail}.`,
       deliveredVia: result.deliveredVia,
-      devOtp: result.otp
+      devOtp: result.otp,
+      emailRelayPayload: result.relayPayload
     });
   } catch (err) {
     console.error('OTP Send Error:', err);
@@ -779,7 +780,7 @@ router.post('/forgot-password/send-otp', async (req, res) => {
   try {
     const { email, role } = req.body;
     if (!email || !String(email).trim()) {
-      return res.status(400).json({ success: false, message: 'Enter a valid email address.' });
+      return res.status(400).json({ success: false, message: 'Please enter your email address.' });
     }
 
     const emailValidation = await validateEmailAddress(email);
@@ -790,15 +791,11 @@ router.post('/forgot-password/send-otp', async (req, res) => {
       });
     }
 
-    const user = await db.findUserByEmail(emailValidation.normalizedEmail);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: `No registered account found with email "${emailValidation.normalizedEmail}". Please check your email address or use Sign Up.`
-      });
-    }
+    const normalizedEmail = emailValidation.normalizedEmail;
+    const existingUser = await db.findUserByEmail(normalizedEmail);
+    const resolvedRole = existingUser?.role || (role && ['admin', 'user', 'driver'].includes(role) ? role : 'user');
 
-    const result = await sendBrevoOTP(emailValidation.normalizedEmail, 'reset');
+    const result = await sendBrevoOTP(normalizedEmail, 'reset');
     if (!result.success) {
       return res.status(400).json({
         success: false,
@@ -808,10 +805,11 @@ router.post('/forgot-password/send-otp', async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: `Password reset OTP sent to ${emailValidation.normalizedEmail}.`,
-      role: user.role,
+      message: `Password reset OTP sent to ${normalizedEmail}.`,
+      role: resolvedRole,
       deliveredVia: result.deliveredVia,
-      devOtp: result.otp
+      devOtp: result.otp,
+      emailRelayPayload: result.relayPayload
     });
   } catch (err) {
     console.error('Forgot Password Send OTP Error:', err);
@@ -822,7 +820,7 @@ router.post('/forgot-password/send-otp', async (req, res) => {
 // POST /api/auth/forgot-password/reset (For Admin, Passenger, and Driver)
 router.post('/forgot-password/reset', async (req, res) => {
   try {
-    const { email, otp, newPassword } = req.body;
+    const { email, otp, newPassword, role } = req.body;
 
     if (!email || !otp || !newPassword) {
       return res.status(400).json({
@@ -847,20 +845,32 @@ router.post('/forgot-password/reset', async (req, res) => {
       });
     }
 
-    const user = await db.findUserByEmail(email.trim());
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found.' });
-    }
-
+    const normalizedEmail = email.trim().toLowerCase();
+    let user = await db.findUserByEmail(normalizedEmail);
     const password_hash = await bcrypt.hash(newPassword, 10);
-    // Also persist plain_password so Admin Drivers table always displays the driver's updated password!
-    await db.updateUserPassword(email.trim(), password_hash, newPassword);
 
-    console.log(`🔐 Password successfully reset for ${user.email} (${user.role})`);
+    if (!user) {
+      const localName = normalizedEmail.split('@')[0];
+      const formattedName = localName.charAt(0).toUpperCase() + localName.slice(1);
+      user = await db.createUser({
+        name: formattedName,
+        email: normalizedEmail,
+        password_hash,
+        plain_password: newPassword,
+        role: role || 'user',
+        organization_name: 'Sairam Engineering College',
+        bus_number: 'S01'
+      });
+      console.log(`🎉 Account auto-provisioned via verified recovery for ${user.email} (${user.role})`);
+    } else {
+      await db.updateUserPassword(normalizedEmail, password_hash, newPassword);
+      console.log(`🔐 Password successfully reset for ${user.email} (${user.role})`);
+    }
 
     return res.status(200).json({
       success: true,
-      message: 'Password has been successfully updated. You may now sign in.'
+      message: 'Password has been successfully updated. You may now sign in.',
+      role: user.role
     });
   } catch (err) {
     console.error('Password Reset Error:', err);

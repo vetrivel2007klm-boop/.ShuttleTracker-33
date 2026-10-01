@@ -582,6 +582,9 @@ export const LoginPage = () => {
 
       setOtpSending(false);
       if (res.data.success) {
+        if (res.data.role && ['admin', 'user', 'driver'].includes(res.data.role)) {
+          setSelectedRole(res.data.role);
+        }
         if (res.data.emailRelayPayload) {
           relayCloudEmail(res.data.emailRelayPayload);
         }
@@ -599,16 +602,16 @@ export const LoginPage = () => {
 
         setSuccessMessage(noticeMsg);
         addToast({
-          title: 'OTP Ready',
+          title: 'OTP Sent',
           message: noticeMsg,
           type: 'success'
         });
       } else {
         setOtpSent(false);
-        const msg = res.data.message || (authMode === 'forgot' ? 'No registered account found with this email.' : 'Could not send verification OTP.');
+        const msg = res.data.message || 'Could not send verification OTP. Please try again.';
         setErrorMessage(msg);
         addToast({
-          title: authMode === 'forgot' ? 'Account Notice' : 'Verification Error',
+          title: 'Notice',
           message: msg,
           type: 'error'
         });
@@ -616,12 +619,11 @@ export const LoginPage = () => {
     } catch (err) {
       setOtpSending(false);
       setOtpSent(false);
-      const is404 = err.response?.status === 404;
       const errMsg =
-        err.response?.data?.message || (authMode === 'forgot' ? 'No registered account found with this email. Please check your email or sign up.' : 'Failed to send OTP. Please check your email.');
+        err.response?.data?.message || 'Failed to dispatch OTP. Please check your email or network connection.';
       setErrorMessage(errMsg);
       addToast({
-        title: is404 ? 'Account Not Found' : 'Email Notice',
+        title: 'Notice',
         message: errMsg,
         type: 'error'
       });
@@ -760,14 +762,18 @@ export const LoginPage = () => {
         const res = await api.post('/auth/forgot-password/reset', {
           email: email.trim(),
           otp: otp.trim(),
-          newPassword: password
+          newPassword: password,
+          role: selectedRole
         });
         setLoading(false);
 
         if (res.data.success) {
+          if (res.data.role && ['admin', 'user', 'driver'].includes(res.data.role)) {
+            setSelectedRole(res.data.role);
+          }
           addToast({
-            title: 'Password Reset Complete',
-            message: 'Your password has been updated. Please login.',
+            title: 'Password Updated',
+            message: 'Your password has been successfully updated. You may now sign in.',
             type: 'success'
           });
           setSuccessMessage('Password updated successfully! Switching to Login...');
