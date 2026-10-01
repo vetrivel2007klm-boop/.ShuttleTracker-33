@@ -500,156 +500,48 @@ export const LoginPage = () => {
     }
   };
 
-  // Strict client-side email validation to reject invalid/wrong/typo emails immediately
+  // Clean standard email validation that accepts all valid student, faculty, corporate & personal emails
   const validateEnteredEmail = (rawEmail) => {
     const clean = String(rawEmail || '').trim().toLowerCase();
-    if (!clean || clean.length < 6 || /\s/.test(clean)) {
-      return { valid: false, message: 'Enter a valid email address.' };
+    if (!clean) {
+      return { valid: false, message: 'Please enter your email address.' };
+    }
+    if (/\s/.test(clean)) {
+      return { valid: false, message: 'Email address cannot contain spaces.' };
     }
     const parts = clean.split('@');
-    if (parts.length !== 2) {
-      return { valid: false, message: 'Enter a valid email address.' };
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      return { valid: false, message: 'Please enter a valid email address format (e.g. name@example.com).' };
     }
     const [localPart, domain] = parts;
-    if (
-      !localPart ||
-      !domain ||
-      localPart.length < 2 ||
-      domain.length < 4 ||
-      localPart.startsWith('.') ||
-      localPart.endsWith('.') ||
-      localPart.includes('..') ||
-      domain.startsWith('.') ||
-      domain.endsWith('.') ||
-      domain.includes('..') ||
-      !domain.includes('.')
-    ) {
-      return { valid: false, message: 'Enter a valid email address.' };
-    }
-
-    const strictEmailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,12}$/;
-    if (!strictEmailRegex.test(clean)) {
-      return { valid: false, message: 'Enter a valid email address.' };
+    if (localPart.length < 1 || domain.length < 3 || !domain.includes('.')) {
+      return { valid: false, message: 'Please enter a valid email address format (e.g. name@example.com).' };
     }
 
     const domainLabels = domain.split('.');
     const tld = domainLabels[domainLabels.length - 1];
-    if (!tld || tld.length < 2 || domainLabels[0].length < 2) {
-      return { valid: false, message: 'Enter a valid email address.' };
+    if (!tld || tld.length < 2 || !/^[a-zA-Z]{2,12}$/.test(tld)) {
+      return { valid: false, message: 'Please enter an email address with a valid domain extension (e.g. .com, .edu, .in).' };
+    }
+
+    const standardEmailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!standardEmailRegex.test(clean)) {
+      return { valid: false, message: 'Please enter a valid email address format (e.g. name@example.com).' };
     }
 
     const typoDomains = new Set([
-      'gmai.com',
-      'gmal.com',
-      'gmial.com',
-      'gamil.com',
-      'gnail.com',
-      'gmaill.com',
-      'ggmail.com',
-      'gmail.co',
-      'gmail.con',
-      'gmail.cm',
-      'gmail.om',
-      'gmail.c',
-      'gmail.in',
-      'gmail.org',
-      'gmail.net',
-      'yaho.com',
-      'yahooo.com',
-      'yhoo.com',
-      'yahoo.co',
-      'yahoo.con',
-      'outlok.com',
-      'outllok.com',
-      'hotmai.com',
-      'hotmal.com',
-      'iclod.com'
+      'gmai.com', 'gmal.com', 'gmial.com', 'gamil.com', 'gnail.com', 'gmaill.com',
+      'gmail.co', 'gmail.con', 'gmail.cm', 'yaho.com', 'yahooo.com', 'yhoo.com',
+      'outlok.com', 'outllok.com', 'hotmai.com', 'hotmal.com'
     ]);
     if (typoDomains.has(domain)) {
       return {
         valid: false,
-        message: `Enter a valid email address. "${domain}" is not a valid email domain.`
+        message: `"${domain}" looks like a typo. Please check the spelling of your email domain.`
       };
     }
 
-    const fakeDomains = new Set([
-      'shuttletrack.com',
-      'example.com',
-      'example.org',
-      'example.net',
-      'test.com',
-      'testing.com',
-      'fake.com',
-      'invalid.com',
-      'wrong.com',
-      'none.com',
-      'null.com',
-      'abc.com',
-      'xyz.com',
-      '123.com',
-      'asdf.com',
-      'qwerty.com',
-      'sample.com',
-      'demo.com',
-      'mailinator.com',
-      'tempmail.com',
-      'yopmail.com'
-    ]);
-    if (fakeDomains.has(domain)) {
-      return { valid: false, message: 'Enter a valid email address.' };
-    }
-
-    const cleanLocal = localPart.replace(/[._+-]/g, '');
-    const fakeLocals = new Set([
-      'test',
-      'testing',
-      'test123',
-      'test1234',
-      'wrong',
-      'wrongemail',
-      'wrongmail',
-      'invalid',
-      'invalidemail',
-      'fake',
-      'fakeemail',
-      'noemail',
-      'abc',
-      'abcd',
-      'abcde',
-      'abcdef',
-      'xyz',
-      'qwerty',
-      'asdf',
-      'asdfgh',
-      '12345',
-      '123456',
-      'sample',
-      'demo',
-      'dummy'
-    ]);
-    const isConsumerDomain = domain === 'gmail.com' || domain === 'googlemail.com' || domain === 'yahoo.com' || domain === 'outlook.com' || domain === 'hotmail.com';
-    if (
-      cleanLocal.length < 3 ||
-      (isConsumerDomain && /^\d+$/.test(cleanLocal)) ||
-      /^(.)\1{4,}$/.test(cleanLocal) ||
-      fakeLocals.has(localPart) ||
-      fakeLocals.has(cleanLocal) ||
-      /^(wrong|invalid|fake|dummy|noemail)/i.test(cleanLocal)
-    ) {
-      return { valid: false, message: 'Enter a valid email address.' };
-    }
-
-    if (domain === 'gmail.com' || domain === 'googlemail.com') {
-      const gmailNoDots = localPart.split('+')[0].replace(/\./g, '');
-      if (gmailNoDots.length < 6 || gmailNoDots.length > 30 || !/[a-z]/.test(gmailNoDots)) {
-        return {
-          valid: false,
-          message: 'Enter a valid Gmail address (username must contain letters and be at least 6 characters).'
-        };
-      }
-    }
-
-    return { valid: true };
+    return { valid: true, normalizedEmail: clean };
   };
 
   // Step 1: Send OTP to Email
@@ -713,10 +605,10 @@ export const LoginPage = () => {
         });
       } else {
         setOtpSent(false);
-        const msg = res.data.message || 'Enter a valid email address.';
+        const msg = res.data.message || (authMode === 'forgot' ? 'No registered account found with this email.' : 'Could not send verification OTP.');
         setErrorMessage(msg);
         addToast({
-          title: 'Invalid Email',
+          title: authMode === 'forgot' ? 'Account Notice' : 'Verification Error',
           message: msg,
           type: 'error'
         });
@@ -724,11 +616,12 @@ export const LoginPage = () => {
     } catch (err) {
       setOtpSending(false);
       setOtpSent(false);
+      const is404 = err.response?.status === 404;
       const errMsg =
-        err.response?.data?.message || 'Enter a valid email address.';
+        err.response?.data?.message || (authMode === 'forgot' ? 'No registered account found with this email. Please check your email or sign up.' : 'Failed to send OTP. Please check your email.');
       setErrorMessage(errMsg);
       addToast({
-        title: 'Invalid Email',
+        title: is404 ? 'Account Not Found' : 'Email Notice',
         message: errMsg,
         type: 'error'
       });

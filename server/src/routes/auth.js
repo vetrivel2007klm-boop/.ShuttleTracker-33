@@ -782,12 +782,11 @@ router.post('/forgot-password/send-otp', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Enter a valid email address.' });
     }
 
-    // 1. Strictly validate email format, provider rules, and DNS MX records
     const emailValidation = await validateEmailAddress(email);
     if (!emailValidation.valid) {
       return res.status(400).json({
         success: false,
-        message: emailValidation.message || 'Enter a valid email address.'
+        message: emailValidation.message || 'Please enter a valid email address.'
       });
     }
 
@@ -795,7 +794,7 @@ router.post('/forgot-password/send-otp', async (req, res) => {
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: 'Enter a valid email address. No registered account found with this email.'
+        message: `No registered account found with email "${emailValidation.normalizedEmail}". Please check your email address or use Sign Up.`
       });
     }
 
@@ -803,7 +802,7 @@ router.post('/forgot-password/send-otp', async (req, res) => {
     if (!result.success) {
       return res.status(400).json({
         success: false,
-        message: result.message || 'Enter a valid email address.'
+        message: result.message || 'Could not send reset OTP.'
       });
     }
 

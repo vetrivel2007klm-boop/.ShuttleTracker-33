@@ -1939,8 +1939,35 @@ const db = {
           else store.users.push(u);
           return u;
         }
+
+        // Also check drivers table in Postgres
+        const driverRes = await pool.query('SELECT * FROM drivers WHERE LOWER(email) = LOWER($1) LIMIT 1', [normalized]);
+        if (driverRes.rows.length > 0) {
+          const d = driverRes.rows[0];
+          return {
+            id: d.user_id || d.id,
+            name: d.name,
+            email: d.email,
+            role: 'driver',
+            organization_name: d.organization_name,
+            phone: d.phone || ''
+          };
+        }
       } catch (_) {}
     }
+
+    const memDriver = store.drivers?.find((d) => d.email && d.email.toLowerCase() === normalized);
+    if (memDriver) {
+      return {
+        id: memDriver.user_id || memDriver.id,
+        name: memDriver.name,
+        email: memDriver.email,
+        role: 'driver',
+        organization_name: memDriver.organization_name,
+        phone: memDriver.phone || ''
+      };
+    }
+
     return memMatch;
   },
 

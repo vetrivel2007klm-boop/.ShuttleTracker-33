@@ -180,154 +180,50 @@ const dnsDomainCache = new Map(); // domain -> { valid: boolean, expiresAt: numb
  */
 const validateEmailAddress = async (rawEmail) => {
   if (!rawEmail || typeof rawEmail !== 'string') {
-    return { valid: false, message: 'Enter a valid email address.' };
+    return { valid: false, message: 'Please enter your email address.' };
   }
 
   const email = rawEmail.trim().toLowerCase();
 
   // Basic length & whitespace check
-  if (email.length < 6 || email.length > 254 || /\s/.test(email)) {
-    return { valid: false, message: 'Enter a valid email address.' };
+  if (email.length < 5 || email.length > 254 || /\s/.test(email)) {
+    return { valid: false, message: 'Please enter a valid email address format (e.g. name@example.com).' };
   }
 
   // Must have exactly one @
   const parts = email.split('@');
   if (parts.length !== 2) {
-    return { valid: false, message: 'Enter a valid email address.' };
+    return { valid: false, message: 'Please enter a valid email address format with a single @.' };
   }
 
   const [localPart, domain] = parts;
-
-  if (!localPart || !domain || localPart.length < 2 || domain.length < 4) {
-    return { valid: false, message: 'Enter a valid email address.' };
+  if (!localPart || !domain || localPart.length < 1 || domain.length < 3) {
+    return { valid: false, message: 'Please enter a valid email address format (e.g. name@example.com).' };
   }
 
-  // Check localPart & domain formatting rules
-  if (
-    localPart.startsWith('.') ||
-    localPart.endsWith('.') ||
-    localPart.includes('..') ||
-    domain.startsWith('.') ||
-    domain.endsWith('.') ||
-    domain.includes('..') ||
-    !domain.includes('.')
-  ) {
-    return { valid: false, message: 'Enter a valid email address.' };
+  // Check domain has at least one dot and a valid TLD
+  if (!domain.includes('.') || domain.startsWith('.') || domain.endsWith('.') || domain.includes('..')) {
+    return { valid: false, message: 'Please enter a valid email domain (e.g. gmail.com, college.edu.in).' };
   }
 
-  // Strict RFC-compatible email pattern
-  const strictEmailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,12}$/;
-  if (!strictEmailRegex.test(email)) {
-    return { valid: false, message: 'Enter a valid email address.' };
-  }
-
-  // Check TLD & domain labels
   const domainLabels = domain.split('.');
   const tld = domainLabels[domainLabels.length - 1];
   if (!tld || tld.length < 2 || !/^[a-zA-Z]{2,12}$/.test(tld)) {
-    return { valid: false, message: 'Enter a valid email address.' };
-  }
-  for (const label of domainLabels) {
-    if (!label || label.startsWith('-') || label.endsWith('-') || !/^[a-zA-Z0-9-]+$/.test(label)) {
-      return { valid: false, message: 'Enter a valid email address.' };
-    }
-  }
-  // Reject single-letter main domain names like a@b.com or test@x.com
-  if (domainLabels[0].length < 2) {
-    return { valid: false, message: 'Enter a valid email address.' };
+    return { valid: false, message: 'Please enter an email with a valid domain extension (e.g. .com, .edu, .in).' };
   }
 
-  // Reject known typo domains (e.g. gmai.com, gmial.com, gmal.com, yaho.com)
+  // Standard RFC-compatible pattern
+  const standardEmailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+  if (!standardEmailRegex.test(email)) {
+    return { valid: false, message: 'Please enter a valid email address format.' };
+  }
+
+  // Only reject blatant typos of major email providers
   if (TYPO_DOMAINS.has(domain)) {
     return {
       valid: false,
-      message: `Enter a valid email address. "${domain}" is not a valid email domain.`
+      message: `"${domain}" looks like a typo. Please check the spelling of your email domain.`
     };
-  }
-
-  // Reject fake, placeholder, or disposable domains
-  if (FAKE_OR_DISPOSABLE_DOMAINS.has(domain)) {
-    return {
-      valid: false,
-      message: 'Enter a valid email address.'
-    };
-  }
-
-  // Clean localPart for fake/gibberish checks
-  const cleanLocal = localPart.replace(/[._+-]/g, '');
-  const isConsumerDomain = domain === 'gmail.com' || domain === 'googlemail.com' || domain === 'yahoo.com' || domain === 'outlook.com' || domain === 'hotmail.com';
-  if (
-    cleanLocal.length < 3 ||
-    (isConsumerDomain && /^\d+$/.test(cleanLocal)) || // purely numbers like 123456@gmail.com
-    /^(.)\1{4,}$/.test(cleanLocal) || // repeated single char like aaaaaa@gmail.com
-    FAKE_LOCAL_PARTS.has(localPart) ||
-    FAKE_LOCAL_PARTS.has(cleanLocal) ||
-    /^(wrong|invalid|fake|dummy|noemail|testuser)/i.test(cleanLocal)
-  ) {
-    return {
-      valid: false,
-      message: 'Enter a valid email address.'
-    };
-  }
-
-  // Enforce official Google Gmail username rules for @gmail.com / @googlemail.com
-  if (domain === 'gmail.com' || domain === 'googlemail.com') {
-    const gmailUser = localPart.split('+')[0];
-    const gmailNoDots = gmailUser.replace(/\./g, '');
-    // Gmail usernames MUST be 6-30 characters and contain only letters, digits, and periods
-    if (
-      gmailNoDots.length < 6 ||
-      gmailNoDots.length > 30 ||
-      !/^[a-z0-9.]+$/.test(gmailUser) ||
-      !/[a-z]/.test(gmailNoDots)
-    ) {
-      return {
-        valid: false,
-        message: 'Enter a valid Gmail address (username must contain letters and be at least 6 characters).'
-      };
-    }
-  }
-
-  // Fast-path: known major domains require 0ms DNS lookup
-  if (KNOWN_VALID_DOMAINS.has(domain)) {
-    return { valid: true, normalizedEmail: email };
-  }
-
-  // Check DNS cache for custom domains
-  const cachedDns = dnsDomainCache.get(domain);
-  if (cachedDns && cachedDns.expiresAt > Date.now()) {
-    if (!cachedDns.valid) {
-      return {
-        valid: false,
-        message: `Enter a valid email address. Domain "${domain}" does not exist.`
-      };
-    }
-    return { valid: true, normalizedEmail: email };
-  }
-
-  // Verify custom domain exists on the internet using fast OS DNS lookup (max 900ms)
-  try {
-    const lookupResult = await Promise.race([
-      dns.promises.lookup(domain),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('DNS_TIMEOUT')), 900))
-    ]);
-
-    if (!lookupResult || !lookupResult.address) {
-      dnsDomainCache.set(domain, { valid: false, expiresAt: Date.now() + 10 * 60 * 1000 });
-      return {
-        valid: false,
-        message: `Enter a valid email address. Domain "${domain}" cannot receive emails.`
-      };
-    }
-    dnsDomainCache.set(domain, { valid: true, expiresAt: Date.now() + 30 * 60 * 1000 });
-  } catch (dnsErr) {
-    if (dnsErr && (dnsErr.code === 'ENOTFOUND' || dnsErr.code === 'ENODATA')) {
-      dnsDomainCache.set(domain, { valid: false, expiresAt: Date.now() + 10 * 60 * 1000 });
-      return {
-        valid: false,
-        message: `Enter a valid email address. Domain "${domain}" does not exist.`
-      };
-    }
   }
 
   return { valid: true, normalizedEmail: email };
