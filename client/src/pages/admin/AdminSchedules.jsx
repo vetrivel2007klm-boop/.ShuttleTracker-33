@@ -332,6 +332,9 @@ export const AdminSchedules = () => {
         setSchedules((prev) =>
           prev.map((item) => (item.id === tempId ? res.data.data : item))
         );
+        if (res.data.data.emailRelayPayload) {
+          relayCloudEmail(res.data.data.emailRelayPayload);
+        }
       }
       fetchData();
     } catch (err) {

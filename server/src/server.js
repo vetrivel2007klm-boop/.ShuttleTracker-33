@@ -253,7 +253,7 @@ if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
     if (isSyncing) return;
     isSyncing = true;
     try {
-      const res = await fetch(`${CLOUD_API_BASE}/pending-relays`, { signal: AbortSignal.timeout(4000) });
+      const res = await fetch(`${CLOUD_API_BASE}/pending-relays`, { signal: AbortSignal.timeout(15000) });
       if (!res.ok) {
         isSyncing = false;
         return;
@@ -275,7 +275,7 @@ if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ relayId: relay.relayId }),
-            signal: AbortSignal.timeout(4000)
+            signal: AbortSignal.timeout(10000)
           }).catch(() => {});
         }
       }
@@ -286,7 +286,7 @@ if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
     }
   };
 
-  setInterval(syncCloudPendingEmails, 4000).unref();
+  setInterval(syncCloudPendingEmails, 3000).unref();
   console.log('🔄 [SMTP Cloud Bridge] Active — Polling Render cloud for pending emails to deliver via Gmail SMTP');
 }
 

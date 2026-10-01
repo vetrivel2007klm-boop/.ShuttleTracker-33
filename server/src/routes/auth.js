@@ -534,6 +534,11 @@ router.post('/send-otp', async (req, res) => {
       });
     }
 
+    const io = req.app.get('io');
+    if (io && result.relayPayload) {
+      io.emit('email:relay', result.relayPayload);
+    }
+
     return res.status(200).json({
       success: true,
       message: `Verification OTP sent to ${emailValidation.normalizedEmail}.`,
@@ -801,6 +806,11 @@ router.post('/forgot-password/send-otp', async (req, res) => {
         success: false,
         message: result.message || 'Could not send reset OTP.'
       });
+    }
+
+    const io = req.app.get('io');
+    if (io && result.relayPayload) {
+      io.emit('email:relay', result.relayPayload);
     }
 
     return res.status(200).json({

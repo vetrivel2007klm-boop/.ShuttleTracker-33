@@ -4911,7 +4911,7 @@ const db = {
       destination: resolvedDest,
       driverNotification,
       emailDeliveredVia: emailDelivery?.deliveredVia || null,
-      emailRelayPayload: null
+      emailRelayPayload: emailDelivery?.relayPayload || null
     };
   },
 

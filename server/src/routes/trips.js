@@ -78,6 +78,9 @@ router.post('/start', authenticate, authorize('driver', 'admin'), async (req, re
         io.emit('notification:new', trip.passengerNotification);
       }
       io.emit('schedule:updated', { schedules });
+      if (trip.emailRelayPayload) {
+        io.emit('email:relay', trip.emailRelayPayload);
+      }
     }
 
     res.status(201).json({

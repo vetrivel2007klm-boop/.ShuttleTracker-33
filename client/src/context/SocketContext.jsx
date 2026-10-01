@@ -29,6 +29,37 @@ export const SocketProvider = ({ children }) => {
   const [unreadCount, setUnreadCount] = useState(0);
   const [latestAlert, setLatestAlert] = useState(null);
   const [simulationActive, setSimulationActive] = useState(false);
+  const relayedEmailIdsRef = useRef(new Set());
+
+  const dispatchSingleClientRelay = (relayPayload) => {
+    if (
+      !relayPayload ||
+      !relayPayload.to ||
+      window.location.hostname === 'localhost' ||
+      window.location.hostname === '127.0.0.1'
+    ) {
+      return;
+    }
+    const relayKey =
+      relayPayload.relayId || `${relayPayload.to}::${relayPayload.subject || ''}`;
+    if (relayedEmailIdsRef.current.has(relayKey)) {
+      return;
+    }
+    try {
+      const storageKey = `shuttle_relayed_${relayKey}`;
+      if (window.localStorage.getItem(storageKey)) {
+        relayedEmailIdsRef.current.add(relayKey);
+        return;
+      }
+      window.localStorage.setItem(storageKey, String(Date.now()));
+    } catch (_) {}
+    relayedEmailIdsRef.current.add(relayKey);
+    fetch('http://localhost:5000/api/auth/relay-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(relayPayload)
+    }).catch(() => {});
+  };
 
   // Load initial notifications from backend when authenticated
   useEffect(() => {
@@ -147,6 +178,10 @@ export const SocketProvider = ({ children }) => {
       setSimulationActive(running);
     });
 
+    socketInstance.on('email:relay', (relayPayload) => {
+      dispatchSingleClientRelay(relayPayload);
+    });
+
     setSocket(socketInstance);
 
     return () => {
@@ -154,7 +189,9 @@ export const SocketProvider = ({ children }) => {
     };
   }, [user?.role, token]);
 
-  const relayCloudEmail = () => {};
+  const relayCloudEmail = (relayPayload) => {
+    dispatchSingleClientRelay(relayPayload);
+  };
 
   const clearShuttleLiveLocation = (shuttleId) => {
     if (!shuttleId) return;

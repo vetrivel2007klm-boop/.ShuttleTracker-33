@@ -91,6 +91,9 @@ router.post('/schedules', authenticate, authorize('admin'), async (req, res) => 
       if (notifications.length > 0 && notifications[0]?.title?.includes('Driver Not Started Trip')) {
         io.emit('notification:new', notifications[0]);
       }
+      if (created.emailRelayPayload) {
+        io.emit('email:relay', created.emailRelayPayload);
+      }
     }
     res.status(201).json({
       success: true,
