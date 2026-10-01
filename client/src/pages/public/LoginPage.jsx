@@ -592,7 +592,7 @@ export const LoginPage = () => {
         setOtpTimer(60);
 
         if (res.data.devOtp) {
-          setEnteredOtp(res.data.devOtp);
+          setOtp(res.data.devOtp);
         }
 
         const isCloudOtp = res.data.devOtp && (res.data.deliveredVia === 'cloud_secure_otp' || res.data.deliveredVia === 'cloud_verified');

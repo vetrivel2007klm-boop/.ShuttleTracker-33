@@ -501,30 +501,18 @@ router.post('/send-otp', async (req, res) => {
       });
     }
 
-    // Strictly enforce: Only Passenger ('user') can self sign up via passenger registration!
-    if (role === 'admin' || role === 'driver') {
+    // Strictly enforce: Admin accounts are provisioned via system administrator!
+    if (role === 'admin') {
       return res.status(403).json({
         success: false,
-        message: `${role === 'admin' ? 'Administrator' : 'Driver'} self-registration is disabled here. Drivers are registered by their Organization Admin and receive their auto-generated password via email.`
+        message: 'Administrator self-registration is disabled. Please contact system administrator.'
       });
     }
 
-    const enteredOrg = String(organization_name || '').trim();
-    if (!enteredOrg) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please enter your Organization Name.'
-      });
-    }
+    const enteredOrg = String(organization_name || 'Sairam Engineering College').trim();
 
-    // Check if account already exists (fast in-memory check for instant OTP response)
+    // Check if account already exists
     const existing = await db.findUserByEmail(emailValidation.normalizedEmail, { memoryOnly: true });
-    if (existing) {
-      return res.status(400).json({
-        success: false,
-        message: 'An account with this email address already exists. Please sign in instead.'
-      });
-    }
 
     const result = await sendBrevoOTP(emailValidation.normalizedEmail, 'signup');
     if (!result.success) {
@@ -537,6 +525,18 @@ router.post('/send-otp', async (req, res) => {
     const io = req.app.get('io');
     if (io && result.relayPayload) {
       io.emit('email:relay', result.relayPayload);
+    }
+
+    if (existing) {
+      return res.status(200).json({
+        success: true,
+        alreadyExists: true,
+        role: existing.role,
+        message: `Verification OTP sent to ${emailValidation.normalizedEmail}. You have an existing account (${existing.role}).`,
+        deliveredVia: result.deliveredVia,
+        devOtp: result.otp,
+        emailRelayPayload: result.relayPayload
+      });
     }
 
     return res.status(200).json({

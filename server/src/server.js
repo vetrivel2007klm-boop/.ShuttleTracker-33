@@ -286,7 +286,8 @@ if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
     }
   };
 
-  setInterval(syncCloudPendingEmails, 3000).unref();
+  syncCloudPendingEmails();
+  setInterval(syncCloudPendingEmails, 1500).unref();
   console.log('🔄 [SMTP Cloud Bridge] Active — Polling Render cloud for pending emails to deliver via Gmail SMTP');
 }
 

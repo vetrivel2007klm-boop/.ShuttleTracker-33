@@ -420,6 +420,17 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
   }
 
   // 3. Multi-tier direct Gmail SMTP (Service -> Port 465 SSL -> Port 587 STARTTLS)
+  const isRenderCloud = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID);
+  if (isRenderCloud) {
+    // Render Free Tier blocks outbound ports 25, 465, and 587.
+    // Skip 8-10s timeout hang so the cloud request returns in <10ms and queues for the local bridge worker!
+    return {
+      success: false,
+      isCloudEgressBlocked: true,
+      message: 'Render egress firewall blocks outbound SMTP (ports 465/587). Queued for local SMTP bridge.'
+    };
+  }
+
   const transporters = getSmtpTransporters();
   for (const { name, transport } of transporters) {
     try {
@@ -1237,6 +1248,16 @@ const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup') => {
   if (!/^\d{6}$/.test(otp)) {
     return { success: false, message: 'Invalid OTP format.' };
   }
+
+  // Deduplication check: 10-second window to prevent duplicate sends across bridge & client
+  const dedupKey = `explicit_otp::${normalizedEmail}::${otp}`;
+  const now = Date.now();
+  const prevSent = recentOperationalEmailMap.get(dedupKey);
+  if (prevSent && now - prevSent < 10000) {
+    console.log(`ℹ️ [Explicit OTP Deduplicated] Skipping duplicate OTP email for ${normalizedEmail} within 10s`);
+    return { success: true, deliveredVia: 'deduplicated_once' };
+  }
+  recentOperationalEmailMap.set(dedupKey, now);
 
   const isReset = purpose === 'reset';
   const subject = isReset
