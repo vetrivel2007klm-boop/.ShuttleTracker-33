@@ -499,16 +499,16 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
   const otp = generateOTP();
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes validity
 
-  // Short deduplication window: 5 seconds to prevent accidental double-clicks on "Send OTP"
+  // Deduplication window: 30 seconds to strictly enforce 1 email per action
   const otpActionDedupKey = `otp_${purpose}::${normalizedEmail}`;
   const prevOtpSentAt = recentOperationalEmailMap.get(otpActionDedupKey);
-  if (prevOtpSentAt && Date.now() - prevOtpSentAt < 5000) {
-    console.log(`ℹ️ [OTP Deduplicated] Skipping duplicate OTP request for ${normalizedEmail} within 5s`);
+  if (prevOtpSentAt && Date.now() - prevOtpSentAt < 30000) {
+    console.log(`ℹ️ [OTP Deduplicated] Exactly ONE email per action. Skipping duplicate OTP request for ${normalizedEmail} within 30s`);
     return {
       success: true,
       alreadySent: true,
       deliveredVia: 'deduplicated_once',
-      otp: undefined,
+      otp: otpStore.get(normalizedEmail)?.otp,
       relayPayload: null
     };
   }
@@ -633,6 +633,7 @@ const verifyOTP = (email, candidateOtp, consume = true) => {
 
 const dispatchSingleOperationalEmail = async ({
   prefix = 'op',
+  relayId,
   to,
   subject,
   htmlContent,
@@ -645,12 +646,27 @@ const dispatchSingleOperationalEmail = async ({
   const cleanSubject = String(subject || '').trim();
   if (!cleanTo) return { success: false, message: 'No recipient provided' };
 
-  // Strict deduplication window: 8 seconds on exact (to + subject) to prevent double-click / duplicate dispatch
+  if (relayId && processedRelayIds.has(relayId)) {
+    console.log(`ℹ️ [Email Deduplicated by ID] Relay ID ${relayId} already processed. Skipping duplicate send.`);
+    return {
+      success: true,
+      alreadySent: true,
+      deliveredVia: 'deduplicated_once',
+      recipients,
+      relayPayload: null
+    };
+  }
+
+  // Strict deduplication window: 30 seconds on exact (to + subject) to guarantee exactly ONE email per action
   const dedupKey = `${cleanTo.toLowerCase()}::${cleanSubject.toLowerCase()}`;
   const now = Date.now();
   const prevSentAt = recentOperationalEmailMap.get(dedupKey);
-  if (prevSentAt && now - prevSentAt < 8000) {
-    console.log(`ℹ️ [Email Deduplicated] Skipping duplicate email to ${cleanTo} within 8s: "${cleanSubject}"`);
+  if (prevSentAt && now - prevSentAt < 30000) {
+    console.log(`ℹ️ [Email Deduplicated] Exactly ONE email allowed per action. Skipping duplicate email to ${cleanTo} within 30s: "${cleanSubject}"`);
+    if (relayId) {
+      processedRelayIds.add(relayId);
+      pendingRelayQueue.delete(relayId);
+    }
     return {
       success: true,
       alreadySent: true,
@@ -660,6 +676,10 @@ const dispatchSingleOperationalEmail = async ({
     };
   }
   recentOperationalEmailMap.set(dedupKey, now);
+  if (relayId) {
+    processedRelayIds.add(relayId);
+    pendingRelayQueue.delete(relayId);
+  }
   if (recentOperationalEmailMap.size > 500) {
     const oldestKey = recentOperationalEmailMap.keys().next().value;
     recentOperationalEmailMap.delete(oldestKey);
@@ -1238,7 +1258,7 @@ const sendRawRelayEmail = async (payload) => {
 /**
  * Deliver an already-generated OTP code to the validated email via Gmail SMTP
  */
-const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup') => {
+const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup', relayId = null) => {
   const validation = await validateEmailAddress(email);
   if (!validation.valid) {
     return { success: false, message: validation.message || 'Enter a valid email address.' };
@@ -1248,16 +1268,6 @@ const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup') => {
   if (!/^\d{6}$/.test(otp)) {
     return { success: false, message: 'Invalid OTP format.' };
   }
-
-  // Deduplication check: 10-second window to prevent duplicate sends across bridge & client
-  const dedupKey = `explicit_otp::${normalizedEmail}::${otp}`;
-  const now = Date.now();
-  const prevSent = recentOperationalEmailMap.get(dedupKey);
-  if (prevSent && now - prevSent < 10000) {
-    console.log(`ℹ️ [Explicit OTP Deduplicated] Skipping duplicate OTP email for ${normalizedEmail} within 10s`);
-    return { success: true, deliveredVia: 'deduplicated_once' };
-  }
-  recentOperationalEmailMap.set(dedupKey, now);
 
   const isReset = purpose === 'reset';
   const subject = isReset
@@ -1292,7 +1302,9 @@ const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup') => {
     </div>
   `;
 
-  return deliverEmailMessage({
+  return dispatchSingleOperationalEmail({
+    prefix: 'otp',
+    relayId,
     to: normalizedEmail,
     subject,
     htmlContent,
@@ -1315,7 +1327,8 @@ module.exports = {
   sendAdminEmergencyEmail,
   sendAdminOffRouteEmail,
   sendAdminDelayEmail,
-  sendPassengerTripStartedEmail
+  sendPassengerTripStartedEmail,
+  processedRelayIds
 };
 
 

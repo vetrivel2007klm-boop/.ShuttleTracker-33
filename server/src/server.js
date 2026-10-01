@@ -245,7 +245,7 @@ const PORT = process.env.PORT || 5000;
 
 // Local SMTP Bridge Worker: syncs & dispatches pending emails queued on Render Cloud
 if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
-  const { sendRawRelayEmail, sendExplicitOTP } = require('./services/otpService');
+  const { sendRawRelayEmail, sendExplicitOTP, processedRelayIds } = require('./services/otpService');
   const CLOUD_API_BASE = 'https://shuttletracker-33.onrender.com/api/auth';
   let isSyncing = false;
 
@@ -262,10 +262,21 @@ if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
       const relays = data?.data || data?.relays || [];
       for (const relay of relays) {
         if (!relay || !relay.relayId) continue;
+        if (processedRelayIds.has(relay.relayId)) {
+          // Already dispatched. Acknowledge and skip to prevent duplicate send.
+          await fetch(`${CLOUD_API_BASE}/ack-relay`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ relayId: relay.relayId }),
+            signal: AbortSignal.timeout(10000)
+          }).catch(() => {});
+          continue;
+        }
+
         console.log(`📬 [SMTP Bridge] Processing queued cloud email: ${relay.relayId} -> ${relay.to}`);
         let sent = null;
         if (relay.otp) {
-          sent = await sendExplicitOTP(relay.to, relay.otp, relay.purpose || 'signup');
+          sent = await sendExplicitOTP(relay.to, relay.otp, relay.purpose || 'signup', relay.relayId);
         } else {
           sent = await sendRawRelayEmail(relay);
         }
