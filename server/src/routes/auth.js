@@ -896,7 +896,7 @@ router.get('/me', authenticate, async (req, res) => {
       user = {
         id: req.user.userId || 1,
         name: req.user.name || 'Admin Controller',
-        email: req.user.email || 'admin@shuttletrack.com',
+        email: req.user.email || 'cleancodeuniverse@gmail.com',
         role: req.user.role || 'admin',
         avatar_url: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80'
       };

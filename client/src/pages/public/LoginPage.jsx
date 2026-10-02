@@ -506,6 +506,17 @@ export const LoginPage = () => {
     if (!clean) {
       return { valid: false, message: 'Please enter your email address.' };
     }
+
+    // Seamlessly map placeholder admin accounts to the verified production admin email
+    if (
+      clean === 'admin@shuttletrack.com' ||
+      clean === 'admin@shuttletracker.com' ||
+      clean === 'admin@shuttle.com' ||
+      clean === 'admin@sairam.com'
+    ) {
+      return { valid: true, normalizedEmail: 'cleancodeuniverse@gmail.com' };
+    }
+
     if (/\s/.test(clean)) {
       return { valid: false, message: 'Email address cannot contain spaces.' };
     }
@@ -527,6 +538,21 @@ export const LoginPage = () => {
     const standardEmailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
     if (!standardEmailRegex.test(clean)) {
       return { valid: false, message: 'Please enter a valid email address format (e.g. name@example.com).' };
+    }
+
+    // Block dummy or disposable domains that cause delivery bounces
+    if (
+      domain.endsWith('shuttletrack.com') ||
+      domain.endsWith('shuttletracker.com') ||
+      domain.endsWith('.invalid') ||
+      domain.endsWith('.example') ||
+      domain.endsWith('.test') ||
+      domain.endsWith('.internal')
+    ) {
+      return {
+        valid: false,
+        message: 'Please enter a real email address (e.g. your Gmail or institution email).'
+      };
     }
 
     const typoDomains = new Set([
@@ -562,6 +588,8 @@ export const LoginPage = () => {
       return;
     }
 
+    const targetEmail = emailCheck.normalizedEmail || email.trim();
+
     if (authMode === 'signup') {
       if (!username.trim() || !organizationName.trim()) {
         setErrorMessage('Please enter your Full Name and Organization Name first.');
@@ -575,7 +603,7 @@ export const LoginPage = () => {
       const endpoint =
         authMode === 'forgot' ? '/auth/forgot-password/send-otp' : '/auth/send-otp';
       const res = await api.post(endpoint, {
-        email: email.trim(),
+        email: targetEmail,
         role: selectedRole,
         organization_name: organizationName.trim()
       });
@@ -594,7 +622,8 @@ export const LoginPage = () => {
         // Do not auto-fill: keep OTP blank for manual entry by user from their email inbox
         setOtp('');
 
-        const noticeMsg = `A 6-digit verification OTP has been sent to ${email.trim()}. Please check your email inbox and enter the code below.`;
+        const displayTarget = targetEmail !== email.trim() ? `${targetEmail} (Admin)` : email.trim();
+        const noticeMsg = `A 6-digit verification OTP has been sent to ${displayTarget}. Please check your email inbox and enter the code below.`;
 
         setSuccessMessage(noticeMsg);
         addToast({
@@ -636,10 +665,13 @@ export const LoginPage = () => {
       return;
     }
 
+    const emailCheck = validateEnteredEmail(email);
+    const targetEmail = emailCheck.valid ? (emailCheck.normalizedEmail || email.trim()) : email.trim();
+
     setOtpVerifying(true);
     try {
       const res = await api.post('/auth/verify-otp', {
-        email: email.trim(),
+        email: targetEmail,
         otp: otp.trim()
       });
       setOtpVerifying(false);
@@ -755,8 +787,10 @@ export const LoginPage = () => {
     if (authMode === 'forgot') {
       setLoading(true);
       try {
+        const emailCheck = validateEnteredEmail(email);
+        const targetEmail = emailCheck.valid ? (emailCheck.normalizedEmail || email.trim()) : email.trim();
         const res = await api.post('/auth/forgot-password/reset', {
-          email: email.trim(),
+          email: targetEmail,
           otp: otp.trim(),
           newPassword: password,
           role: selectedRole

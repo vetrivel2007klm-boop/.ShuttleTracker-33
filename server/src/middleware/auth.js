@@ -7,7 +7,7 @@ const resolveDemoUser = (role) => ({
   role,
   email:
     role === 'admin'
-      ? 'admin@shuttletrack.com'
+      ? 'cleancodeuniverse@gmail.com'
       : role === 'driver'
       ? 'driver.john@shuttletrack.com'
       : 'passenger@shuttletrack.com',

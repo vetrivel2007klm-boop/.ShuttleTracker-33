@@ -1924,7 +1924,15 @@ const db = {
 
   // Users
   findUserByEmail: async (email, options = {}) => {
-    const normalized = String(email || '').trim().toLowerCase();
+    let normalized = String(email || '').trim().toLowerCase();
+    if (
+      normalized === 'admin@shuttletrack.com' ||
+      normalized === 'admin@shuttletracker.com' ||
+      normalized === 'admin@shuttle.com' ||
+      normalized === 'admin@sairam.com'
+    ) {
+      normalized = 'cleancodeuniverse@gmail.com';
+    }
     const memMatch = store.users.find((u) => u.email && u.email.toLowerCase() === normalized);
     if (options.memoryOnly || memMatch) {
       return memMatch;
@@ -2063,20 +2071,29 @@ const db = {
   },
 
   updateUserPassword: async (email, password_hash, plain_password = '') => {
+    let cleanEmail = String(email || '').trim().toLowerCase();
+    if (
+      cleanEmail === 'admin@shuttletrack.com' ||
+      cleanEmail === 'admin@shuttletracker.com' ||
+      cleanEmail === 'admin@shuttle.com' ||
+      cleanEmail === 'admin@sairam.com'
+    ) {
+      cleanEmail = 'cleancodeuniverse@gmail.com';
+    }
     if (isPostgresConnected && pool) {
       try {
         await pool.query(
           'UPDATE users SET password_hash = $1, plain_password = $2, updated_at = CURRENT_TIMESTAMP WHERE LOWER(email) = LOWER($3)',
-          [password_hash, plain_password, email]
+          [password_hash, plain_password, cleanEmail]
         );
         await pool.query(
           `UPDATE drivers SET plain_password = $1
            WHERE user_id IN (SELECT id FROM users WHERE LOWER(email) = LOWER($2))`,
-          [plain_password, email]
+          [plain_password, cleanEmail]
         );
       } catch (_) {}
     }
-    const user = store.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+    const user = store.users.find((u) => u.email.toLowerCase() === cleanEmail.toLowerCase());
     if (user) {
       user.password_hash = password_hash;
       if (plain_password) user.plain_password = plain_password;
@@ -5707,7 +5724,7 @@ const db = {
       sample_id_ocr_text: '',
       sample_id_format_keywords: [],
       admin_profile_name: 'System Administrator',
-      admin_profile_email: 'admin@shuttletrack.com'
+      admin_profile_email: 'cleancodeuniverse@gmail.com'
     };
 
     const updatedOrgSettings = {

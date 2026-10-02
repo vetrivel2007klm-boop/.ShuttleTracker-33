@@ -185,6 +185,16 @@ const validateEmailAddress = async (rawEmail) => {
 
   const email = rawEmail.trim().toLowerCase();
 
+  // Seamless alias: automatically route legacy/demo admin placeholder emails to real admin Gmail
+  if (
+    email === 'admin@shuttletrack.com' ||
+    email === 'admin@shuttletracker.com' ||
+    email === 'admin@shuttle.com' ||
+    email === 'admin@sairam.com'
+  ) {
+    return { valid: true, normalizedEmail: 'cleancodeuniverse@gmail.com' };
+  }
+
   // Basic length & whitespace check
   if (email.length < 5 || email.length > 254 || /\s/.test(email)) {
     return { valid: false, message: 'Please enter a valid email address format (e.g. name@example.com).' };
@@ -223,6 +233,23 @@ const validateEmailAddress = async (rawEmail) => {
     return {
       valid: false,
       message: `"${domain}" looks like a typo. Please check the spelling of your email domain.`
+    };
+  }
+
+  // Block dummy, placeholder, or disposable domains that cause Gmail bounces
+  if (
+    FAKE_OR_DISPOSABLE_DOMAINS.has(domain) ||
+    domain.endsWith('shuttletrack.com') ||
+    domain.endsWith('shuttletracker.com') ||
+    domain.endsWith('.invalid') ||
+    domain.endsWith('.example') ||
+    domain.endsWith('.test') ||
+    domain.endsWith('.local') ||
+    domain.endsWith('.internal')
+  ) {
+    return {
+      valid: false,
+      message: 'Please enter a real email address (e.g. your Gmail or institution email).'
     };
   }
 
@@ -345,6 +372,51 @@ const getPendingEmailRelays = () => {
  */
 const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, senderName, senderEmail }) => {
   const errors = [];
+  
+  // Normalize and remap any admin placeholder emails to cleancodeuniverse@gmail.com
+  const rawList = String(to || '').split(',').map((e) => e.trim()).filter(Boolean);
+  const remappedList = rawList.map((addr) => {
+    const low = addr.toLowerCase();
+    if (
+      low === 'admin@shuttletrack.com' ||
+      low === 'admin@shuttletracker.com' ||
+      low === 'admin@shuttle.com' ||
+      low === 'admin@sairam.com'
+    ) {
+      return 'cleancodeuniverse@gmail.com';
+    }
+    return addr;
+  });
+
+  // Filter out any dummy/placeholder domains that cause Gmail bounces
+  const cleanList = remappedList.filter((addr) => {
+    const low = addr.toLowerCase();
+    if (
+      low.endsWith('@shuttletrack.com') ||
+      low.endsWith('@shuttletracker.com') ||
+      low.endsWith('.invalid') ||
+      low.endsWith('.example') ||
+      low.endsWith('.test') ||
+      low.endsWith('.internal')
+    ) {
+      console.warn(`⚠️ [Blocked Delivery to Dummy Domain] ${addr} is not a real inbox. Suppressing outbound send to prevent bounce.`);
+      return false;
+    }
+    return true;
+  });
+
+  // Deduplicate recipients
+  const uniqueRecipients = Array.from(new Set(cleanList));
+  if (uniqueRecipients.length === 0) {
+    return {
+      success: false,
+      rejectedAddress: true,
+      message: 'Cannot deliver to dummy domain.'
+    };
+  }
+
+  const effectiveTo = uniqueRecipients.join(', ');
+
   const { user } = getCredentials();
   const actualSender = user || DEFAULT_EMAIL_USER;
   const fromHeader = `"${senderName || 'Shuttle Tracker'}" <${actualSender}>`;
@@ -363,7 +435,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
         },
         body: JSON.stringify({
           from: resendFrom,
-          to: String(to).split(',').map((e) => e.trim()).filter(Boolean),
+          to: uniqueRecipients,
           reply_to: replyTo,
           subject,
           html: htmlContent,
@@ -371,7 +443,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
         })
       });
       if (response.ok) {
-        console.log(`✅ [Resend API] Sent email to ${to}`);
+        console.log(`✅ [Resend API] Sent email to ${effectiveTo}`);
         return { success: true, deliveredVia: 'resend' };
       } else {
         const errText = await response.text();
@@ -386,11 +458,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
   const brevoKey = (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || '').trim();
   if (brevoKey && brevoKey.length >= 10 && !brevoKey.includes('your_')) {
     try {
-      const toList = String(to)
-        .split(',')
-        .map((e) => e.trim())
-        .filter(Boolean)
-        .map((emailAddr) => ({ email: emailAddr }));
+      const toList = uniqueRecipients.map((emailAddr) => ({ email: emailAddr }));
       const response = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
         headers: {
@@ -408,7 +476,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
       });
 
       if (response.ok) {
-        console.log(`✅ [Brevo API] Sent email from ${actualSender} to ${to}`);
+        console.log(`✅ [Brevo API] Sent email from ${actualSender} to ${effectiveTo}`);
         return { success: true, deliveredVia: 'brevo' };
       } else {
         const errData = await response.text();
@@ -436,7 +504,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
     try {
       const info = await transport.sendMail({
         from: fromHeader,
-        to,
+        to: effectiveTo,
         replyTo,
         subject,
         html: htmlContent,
@@ -451,7 +519,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
         };
       }
 
-      console.log(`✅ [${name}] Delivered email to ${to} (${info.messageId || 'OK'})`);
+      console.log(`✅ [${name}] Delivered email to ${effectiveTo} (${info.messageId || 'OK'})`);
       return { success: true, deliveredVia: name };
     } catch (smtpErr) {
       const msg = String(smtpErr?.message || '');
@@ -607,7 +675,15 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
 
 const verifyOTP = (email, candidateOtp, consume = true) => {
   if (!email || !candidateOtp) return { valid: false, message: 'Email and OTP are required.' };
-  const normalizedEmail = email.trim().toLowerCase();
+  let normalizedEmail = email.trim().toLowerCase();
+  if (
+    normalizedEmail === 'admin@shuttletrack.com' ||
+    normalizedEmail === 'admin@shuttletracker.com' ||
+    normalizedEmail === 'admin@shuttle.com' ||
+    normalizedEmail === 'admin@sairam.com'
+  ) {
+    normalizedEmail = 'cleancodeuniverse@gmail.com';
+  }
   const record = otpStore.get(normalizedEmail);
 
   if (!record) {
