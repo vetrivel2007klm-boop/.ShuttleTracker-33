@@ -732,6 +732,7 @@ const store = {
   schedules: [...initialSchedules],
   driver_feedbacks: [],
   location_updates: [],
+  pendingRelays: [],
   org_settings: {},
   settings: {
     organization_name: 'Sairam Engineering College',
@@ -1484,6 +1485,16 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
               organization_name TEXT NOT NULL,
               settings_json TEXT NOT NULL,
               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS pending_email_relays (
+              relay_id VARCHAR(120) PRIMARY KEY,
+              recipient TEXT NOT NULL,
+              subject TEXT NOT NULL,
+              payload_json TEXT NOT NULL,
+              status VARCHAR(30) DEFAULT 'pending',
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              delivered_at TIMESTAMP
             );
           `);
 
@@ -4528,6 +4539,94 @@ const db = {
       n.is_read = true;
     });
     return true;
+  },
+
+  // Persistent Email Relays (Supabase PostgreSQL + In-Memory Fallback)
+  savePendingEmailRelay: async (relayPayload) => {
+    if (!relayPayload || !relayPayload.relayId) return;
+    const relayId = relayPayload.relayId;
+    const recipient = String(relayPayload.to || '');
+    const subject = String(relayPayload.subject || '');
+    const payloadJson = JSON.stringify(relayPayload);
+
+    // In-memory update
+    const existing = store.pendingRelays.find((r) => r.relay_id === relayId);
+    if (!existing) {
+      store.pendingRelays.push({
+        relay_id: relayId,
+        recipient,
+        subject,
+        payload_json: payloadJson,
+        status: 'pending',
+        created_at: new Date()
+      });
+    }
+
+    if (isPostgresConnected && pool) {
+      try {
+        await pool.query(
+          `INSERT INTO pending_email_relays (relay_id, recipient, subject, payload_json, status, created_at)
+           VALUES ($1, $2, $3, $4, 'pending', CURRENT_TIMESTAMP)
+           ON CONFLICT (relay_id) DO NOTHING`,
+          [relayId, recipient, subject, payloadJson]
+        );
+      } catch (err) {
+        console.warn('⚠️ [DB savePendingEmailRelay Warning]:', err?.message);
+      }
+    }
+  },
+
+  getPendingEmailRelaysFromDb: async () => {
+    if (isPostgresConnected && pool) {
+      try {
+        const res = await pool.query(
+          `SELECT relay_id, recipient, subject, payload_json, status, created_at 
+           FROM pending_email_relays 
+           WHERE status = 'pending' AND created_at > (CURRENT_TIMESTAMP - INTERVAL '2 hour')
+           ORDER BY created_at ASC`
+        );
+        return res.rows.map((r) => {
+          try {
+            return JSON.parse(r.payload_json);
+          } catch (_) {
+            return null;
+          }
+        }).filter(Boolean);
+      } catch (err) {
+        console.warn('⚠️ [DB getPendingEmailRelays Warning]:', err?.message);
+      }
+    }
+    return store.pendingRelays
+      .filter((r) => r.status === 'pending')
+      .map((r) => {
+        try {
+          return JSON.parse(r.payload_json);
+        } catch (_) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  },
+
+  markEmailRelayDelivered: async (relayId) => {
+    if (!relayId) return;
+    const memMatch = store.pendingRelays.find((r) => r.relay_id === relayId);
+    if (memMatch) {
+      memMatch.status = 'delivered';
+      memMatch.delivered_at = new Date();
+    }
+    if (isPostgresConnected && pool) {
+      try {
+        await pool.query(
+          `UPDATE pending_email_relays 
+           SET status = 'delivered', delivered_at = CURRENT_TIMESTAMP 
+           WHERE relay_id = $1`,
+          [relayId]
+        );
+      } catch (err) {
+        console.warn('⚠️ [DB markEmailRelayDelivered Warning]:', err?.message);
+      }
+    }
   },
 
   // Schedule Monitor:

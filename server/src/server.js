@@ -253,27 +253,44 @@ if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
     if (isSyncing) return;
     isSyncing = true;
     try {
-      const res = await fetch(`${CLOUD_API_BASE}/pending-relays`, { signal: AbortSignal.timeout(15000) });
-      if (!res.ok) {
-        isSyncing = false;
-        return;
-      }
-      const data = await res.json();
-      const relays = data?.data || data?.relays || [];
+      // 1. Check persistent Supabase PostgreSQL database directly
+      let relays = [];
+      try {
+        const dbRelays = await db.getPendingEmailRelaysFromDb();
+        if (Array.isArray(dbRelays) && dbRelays.length > 0) {
+          relays.push(...dbRelays);
+        }
+      } catch (_) {}
+
+      // 2. Also check cloud API endpoint
+      try {
+        const res = await fetch(`${CLOUD_API_BASE}/pending-relays`, { signal: AbortSignal.timeout(10000) });
+        if (res.ok) {
+          const data = await res.json();
+          const cloudRelays = data?.data || data?.relays || [];
+          for (const cr of cloudRelays) {
+            if (!relays.some((r) => r.relayId === cr.relayId)) {
+              relays.push(cr);
+            }
+          }
+        }
+      } catch (_) {}
+
       for (const relay of relays) {
         if (!relay || !relay.relayId) continue;
         if (processedRelayIds.has(relay.relayId)) {
-          // Already dispatched. Acknowledge and skip to prevent duplicate send.
+          // Already dispatched. Acknowledge in DB and Cloud.
+          await db.markEmailRelayDelivered(relay.relayId).catch(() => {});
           await fetch(`${CLOUD_API_BASE}/ack-relay`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ relayId: relay.relayId }),
-            signal: AbortSignal.timeout(10000)
+            signal: AbortSignal.timeout(6000)
           }).catch(() => {});
           continue;
         }
 
-        console.log(`📬 [SMTP Bridge] Processing queued cloud email: ${relay.relayId} -> ${relay.to}`);
+        console.log(`📬 [SMTP Bridge] Processing queued email: ${relay.relayId} -> ${relay.to}`);
         let sent = null;
         if (relay.otp) {
           sent = await sendExplicitOTP(relay.to, relay.otp, relay.purpose || 'signup', relay.relayId);
@@ -282,11 +299,12 @@ if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
         }
         if (sent?.success) {
           console.log(`✅ [SMTP Bridge] Delivered ${relay.relayId} to ${relay.to} via local Gmail SMTP`);
+          await db.markEmailRelayDelivered(relay.relayId).catch(() => {});
           await fetch(`${CLOUD_API_BASE}/ack-relay`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ relayId: relay.relayId }),
-            signal: AbortSignal.timeout(10000)
+            signal: AbortSignal.timeout(6000)
           }).catch(() => {});
         }
       }

@@ -607,9 +607,9 @@ router.post('/relay-email', async (req, res) => {
 });
 
 // GET /api/auth/pending-relays (Used by local SMTP bridge to fetch any pending cloud emails triggered from mobile/browser)
-router.get('/pending-relays', (req, res) => {
+router.get('/pending-relays', async (req, res) => {
   try {
-    const pending = getPendingEmailRelays();
+    const pending = await getPendingEmailRelays();
     return res.status(200).json({ success: true, count: pending.length, data: pending, relays: pending });
   } catch (err) {
     return res.status(500).json({ success: false, data: [], relays: [] });
@@ -617,10 +617,10 @@ router.get('/pending-relays', (req, res) => {
 });
 
 // POST /api/auth/ack-relay (Mark a cloud-queued email as delivered so it is never sent twice)
-router.post('/ack-relay', (req, res) => {
+router.post('/ack-relay', async (req, res) => {
   try {
     const { relayId } = req.body;
-    acknowledgeEmailRelay(relayId);
+    await acknowledgeEmailRelay(relayId);
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false });

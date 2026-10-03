@@ -337,26 +337,54 @@ setImmediate(() => {
   }
 });
 
+let dbModule = null;
+const getDb = () => {
+  if (!dbModule) {
+    try {
+      dbModule = require('../config/db');
+    } catch (_) {}
+  }
+  return dbModule;
+};
+
 // Deduplication map to prevent double-clicks & duplicates while allowing legitimate subsequent actions
 const recentOperationalEmailMap = new Map(); // key -> timestamp
 const processedRelayIds = new Set();
 const pendingRelayQueue = new Map();
 
-const queueCloudRelay = (relayPayload) => {
+const queueCloudRelay = async (relayPayload) => {
   if (!relayPayload || !relayPayload.relayId) return;
   pendingRelayQueue.set(relayPayload.relayId, {
     relayPayload,
     createdAt: Date.now()
   });
+  const db = getDb();
+  if (db && typeof db.savePendingEmailRelay === 'function') {
+    await db.savePendingEmailRelay(relayPayload).catch(() => {});
+  }
 };
 
-const acknowledgeEmailRelay = (relayId) => {
+const acknowledgeEmailRelay = async (relayId) => {
   if (!relayId) return false;
   processedRelayIds.add(relayId);
-  return pendingRelayQueue.delete(relayId);
+  pendingRelayQueue.delete(relayId);
+  const db = getDb();
+  if (db && typeof db.markEmailRelayDelivered === 'function') {
+    await db.markEmailRelayDelivered(relayId).catch(() => {});
+  }
+  return true;
 };
 
-const getPendingEmailRelays = () => {
+const getPendingEmailRelays = async () => {
+  const db = getDb();
+  if (db && typeof db.getPendingEmailRelaysFromDb === 'function') {
+    try {
+      const dbRelays = await db.getPendingEmailRelaysFromDb();
+      if (Array.isArray(dbRelays) && dbRelays.length > 0) {
+        return dbRelays;
+      }
+    } catch (_) {}
+  }
   const now = Date.now();
   for (const [id, item] of pendingRelayQueue.entries()) {
     if (now - item.createdAt > 30 * 60 * 1000) {
