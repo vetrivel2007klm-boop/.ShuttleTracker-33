@@ -1549,9 +1549,34 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
 
           // 3. Restore saved Admin Settings & Per-Organization Settings from PostgreSQL
           try {
+            // Auto-sanitize any residual dummy admin emails in PostgreSQL
+            await client.query(`
+              UPDATE system_settings
+              SET settings_json = REPLACE(
+                REPLACE(settings_json, 'admin@shuttletrack.com', 'cleancodeuniverse@gmail.com'),
+                'admin@shuttletracker.com', 'cleancodeuniverse@gmail.com'
+              )
+              WHERE settings_json LIKE '%admin@shuttletrack%';
+
+              UPDATE organization_settings
+              SET settings_json = REPLACE(
+                REPLACE(settings_json, 'admin@shuttletrack.com', 'cleancodeuniverse@gmail.com'),
+                'admin@shuttletracker.com', 'cleancodeuniverse@gmail.com'
+              )
+              WHERE settings_json LIKE '%admin@shuttletrack%';
+            `);
+
             const setRes = await client.query('SELECT settings_json FROM system_settings WHERE id = 1 LIMIT 1');
             if (setRes.rows && setRes.rows.length > 0 && setRes.rows[0].settings_json) {
               const parsedSettings = JSON.parse(setRes.rows[0].settings_json);
+              if (
+                !parsedSettings.admin_profile_email ||
+                parsedSettings.admin_profile_email === 'admin@shuttletrack.com' ||
+                parsedSettings.admin_profile_email === 'admin@shuttletracker.com' ||
+                parsedSettings.admin_profile_email.endsWith('@shuttletrack.com')
+              ) {
+                parsedSettings.admin_profile_email = 'cleancodeuniverse@gmail.com';
+              }
               store.settings = { ...store.settings, ...parsedSettings };
             }
             const orgSetRes = await client.query('SELECT org_key, organization_name, settings_json FROM organization_settings');
@@ -1560,6 +1585,14 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
               orgSetRes.rows.forEach((row) => {
                 try {
                   const parsed = JSON.parse(row.settings_json);
+                  if (
+                    !parsed.admin_profile_email ||
+                    parsed.admin_profile_email === 'admin@shuttletrack.com' ||
+                    parsed.admin_profile_email === 'admin@shuttletracker.com' ||
+                    parsed.admin_profile_email.endsWith('@shuttletrack.com')
+                  ) {
+                    parsed.admin_profile_email = 'cleancodeuniverse@gmail.com';
+                  }
                   store.org_settings[row.org_key] = parsed;
                   store.organization_settings[row.org_key] = parsed;
                 } catch (_) {}
@@ -5261,12 +5294,21 @@ const db = {
         store.settings?.organization_name ||
         'Sairam Engineering College';
       const orgSettings = await db.getSettings(orgName);
+      const isRealAdminEmail = (em) =>
+        Boolean(
+          em &&
+            String(em).includes('@') &&
+            !String(em).toLowerCase().endsWith('@shuttletrack.com') &&
+            !String(em).toLowerCase().endsWith('@shuttletracker.com') &&
+            !String(em).toLowerCase().endsWith('.internal') &&
+            !String(em).toLowerCase().endsWith('.invalid')
+        );
       const candidateAdminEmails = ['cleancodeuniverse@gmail.com'];
-      if (orgSettings?.admin_profile_email) {
+      if (isRealAdminEmail(orgSettings?.admin_profile_email)) {
         candidateAdminEmails.push(orgSettings.admin_profile_email);
       }
       store.users
-        .filter((u) => u.role === 'admin' && u.email)
+        .filter((u) => u.role === 'admin' && isRealAdminEmail(u.email))
         .forEach((u) => candidateAdminEmails.push(u.email));
 
       const { sendAdminDelayEmail } = require('../services/otpService');
@@ -5376,12 +5418,21 @@ const db = {
         store.settings?.organization_name ||
         'Sairam Engineering College';
       const orgSettings = await db.getSettings(orgName);
+      const isRealAdminEmail = (em) =>
+        Boolean(
+          em &&
+            String(em).includes('@') &&
+            !String(em).toLowerCase().endsWith('@shuttletrack.com') &&
+            !String(em).toLowerCase().endsWith('@shuttletracker.com') &&
+            !String(em).toLowerCase().endsWith('.internal') &&
+            !String(em).toLowerCase().endsWith('.invalid')
+        );
       const candidateAdminEmails = ['cleancodeuniverse@gmail.com'];
-      if (orgSettings?.admin_profile_email) {
+      if (isRealAdminEmail(orgSettings?.admin_profile_email)) {
         candidateAdminEmails.push(orgSettings.admin_profile_email);
       }
       store.users
-        .filter((u) => u.role === 'admin' && u.email)
+        .filter((u) => u.role === 'admin' && isRealAdminEmail(u.email))
         .forEach((u) => candidateAdminEmails.push(u.email));
 
       const { sendAdminOffRouteEmail } = require('../services/otpService');
@@ -5651,7 +5702,9 @@ const db = {
           em &&
             String(em).includes('@') &&
             !String(em).toLowerCase().endsWith('@shuttletrack.com') &&
-            !String(em).toLowerCase().endsWith('@shuttletracker.com')
+            !String(em).toLowerCase().endsWith('@shuttletracker.com') &&
+            !String(em).toLowerCase().endsWith('.internal') &&
+            !String(em).toLowerCase().endsWith('.invalid')
         );
 
       const candidateAdminEmails = [];
