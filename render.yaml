@@ -19,10 +19,18 @@ services:
       - key: EMAIL_HOST
         value: smtp.gmail.com
       - key: EMAIL_PORT
-        value: "465"
+        value: "587"
       - key: EMAIL_SECURE
-        value: "true"
+        value: "false"
       - key: EMAIL_SERVICE
         value: gmail
+      - key: BREVO_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: BREVO_SENDER_EMAIL
+        value: cleancodeuniverse@gmail.com
+      - key: GOOGLE_MAPS_API_KEY
+        value: AIzaSyB2GCqJ6Je3N04Mie2Ga3SsF39xXws0vZQ
       - key: DATABASE_URL
         value: postgresql://postgres.pydhjrtkvqxzkpvpodod:Vetrivel%4002@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres

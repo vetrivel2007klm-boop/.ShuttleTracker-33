@@ -289,12 +289,13 @@ const getSmtpTransporters = () => {
   const { user, pass } = getCredentials();
   if (!user || !pass) return [];
 
+  const isRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID);
   const commonOptions = {
     auth: { user, pass },
     family: 4,
-    connectionTimeout: Number(process.env.EMAIL_CONNECTION_TIMEOUT_MS || 15000),
-    greetingTimeout: Number(process.env.EMAIL_GREETING_TIMEOUT_MS || 15000),
-    socketTimeout: Number(process.env.EMAIL_SOCKET_TIMEOUT_MS || 20000),
+    connectionTimeout: Number(process.env.EMAIL_CONNECTION_TIMEOUT_MS || (isRender ? 3500 : 15000)),
+    greetingTimeout: Number(process.env.EMAIL_GREETING_TIMEOUT_MS || (isRender ? 3500 : 15000)),
+    socketTimeout: Number(process.env.EMAIL_SOCKET_TIMEOUT_MS || (isRender ? 5000 : 20000)),
     pool: false
   };
 
@@ -568,10 +569,15 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
     }
   }
 
+  const isRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID);
+  const hint = isRender && !process.env.BREVO_API_KEY && !process.env.RESEND_API_KEY
+    ? 'Unable to deliver OTP email. Render free tier blocks outbound SMTP ports (587/465). Add your free BREVO_API_KEY in Render Environment for 24/7 HTTPS delivery to your inbox.'
+    : 'Could not deliver email.';
+
   return {
     success: false,
     errors,
-    message: errors.join(' | ') || 'Could not deliver email.'
+    message: errors.join(' | ') || hint
   };
 };
 

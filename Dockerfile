@@ -27,8 +27,8 @@ ENV NODE_ENV=production
 ENV EMAIL_USER=cleancodeuniverse@gmail.com
 ENV EMAIL_PASSWORD=cetikgbausymfhnj
 ENV EMAIL_HOST=smtp.gmail.com
-ENV EMAIL_PORT=465
-ENV EMAIL_SECURE=true
+ENV EMAIL_PORT=587
+ENV EMAIL_SECURE=false
 ENV EMAIL_SERVICE=gmail
 
 COPY --from=build /app/server ./server
