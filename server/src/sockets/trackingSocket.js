@@ -273,201 +273,15 @@ function computeTotalRouteDistanceKm(stops) {
   return Math.max(1.2, Number((sum * 1.25).toFixed(2)));
 }
 
-// Function to run continuous real-road tracking along route stops with immediate zero-delay initial tick
+// Function to run continuous real-road tracking along route stops (Disabled in favor of 100% Real Hardware GPS)
 function startAutonomousShuttle(io, sId, fallbackStops, baseSpeed = 28, startFromBeginning = false) {
-  if (activeSimulations.has(sId)) {
-    clearInterval(activeSimulations.get(sId));
-    activeSimulations.delete(sId);
+  const idNum = Number(sId);
+  if (activeSimulations.has(idNum)) {
+    clearInterval(activeSimulations.get(idNum));
+    activeSimulations.delete(idNum);
   }
-
-  if (startFromBeginning) {
-    notifiedTrafficStopsPerShuttle.set(sId, new Set());
-    stationaryStartTime.delete(sId);
-  } else if (!notifiedTrafficStopsPerShuttle.has(sId)) {
-    notifiedTrafficStopsPerShuttle.set(sId, new Set());
-  }
-
-  let pointIndex = startFromBeginning ? 0 : Math.min(2, Math.max(0, sId - 1));
-  let intervalId = null;
-
-  const runTick = async () => {
-    try {
-      // If a real driver is streaming live hardware GPS for this shuttle within the last 10 seconds, yield to real GPS
-      const lastRealGps = activeRealGpsDrivers.get(Number(sId));
-      if (lastRealGps && Date.now() - lastRealGps < 10000) {
-        return;
-      }
-
-      const currentShuttle = await db.getShuttleById(sId);
-      if (!currentShuttle || currentShuttle.status === 'inactive') {
-        return;
-      }
-
-      const activeStops =
-        currentShuttle?.stops && currentShuttle.stops.length >= 2
-          ? currentShuttle.stops
-          : fallbackStops;
-
-      const routePoints = await fetchRoadWaypointsForStops(activeStops, baseSpeed);
-      if (routePoints.length === 0) return;
-
-      if (pointIndex >= routePoints.length) {
-        pointIndex = routePoints.length - 1;
-      }
-
-      const point = routePoints[pointIndex];
-      const effectiveSpeed = point.isDestination
-        ? 0
-        : Math.max(20, Number(point.speed) || baseSpeed);
-      const calcSpeedForEta = Math.max(20, Number(point.speed) || baseSpeed);
-
-      // Distance & ETA to Next Stop (with 1.22 road curvature factor)
-      const rawNextDist = calculateDistance(point.lat, point.lng, point.targetLat, point.targetLng);
-      const distanceToNextKm = point.isDestination
-        ? 0
-        : Math.max(0.1, Number((rawNextDist * 1.22).toFixed(2)));
-      const etaToNextMins = point.isDestination
-        ? 0
-        : Math.max(1, Math.round((distanceToNextKm / calcSpeedForEta) * 60));
-
-      // Distance & ETA to Final Destination
-      const rawDestDist = calculateDistance(
-        point.lat,
-        point.lng,
-        point.destLat || point.targetLat,
-        point.destLng || point.targetLng
-      );
-      const distanceToDestKm = point.isDestination
-        ? 0
-        : Math.max(distanceToNextKm, Number((rawDestDist * 1.25).toFixed(2)));
-      const destinationEtaMins = point.isDestination
-        ? 0
-        : Math.max(etaToNextMins, Math.round((distanceToDestKm / calcSpeedForEta) * 60));
-
-      const totalRouteKm = computeTotalRouteDistanceKm(activeStops);
-
-      const currentStatus =
-        currentShuttle && currentShuttle.status === 'delayed' ? 'delayed' : 'on_trip';
-
-      // Track stop reached times for Campus Routes ETA & Reached Time view
-      const stopReachedTimes = { ...(currentShuttle?.stopReachedTimes || {}) };
-      const nowDate = new Date();
-      const nowTimeStr = nowDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-      if (Array.isArray(activeStops)) {
-        for (let idx = 0; idx <= (point.stopIndex || 0); idx++) {
-          const st = activeStops[idx];
-          if (st && !stopReachedTimes[st.name]) {
-            const minsAgo = Math.max(0, (point.stopIndex - idx) * 3);
-            const pastDate = new Date(nowDate.getTime() - minsAgo * 60000);
-            stopReachedTimes[st.name] = pastDate.toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit'
-            });
-          }
-        }
-      }
-
-      if (point.isStopArrival && point.reachedStopName) {
-        stopReachedTimes[point.reachedStopName] = nowTimeStr;
-      }
-
-      // Emit passenger stop delay with traffic notification when driver reaches a stop with delay
-      let trafficDelayStop = currentShuttle?.trafficDelayStop || null;
-      const notifiedSet = notifiedTrafficStopsPerShuttle.get(sId) || new Set();
-      const isStopDelayed =
-        point.isStopArrival &&
-        point.reachedStopName &&
-        point.stopIndex > 0 &&
-        (currentStatus === 'delayed' || calcSpeedForEta <= 20);
-
-      if (isStopDelayed && !notifiedSet.has(point.reachedStopName)) {
-        notifiedSet.add(point.reachedStopName);
-        notifiedTrafficStopsPerShuttle.set(sId, notifiedSet);
-        const delayMins = currentStatus === 'delayed' ? 6 : 3;
-        trafficDelayStop = {
-          shuttleId: sId,
-          busCode: currentShuttle?.code || `S0${sId}`,
-          routeName: currentShuttle?.route?.name || 'Campus Route',
-          stopName: point.reachedStopName,
-          reachedTime: nowTimeStr,
-          delayMinutes: delayMins,
-          trafficMessage: `Heavy campus traffic near ${point.reachedStopName} — Driver reached ${point.reachedStopName} at ${nowTimeStr} (+${delayMins} min traffic delay).`,
-          etaMinutes: etaToNextMins + delayMins
-        };
-        io.emit('passenger:stop_delay_traffic', trafficDelayStop);
-      }
-
-      const startStop = Array.isArray(activeStops) && activeStops.length > 0 ? activeStops[0] : null;
-      const distanceCoveredKm = startStop
-        ? calculateDistance(Number(startStop.latitude), Number(startStop.longitude), point.lat, point.lng)
-        : 0;
-
-      await db.updateShuttle(sId, {
-        current_lat: point.lat,
-        current_lng: point.lng,
-        speed: effectiveSpeed,
-        heading: point.heading,
-        distance_km: distanceToNextKm,
-        distance_to_destination_km: distanceToDestKm,
-        total_route_km: totalRouteKm,
-        distance_covered_km: distanceCoveredKm,
-        eta_minutes: etaToNextMins,
-        destination_eta_minutes: destinationEtaMins,
-        next_stop_name: point.nextStop,
-        status: currentStatus,
-        stop_reached_times: stopReachedTimes,
-        traffic_delay_stop: trafficDelayStop
-      });
-
-      const payload = {
-        shuttleId: sId,
-        latitude: point.lat,
-        longitude: point.lng,
-        speed: effectiveSpeed,
-        heading: point.heading,
-        distance_km: distanceToNextKm,
-        distance_to_destination_km: distanceToDestKm,
-        total_route_km: totalRouteKm,
-        distance_covered_km: distanceCoveredKm,
-        eta_minutes: etaToNextMins,
-        destination_eta_minutes: destinationEtaMins,
-        next_stop_name: point.nextStop,
-        isDestination: Boolean(point.isDestination),
-        status: currentStatus,
-        stopReachedTimes,
-        trafficDelayStop,
-        timestamp: new Date().toISOString()
-      };
-
-      io.emit('shuttle:location_updated', payload);
-      io.emit('shuttle:quick_ping', payload);
-
-      // When the bus reaches the Destination on the map, STOP at the Destination (never traverse past destination!)
-      if (point.isDestination) {
-        if (intervalId) clearInterval(intervalId);
-        activeSimulations.delete(sId);
-
-        const arrivalResult = await db.recordDriverDestinationArrival(sId);
-        if (arrivalResult) {
-          io.emit('schedule:updated', arrivalResult);
-          if (arrivalResult.notification) {
-            io.emit('notification:new', arrivalResult.notification);
-          }
-        }
-        return;
-      }
-
-      pointIndex += 1;
-    } catch (err) {
-      console.error('Autonomous shuttle tick error:', err);
-    }
-  };
-
-  // Emit first tick immediately so there is zero delay when trip starts!
-  runTick();
-  intervalId = setInterval(runTick, 1200);
-  activeSimulations.set(sId, intervalId);
+  // Autonomous waypoint marching is permanently disabled:
+  // Shuttle position is driven 100% by the Driver's real GPS device.
 }
 
 function stopAutonomousShuttle(shuttleId) {
@@ -734,12 +548,10 @@ function setupTrackingSocket(io) {
             }
           }
 
-          // If GPS is within 300m of the allocated route corridor OR has coarse cell-tower accuracy (> 90m),
-          // keep the shuttle cleanly positioned on the allocated route corridor
-          if (shuttle.stops.length >= 2 && (minRouteCorridorDistKm <= 0.30 || accuracyMeters > 90)) {
-            effectiveLat = bestProjLat;
-            effectiveLng = bestProjLng;
-          }
+          // Keep effective coordinates 100% true to the Driver's real physical GPS location
+          // DO NOT snap or warp the bus to route waypoints so the map marker reflects exact physical vehicle movement.
+          effectiveLat = rawLat;
+          effectiveLng = rawLng;
 
           // If driver travels > 0.45 km outside allocated route corridor with high-accuracy GPS while moving on trip, notify Admin & send Admin Email
           const lastOffAlertTime = lastOffRouteAlert.get(sId) || 0;
@@ -819,8 +631,14 @@ function setupTrackingSocket(io) {
           }
           distanceToDest = Number((distanceToNext + remainingAfterTargetKm).toFixed(2));
 
-          // Only mark destination reached if driver actually moved along the trip and is within 80m of final stop
-          if (cumulativeMovedKm >= 0.05 && rawDistToDest <= 0.08) {
+          // Only mark destination reached when driver is physically at the destination stop (<= 40m) and completed the trip
+          const isAtDestinationStop =
+            targetStopIdx === shuttle.stops.length - 1 &&
+            rawDistToDest <= 0.04 &&
+            cumulativeMovedKm >= 0.15 &&
+            computedSpeed === 0;
+
+          if (isAtDestinationStop) {
             reachedDestination = true;
             nextStopName = `${finalStop.name} (Driver Arrived)`;
             distanceToNext = 0;

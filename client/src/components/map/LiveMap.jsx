@@ -993,7 +993,9 @@ const LiveMapInner = ({
     shuttles.forEach((shuttle) => {
       const rawLat = Number(shuttle.current_lat) || center[0];
       const rawLng = Number(shuttle.current_lng) || center[1];
-      const [lat, lng] = snapToRoadPolyline(rawLat, rawLng);
+      // Use exact GPS position directly so the vehicle marker tracks exact physical movement
+      const lat = rawLat;
+      const lng = rawLng;
       const isSelected = Boolean(selectedShuttleId && Number(shuttle.id) === Number(selectedShuttleId));
       const isArrived =
         String(shuttle.next_stop_name || '').includes('Arrived') ||
