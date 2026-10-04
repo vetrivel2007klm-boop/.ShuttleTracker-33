@@ -74,7 +74,6 @@ async function processQueue() {
 
       try {
         const info = await transporter.sendMail(mailOptions);
-        recentSentCache.set(cacheKey, now);
         console.log(`✅ [Email Bridge] Successfully sent to ${recipient} (${info.messageId})`);
 
         await pool.query(

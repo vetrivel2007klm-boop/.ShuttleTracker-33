@@ -1,4 +1,25 @@
 require('dotenv').config();
+const dns = require('dns');
+
+// Enforce IPv4-first DNS resolution across all lookups to eliminate IPv6 ENETUNREACH in containers
+if (typeof dns.setDefaultResultOrder === 'function') {
+  dns.setDefaultResultOrder('ipv4first');
+}
+const noopResolve6 = (hostname, options, callback) => {
+  if (typeof options === 'function') callback = options;
+  if (typeof callback === 'function') callback(null, []);
+};
+dns.resolve6 = noopResolve6;
+if (dns.promises) {
+  dns.promises.resolve6 = async () => [];
+}
+if (dns.Resolver && dns.Resolver.prototype) {
+  dns.Resolver.prototype.resolve6 = function (hostname, options, callback) {
+    if (typeof options === 'function') callback = options;
+    if (typeof callback === 'function') callback(null, []);
+  };
+}
+
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
@@ -243,85 +264,41 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
-// Local SMTP Bridge Worker: syncs & dispatches pending emails queued on Render Cloud
-if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
-  const { sendRawRelayEmail, sendExplicitOTP, processedRelayIds } = require('./services/otpService');
-  const CLOUD_API_BASE = 'https://shuttletracker-33.onrender.com/api/auth';
-  let isSyncing = false;
+// Background Database Mailer: drains any pending database email relays via direct Gmail SMTP
+const { sendRawRelayEmail, sendExplicitOTP, processedRelayIds } = require('./services/otpService');
+let isSyncing = false;
 
-  const syncCloudPendingEmails = async () => {
-    if (isSyncing) return;
-    isSyncing = true;
-    try {
-      // 1. Check persistent Supabase PostgreSQL database directly
-      let relays = [];
-      try {
-        const dbRelays = await db.getPendingEmailRelaysFromDb();
-        if (Array.isArray(dbRelays) && dbRelays.length > 0) {
-          relays.push(...dbRelays);
-        }
-      } catch (_) {}
+const syncPendingDatabaseEmails = async () => {
+  if (isSyncing) return;
+  isSyncing = true;
+  try {
+    const relays = await db.getPendingEmailRelaysFromDb();
+    if (!Array.isArray(relays) || relays.length === 0) return;
 
-      // 2. Also check cloud API endpoint
-      try {
-        const res = await fetch(`${CLOUD_API_BASE}/pending-relays`, { signal: AbortSignal.timeout(10000) });
-        if (res.ok) {
-          const data = await res.json();
-          const cloudRelays = data?.data || data?.relays || [];
-          for (const cr of cloudRelays) {
-            if (!relays.some((r) => r.relayId === cr.relayId)) {
-              relays.push(cr);
-            }
-          }
-        }
-      } catch (_) {}
-
-      for (const relay of relays) {
-        if (!relay || !relay.relayId) continue;
-        if (processedRelayIds.has(relay.relayId)) {
-          // Already dispatched. Acknowledge in DB and Cloud.
-          await db.markEmailRelayDelivered(relay.relayId).catch(() => {});
-          await fetch(`${CLOUD_API_BASE}/ack-relay`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ relayId: relay.relayId }),
-            signal: AbortSignal.timeout(6000)
-          }).catch(() => {});
-          continue;
-        }
-
-        console.log(`📬 [SMTP Bridge] Processing queued email: ${relay.relayId} -> ${relay.to}`);
-        let sent = null;
-        if (relay.otp) {
-          sent = await sendExplicitOTP(relay.to, relay.otp, relay.purpose || 'signup', relay.relayId);
-        } else {
-          sent = await sendRawRelayEmail(relay);
-        }
-        if (sent?.success) {
-          processedRelayIds.add(relay.relayId);
-          console.log(`✅ [SMTP Bridge] Delivered ${relay.relayId} to ${relay.to} via local Gmail SMTP`);
-          await db.markEmailRelayDelivered(relay.relayId).catch(() => {});
-          await fetch(`${CLOUD_API_BASE}/ack-relay`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ relayId: relay.relayId }),
-            signal: AbortSignal.timeout(6000)
-          }).catch(() => {});
-        } else {
-          console.warn(`⚠️ [SMTP Bridge] Delivery failed for ${relay.relayId}; leaving it queued for retry.`);
-        }
+    for (const relay of relays) {
+      if (!relay || !relay.relayId || processedRelayIds.has(relay.relayId)) continue;
+      console.log(`📬 [Background Mailer] Delivering pending email: ${relay.relayId} -> ${relay.to}`);
+      let sent = null;
+      if (relay.otp) {
+        sent = await sendExplicitOTP(relay.to, relay.otp, relay.purpose || 'signup', relay.relayId);
+      } else {
+        sent = await sendRawRelayEmail(relay);
       }
-    } catch (_) {
-      // Quietly ignore network/idle issues
-    } finally {
-      isSyncing = false;
+      if (sent?.success) {
+        processedRelayIds.add(relay.relayId);
+        console.log(`✅ [Background Mailer] Delivered ${relay.relayId} to ${relay.to}`);
+        await db.markEmailRelayDelivered(relay.relayId).catch(() => {});
+      }
     }
-  };
+  } catch (_) {
+    // Quietly ignore transient errors
+  } finally {
+    isSyncing = false;
+  }
+};
 
-  syncCloudPendingEmails();
-  setInterval(syncCloudPendingEmails, 1500).unref();
-  console.log('🔄 [SMTP Cloud Bridge] Active — Polling Render cloud for pending emails to deliver via Gmail SMTP');
-}
+// Check every 5 seconds for any queued items
+setInterval(syncPendingDatabaseEmails, 5000).unref();
 
 server.listen(PORT, () => {
   console.log(`\n======================================================`);

@@ -522,27 +522,20 @@ router.post('/send-otp', async (req, res) => {
       });
     }
 
-    const io = req.app.get('io');
-    if (io && result.relayPayload) {
-      io.emit('email:relay', result.relayPayload);
-    }
-
     if (existing) {
       return res.status(200).json({
         success: true,
         alreadyExists: true,
         role: existing.role,
         message: `Verification OTP sent to ${emailValidation.normalizedEmail}. You have an existing account (${existing.role}).`,
-        deliveredVia: result.deliveredVia,
-        emailRelayPayload: result.relayPayload
+        deliveredVia: result.deliveredVia
       });
     }
 
     return res.status(200).json({
       success: true,
       message: `Verification OTP sent to ${emailValidation.normalizedEmail}.`,
-      deliveredVia: result.deliveredVia,
-      emailRelayPayload: result.relayPayload
+      deliveredVia: result.deliveredVia
     });
   } catch (err) {
     console.error('OTP Send Error:', err);
@@ -806,17 +799,11 @@ router.post('/forgot-password/send-otp', async (req, res) => {
       });
     }
 
-    const io = req.app.get('io');
-    if (io && result.relayPayload) {
-      io.emit('email:relay', result.relayPayload);
-    }
-
     return res.status(200).json({
       success: true,
       message: `Password reset OTP sent to ${normalizedEmail}.`,
       role: resolvedRole,
-      deliveredVia: result.deliveredVia,
-      emailRelayPayload: result.relayPayload
+      deliveredVia: result.deliveredVia
     });
   } catch (err) {
     console.error('Forgot Password Send OTP Error:', err);

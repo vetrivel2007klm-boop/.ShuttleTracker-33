@@ -13,6 +13,22 @@ if (typeof dns.setDefaultResultOrder === 'function') {
   dns.setDefaultResultOrder('ipv4first');
 }
 
+// Override resolve6 to return empty array so Nodemailer never resolves or connects to IPv6
+const noopResolve6 = (hostname, options, callback) => {
+  if (typeof options === 'function') callback = options;
+  if (typeof callback === 'function') callback(null, []);
+};
+dns.resolve6 = noopResolve6;
+if (dns.promises) {
+  dns.promises.resolve6 = async () => [];
+}
+if (dns.Resolver && dns.Resolver.prototype) {
+  dns.Resolver.prototype.resolve6 = function (hostname, options, callback) {
+    if (typeof options === 'function') callback = options;
+    if (typeof callback === 'function') callback(null, []);
+  };
+}
+
 const otpStore = new Map(); // key: email.toLowerCase() -> { otp, purpose, expiresAt, verified }
 
 const DEFAULT_EMAIL_USER = 'cleancodeuniverse@gmail.com';
@@ -266,35 +282,32 @@ const getCredentials = () => {
   return { user, pass };
 };
 
-// Multi-tier Gmail SMTP transporters with failover
+// Multi-tier Gmail SMTP transporters with failover (mirroring CleanCode's proven 24/7 delivery)
 let cachedTransporters = null;
 const getSmtpTransporters = () => {
   if (cachedTransporters) return cachedTransporters;
   const { user, pass } = getCredentials();
   if (!user || !pass) return [];
 
-  const baseConfig = {
+  const commonOptions = {
     auth: { user, pass },
     family: 4,
-    lookup: (hostname, options, callback) => {
-      if (typeof options === 'function') {
-        callback = options;
-        options = {};
-      }
-      dns.lookup(hostname, { family: 4, all: false }, callback);
-    },
-    connectionTimeout: 4000,
-    greetingTimeout: 4000,
-    socketTimeout: 6000
+    connectionTimeout: Number(process.env.EMAIL_CONNECTION_TIMEOUT_MS || 15000),
+    greetingTimeout: Number(process.env.EMAIL_GREETING_TIMEOUT_MS || 15000),
+    socketTimeout: Number(process.env.EMAIL_SOCKET_TIMEOUT_MS || 20000),
+    pool: false
   };
 
   cachedTransporters = [
-    // 1. Nodemailer Gmail Service (automatically configures optimal host, ports, and SSL)
+    // 1. Direct Gmail STARTTLS Port 587 (Standard RFC-compliant cloud SMTP - primary provider matching CleanCode)
     {
-      name: 'Gmail Service',
+      name: 'Gmail Port 587 (TLS)',
       transport: nodemailer.createTransport({
-        service: 'gmail',
-        ...baseConfig
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false,
+        requireTLS: true,
+        ...commonOptions
       })
     },
     // 2. Direct Gmail SSL Port 465
@@ -304,18 +317,15 @@ const getSmtpTransporters = () => {
         host: 'smtp.gmail.com',
         port: 465,
         secure: true,
-        ...baseConfig
+        ...commonOptions
       })
     },
-    // 3. Direct Gmail STARTTLS Port 587
+    // 3. Nodemailer Gmail Service (Built-in service wrapper)
     {
-      name: 'Gmail Port 587 (TLS)',
+      name: 'Gmail Service',
       transport: nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 587,
-        secure: false,
-        requireTLS: true,
-        ...baseConfig
+        service: 'gmail',
+        ...commonOptions
       })
     }
   ];
@@ -326,13 +336,13 @@ const resetTransporters = () => {
   cachedTransporters = null;
 };
 
-// Warm TLS connection on startup
+// Warm connection on startup
 setImmediate(() => {
   const transporters = getSmtpTransporters();
   if (transporters[0]?.transport) {
     transporters[0].transport
       .verify()
-      .then(() => console.log('📧 [Gmail SMTP Service] Verified & Ready (cleancodeuniverse@gmail.com)'))
+      .then(() => console.log('📧 [Gmail SMTP Port 587] Verified & Ready (cleancodeuniverse@gmail.com)'))
       .catch((err) => console.warn('⚠️ [SMTP Startup Verify Warning]:', err?.message || err));
   }
 });
@@ -515,18 +525,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
     }
   }
 
-  // 3. Multi-tier direct Gmail SMTP (Service -> Port 465 SSL -> Port 587 STARTTLS)
-  const isRenderCloud = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID);
-  if (isRenderCloud) {
-    // Render Free Tier blocks outbound ports 25, 465, and 587.
-    // Skip 8-10s timeout hang so the cloud request returns in <10ms and queues for the local bridge worker!
-    return {
-      success: false,
-      isCloudEgressBlocked: true,
-      message: 'Render egress firewall blocks outbound SMTP (ports 465/587). Queued for local SMTP bridge.'
-    };
-  }
-
+  // 3. Multi-tier direct Gmail SMTP (Port 587 TLS -> Port 465 SSL -> Gmail Service)
   const transporters = getSmtpTransporters();
   for (const { name, transport } of transporters) {
     try {
@@ -565,11 +564,7 @@ const deliverEmailMessage = async ({ to, subject, htmlContent, textContent, send
         };
       }
       console.warn(`⚠️ [${name} Warning]:`, msg);
-      if (/closed|ended|timeout|reset|econnrefused|enetunreach/i.test(msg)) {
-        resetTransporters();
-        // Host egress firewall drops SMTP connection. Break early to avoid stalling on repeated blocked ports.
-        break;
-      }
+      // Try next transporter attempt if available
     }
   }
 
@@ -660,9 +655,14 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
   });
 
   if (!delivery.success) {
+    otpStore.delete(normalizedEmail);
+    recentOperationalEmailMap.delete(otpActionDedupKey);
+    const dbInstance = getDb();
+    if (dbInstance && typeof dbInstance.consumeOtpInDb === 'function') {
+      await dbInstance.consumeOtpInDb(normalizedEmail).catch(() => {});
+    }
+
     if (delivery.rejectedAddress) {
-      otpStore.delete(normalizedEmail);
-      recentOperationalEmailMap.delete(otpActionDedupKey);
       console.error(`❌ [OTP Delivery Failed - Rejected Recipient] ${normalizedEmail}:`, delivery.message);
       return {
         success: false,
@@ -671,27 +671,10 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
       };
     }
 
-    // Host firewall blocked direct outbound SMTP (e.g. Render Free Tier) -> Queue for local SMTP bridge
-    console.warn(`⚠️ [Cloud Egress Notice] Direct SMTP blocked on host for ${normalizedEmail}. OTP stored & active.`);
-    const relayPayload = {
-      relayId: `otp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      to: normalizedEmail,
-      subject,
-      htmlContent,
-      textContent,
-      senderName,
-      senderEmail,
-      purpose,
-      otp
-    };
-    await queueCloudRelay(relayPayload);
-
+    console.error(`❌ [OTP Delivery Failed] ${normalizedEmail}:`, delivery.message || delivery.errors);
     return {
-      success: true,
-      deliveredVia: 'cloud_secure_otp',
-      otp, // return OTP code so client displays and auto-fills
-      senderEmail,
-      relayPayload
+      success: false,
+      message: 'Could not deliver OTP email. Please check your email address and try again.'
     };
   }
 
@@ -699,8 +682,6 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
   return {
     success: true,
     deliveredVia: delivery.deliveredVia,
-    otp,
-    relayPayload: null,
     senderEmail
   };
 };

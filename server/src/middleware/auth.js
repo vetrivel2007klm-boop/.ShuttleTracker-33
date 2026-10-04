@@ -9,8 +9,8 @@ const resolveDemoUser = (role) => ({
     role === 'admin'
       ? 'cleancodeuniverse@gmail.com'
       : role === 'driver'
-      ? 'driver.john@shuttletrack.com'
-      : 'passenger@shuttletrack.com',
+      ? 'driver.john@cleancodeuniverse.com'
+      : 'passenger@cleancodeuniverse.com',
   name: role === 'admin' ? 'Admin Controller' : role === 'driver' ? 'John Miller' : 'Sarah Jenkins',
   organization_name: null
 });
