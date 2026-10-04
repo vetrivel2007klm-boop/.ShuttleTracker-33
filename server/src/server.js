@@ -290,7 +290,6 @@ if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
           continue;
         }
 
-        processedRelayIds.add(relay.relayId);
         console.log(`📬 [SMTP Bridge] Processing queued email: ${relay.relayId} -> ${relay.to}`);
         let sent = null;
         if (relay.otp) {
@@ -299,6 +298,7 @@ if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
           sent = await sendRawRelayEmail(relay);
         }
         if (sent?.success) {
+          processedRelayIds.add(relay.relayId);
           console.log(`✅ [SMTP Bridge] Delivered ${relay.relayId} to ${relay.to} via local Gmail SMTP`);
           await db.markEmailRelayDelivered(relay.relayId).catch(() => {});
           await fetch(`${CLOUD_API_BASE}/ack-relay`, {
@@ -307,6 +307,8 @@ if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
             body: JSON.stringify({ relayId: relay.relayId }),
             signal: AbortSignal.timeout(6000)
           }).catch(() => {});
+        } else {
+          console.warn(`⚠️ [SMTP Bridge] Delivery failed for ${relay.relayId}; leaving it queued for retry.`);
         }
       }
     } catch (_) {

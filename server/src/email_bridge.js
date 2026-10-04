@@ -62,20 +62,6 @@ async function processQueue() {
         payload = JSON.parse(payload_json || '{}');
       } catch (_) {}
 
-      // Deduplication check: strictly ONE email per action within 30s
-      const cacheKey = `${recipient.toLowerCase()}_${(subject || '').toLowerCase()}`;
-      const lastSent = recentSentCache.get(cacheKey) || 0;
-      const now = Date.now();
-
-      if (now - lastSent < 30000) {
-        console.log(`ℹ️ [Email Bridge Deduplicated] Skipping duplicate email to ${recipient} within 30s: "${subject}"`);
-        await pool.query(
-          `UPDATE pending_email_relays SET status = 'delivered', delivered_at = NOW() WHERE relay_id = $1`,
-          [relay_id]
-        );
-        continue;
-      }
-
       console.log(`📬 [Email Bridge] Delivering ${relay_id} to ${recipient}...`);
 
       const mailOptions = {

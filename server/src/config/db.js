@@ -4700,8 +4700,8 @@ const db = {
         const res = await pool.query(
           `SELECT id, otp, expires_at, verified 
            FROM user_otps 
-           WHERE LOWER(email) = $1 AND expires_at > $2
-           ORDER BY created_at DESC 
+           WHERE LOWER(email) = $1 AND expires_at > $2 AND verified = FALSE
+           ORDER BY created_at DESC, id DESC
            LIMIT 1`,
           [cleanEmail, now]
         );

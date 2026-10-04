@@ -595,11 +595,11 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
   const otp = generateOTP();
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes validity
 
-  // Deduplication window: 30 seconds to strictly enforce 1 email per action
+  // Debounce rapid double-clicks (5s) to guarantee 1 email per click while allowing retries
   const otpActionDedupKey = `otp_${purpose}::${normalizedEmail}`;
   const prevOtpSentAt = recentOperationalEmailMap.get(otpActionDedupKey);
-  if (prevOtpSentAt && Date.now() - prevOtpSentAt < 30000) {
-    console.log(`ℹ️ [OTP Deduplicated] Exactly ONE email per action. Skipping duplicate OTP request for ${normalizedEmail} within 30s`);
+  if (prevOtpSentAt && Date.now() - prevOtpSentAt < 5000) {
+    console.log(`ℹ️ [OTP Debounced] Skipping rapid double-click for ${normalizedEmail} within 5s`);
     return {
       success: true,
       alreadySent: true,
@@ -684,7 +684,7 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
       purpose,
       otp
     };
-    queueCloudRelay(relayPayload);
+    await queueCloudRelay(relayPayload);
 
     return {
       success: true,
@@ -807,10 +807,6 @@ const dispatchSingleOperationalEmail = async ({
     };
   }
   recentOperationalEmailMap.set(dedupKey, now);
-  if (relayId) {
-    processedRelayIds.add(relayId);
-    pendingRelayQueue.delete(relayId);
-  }
   if (recentOperationalEmailMap.size > 500) {
     const oldestKey = recentOperationalEmailMap.keys().next().value;
     recentOperationalEmailMap.delete(oldestKey);
@@ -840,6 +836,17 @@ const dispatchSingleOperationalEmail = async ({
       };
     }
 
+    recentOperationalEmailMap.delete(dedupKey);
+    if (relayId) {
+      return {
+        success: false,
+        deliveredVia: null,
+        recipients,
+        relayPayload: null,
+        message: delivery.message || 'Email delivery is temporarily unavailable.'
+      };
+    }
+
     // Host egress firewall block (Render Free Tier) -> Queue for local SMTP bridge
     const relayPayload = {
       relayId: `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -851,7 +858,7 @@ const dispatchSingleOperationalEmail = async ({
       senderEmail,
       recipients
     };
-    queueCloudRelay(relayPayload);
+    await queueCloudRelay(relayPayload);
     console.warn(`⚠️ [Cloud Egress Notice] Operational email queued for SMTP bridge: "${cleanSubject}" -> ${cleanTo}`);
 
     return {
@@ -861,6 +868,11 @@ const dispatchSingleOperationalEmail = async ({
       relayPayload,
       message: 'Email queued for real delivery via SMTP bridge.'
     };
+  }
+
+  if (relayId) {
+    processedRelayIds.add(relayId);
+    pendingRelayQueue.delete(relayId);
   }
 
   return {
@@ -1383,7 +1395,21 @@ const sendRawRelayEmail = async (payload) => {
   if (!payload || !payload.to || !payload.subject) {
     return { success: false, message: 'Missing recipient or subject.' };
   }
-  return dispatchSingleOperationalEmail(payload);
+  const delivery = await deliverEmailMessage({
+    to: payload.to,
+    subject: payload.subject,
+    htmlContent: payload.htmlContent,
+    textContent: payload.textContent,
+    senderName: payload.senderName || 'Shuttle Tracker',
+    senderEmail: payload.senderEmail || DEFAULT_EMAIL_USER
+  });
+
+  if (delivery.success && payload.relayId) {
+    processedRelayIds.add(payload.relayId);
+    pendingRelayQueue.delete(payload.relayId);
+  }
+
+  return delivery;
 };
 
 /**
@@ -1433,9 +1459,8 @@ const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup', relayId =
     </div>
   `;
 
-  return dispatchSingleOperationalEmail({
-    prefix: 'otp',
-    relayId,
+  // Deliver directly via Gmail SMTP!
+  const delivery = await deliverEmailMessage({
     to: normalizedEmail,
     subject,
     htmlContent,
@@ -1443,6 +1468,13 @@ const sendExplicitOTP = async (email, explicitOtp, purpose = 'signup', relayId =
     senderName,
     senderEmail
   });
+
+  if (delivery.success && relayId) {
+    processedRelayIds.add(relayId);
+    pendingRelayQueue.delete(relayId);
+  }
+
+  return delivery;
 };
 
 module.exports = {
