@@ -6,18 +6,16 @@ import api from '../services/api';
 const SocketContext = createContext();
 
 const getSocketServerUrl = () => {
-  if (import.meta.env.VITE_SOCKET_URL) {
-    return import.meta.env.VITE_SOCKET_URL;
+  if (typeof window !== 'undefined') {
+    const isViteDev =
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
+      window.location.port === '5173';
+    if (isViteDev) {
+      return 'http://localhost:5000';
+    }
+    return window.location.origin;
   }
-  const isLocal =
-    window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-  if (isLocal && window.location.port === '5173') {
-    return 'http://localhost:5000';
-  }
-  if (window.location.port === '5173') {
-    return `http://${window.location.hostname}:5000`;
-  }
-  return window.location.origin;
+  return '';
 };
 
 export const SocketProvider = ({ children }) => {

@@ -611,6 +611,10 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
   recentOperationalEmailMap.set(otpActionDedupKey, Date.now());
 
   otpStore.set(normalizedEmail, { otp, purpose, expiresAt, verified: false });
+  const dbInstance = getDb();
+  if (dbInstance && typeof dbInstance.saveOtpToDb === 'function') {
+    await dbInstance.saveOtpToDb(normalizedEmail, otp, purpose, expiresAt).catch(() => {});
+  }
 
   const isReset = purpose === 'reset';
   const subject = isReset
@@ -701,7 +705,7 @@ const sendBrevoOTP = async (email, purpose = 'signup') => {
   };
 };
 
-const verifyOTP = (email, candidateOtp, consume = true) => {
+const verifyOTP = async (email, candidateOtp, consume = true) => {
   if (!email || !candidateOtp) return { valid: false, message: 'Email and OTP are required.' };
   let normalizedEmail = email.trim().toLowerCase();
   if (
@@ -712,27 +716,50 @@ const verifyOTP = (email, candidateOtp, consume = true) => {
   ) {
     normalizedEmail = 'cleancodeuniverse@gmail.com';
   }
-  const record = otpStore.get(normalizedEmail);
 
-  if (!record) {
-    return { valid: false, message: 'No OTP found for this email. Please request a new OTP.' };
+  const cleanCandidate = String(candidateOtp).trim();
+
+  // 1. Check in-memory first for ultra-fast match
+  let record = otpStore.get(normalizedEmail);
+  if (record && Date.now() <= record.expiresAt) {
+    if (record.otp === cleanCandidate) {
+      record.verified = true;
+      if (consume) {
+        otpStore.delete(normalizedEmail);
+        const dbInstance = getDb();
+        if (dbInstance && typeof dbInstance.consumeOtpInDb === 'function') {
+          await dbInstance.consumeOtpInDb(normalizedEmail).catch(() => {});
+        }
+      }
+      return { valid: true };
+    }
   }
 
-  if (Date.now() > record.expiresAt) {
+  // 2. Check persistent PostgreSQL database (survives restarts, redeployments & cold-starts)
+  const dbInstance = getDb();
+  if (dbInstance && typeof dbInstance.verifyOtpInDb === 'function') {
+    const dbResult = await dbInstance.verifyOtpInDb(normalizedEmail, cleanCandidate);
+    if (dbResult && dbResult.valid === true) {
+      if (consume && typeof dbInstance.consumeOtpInDb === 'function') {
+        await dbInstance.consumeOtpInDb(normalizedEmail).catch(() => {});
+        otpStore.delete(normalizedEmail);
+      }
+      return { valid: true };
+    } else if (dbResult && dbResult.message && dbResult.valid === false) {
+      return { valid: false, message: dbResult.message };
+    }
+  }
+
+  if (record && Date.now() > record.expiresAt) {
     otpStore.delete(normalizedEmail);
     return { valid: false, message: 'OTP has expired. Please request a new one.' };
   }
 
-  if (record.otp !== candidateOtp.trim()) {
+  if (record && record.otp !== cleanCandidate) {
     return { valid: false, message: 'Invalid OTP code. Please check your email and try again.' };
   }
 
-  record.verified = true;
-
-  if (consume) {
-    otpStore.delete(normalizedEmail);
-  }
-  return { valid: true };
+  return { valid: false, message: 'No active OTP found for this email. Please request a new OTP.' };
 };
 
 const dispatchSingleOperationalEmail = async ({

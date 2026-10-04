@@ -534,7 +534,6 @@ router.post('/send-otp', async (req, res) => {
         role: existing.role,
         message: `Verification OTP sent to ${emailValidation.normalizedEmail}. You have an existing account (${existing.role}).`,
         deliveredVia: result.deliveredVia,
-        devOtp: result.otp,
         emailRelayPayload: result.relayPayload
       });
     }
@@ -543,7 +542,6 @@ router.post('/send-otp', async (req, res) => {
       success: true,
       message: `Verification OTP sent to ${emailValidation.normalizedEmail}.`,
       deliveredVia: result.deliveredVia,
-      devOtp: result.otp,
       emailRelayPayload: result.relayPayload
     });
   } catch (err) {
@@ -553,13 +551,13 @@ router.post('/send-otp', async (req, res) => {
 });
 
 // POST /api/auth/verify-otp (Verify 6-digit OTP before unlocking password input)
-router.post('/verify-otp', (req, res) => {
+router.post('/verify-otp', async (req, res) => {
   try {
     const { email, otp } = req.body;
     if (!email || !otp) {
       return res.status(400).json({ success: false, message: 'Please enter both email and the 6-digit OTP code.' });
     }
-    const validation = verifyOTP(email, otp, false); // keep OTP valid for final submission
+    const validation = await verifyOTP(email, otp, false); // keep OTP valid for final submission
     if (!validation.valid) {
       return res.status(400).json({ success: false, message: validation.message });
     }
@@ -694,7 +692,7 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    const otpValidation = verifyOTP(email, otp);
+    const otpValidation = await verifyOTP(email, otp);
     if (!otpValidation.valid) {
       return res.status(400).json({
         success: false,
@@ -818,7 +816,6 @@ router.post('/forgot-password/send-otp', async (req, res) => {
       message: `Password reset OTP sent to ${normalizedEmail}.`,
       role: resolvedRole,
       deliveredVia: result.deliveredVia,
-      devOtp: result.otp,
       emailRelayPayload: result.relayPayload
     });
   } catch (err) {
@@ -847,7 +844,7 @@ router.post('/forgot-password/reset', async (req, res) => {
     }
 
     // Verify OTP
-    const otpValidation = verifyOTP(email, otp);
+    const otpValidation = await verifyOTP(email, otp);
     if (!otpValidation.valid) {
       return res.status(400).json({
         success: false,

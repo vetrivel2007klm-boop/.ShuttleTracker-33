@@ -1496,6 +1496,17 @@ if (process.env.DATABASE_URL || (process.env.PGDATABASE && process.env.PGUSER)) 
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               delivered_at TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS user_otps (
+              id SERIAL PRIMARY KEY,
+              email VARCHAR(150) NOT NULL,
+              otp VARCHAR(10) NOT NULL,
+              purpose VARCHAR(50) DEFAULT 'signup',
+              expires_at BIGINT NOT NULL,
+              verified BOOLEAN DEFAULT FALSE,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_otps_email ON user_otps (email);
           `);
 
           // 1b. One-time clean purge of all dummy data except Admin so user can test from a clean slate
@@ -4658,6 +4669,68 @@ const db = {
         );
       } catch (err) {
         console.warn('⚠️ [DB markEmailRelayDelivered Warning]:', err?.message);
+      }
+    }
+  },
+
+  saveOtpToDb: async (email, otp, purpose = 'signup', expiresAt) => {
+    if (!email || !otp) return;
+    const cleanEmail = email.trim().toLowerCase();
+    if (pool) {
+      try {
+        await pool.query(
+          `INSERT INTO user_otps (email, otp, purpose, expires_at, verified, created_at)
+           VALUES ($1, $2, $3, $4, FALSE, CURRENT_TIMESTAMP)`,
+          [cleanEmail, String(otp).trim(), purpose, expiresAt]
+        );
+      } catch (err) {
+        console.warn('⚠️ [DB saveOtpToDb Warning]:', err?.message);
+      }
+    }
+  },
+
+  verifyOtpInDb: async (email, candidateOtp) => {
+    if (!email || !candidateOtp) return { valid: false, message: 'Email and OTP are required.' };
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanCandidate = String(candidateOtp).trim();
+    const now = Date.now();
+
+    if (pool) {
+      try {
+        const res = await pool.query(
+          `SELECT id, otp, expires_at, verified 
+           FROM user_otps 
+           WHERE LOWER(email) = $1 AND expires_at > $2
+           ORDER BY created_at DESC 
+           LIMIT 1`,
+          [cleanEmail, now]
+        );
+        if (res.rows.length === 0) {
+          return { valid: false, message: 'No active OTP found for this email. Please request a new OTP.' };
+        }
+        const record = res.rows[0];
+        if (record.otp !== cleanCandidate) {
+          return { valid: false, message: 'Invalid OTP code. Please check your email and try again.' };
+        }
+        return { valid: true, id: record.id };
+      } catch (err) {
+        console.warn('⚠️ [DB verifyOtpInDb Warning]:', err?.message);
+      }
+    }
+    return { valid: null };
+  },
+
+  consumeOtpInDb: async (email) => {
+    if (!email) return;
+    const cleanEmail = email.trim().toLowerCase();
+    if (pool) {
+      try {
+        await pool.query(
+          `DELETE FROM user_otps WHERE LOWER(email) = $1`,
+          [cleanEmail]
+        );
+      } catch (err) {
+        console.warn('⚠️ [DB consumeOtpInDb Warning]:', err?.message);
       }
     }
   },

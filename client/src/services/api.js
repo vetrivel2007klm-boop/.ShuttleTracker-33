@@ -2,14 +2,16 @@ import axios from 'axios';
 
 // Automatically detect API host based on environment and hostname (works seamlessly locally and after deployment)
 const getApiBaseUrl = () => {
-  if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
+  if (typeof window !== 'undefined') {
+    const isViteDev =
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
+      window.location.port === '5173';
+    if (isViteDev) {
+      return 'http://localhost:5000/api';
+    }
+    return `${window.location.origin}/api`;
   }
-  const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-  if (isLocal && window.location.port === '5173') {
-    return 'http://localhost:5000/api';
-  }
-  return `${window.location.origin}/api`;
+  return '/api';
 };
 
 const api = axios.create({

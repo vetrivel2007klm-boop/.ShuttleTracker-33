@@ -290,6 +290,7 @@ if (!process.env.RENDER && !process.env.RENDER_SERVICE_ID) {
           continue;
         }
 
+        processedRelayIds.add(relay.relayId);
         console.log(`📬 [SMTP Bridge] Processing queued email: ${relay.relayId} -> ${relay.to}`);
         let sent = null;
         if (relay.otp) {
