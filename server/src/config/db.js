@@ -1186,8 +1186,9 @@ function getShuttleGpsTelemetry(shuttleOrId, routeOverride = null) {
       destLng !== null &&
       Number.isFinite(curLat) &&
       Number.isFinite(curLng) &&
-      remainingDistanceKm <= 0.15 &&
-      (totalDirectDist !== null && totalDirectDist <= 0.15 ? true : distanceCoveredKm >= 0.05)
+      remainingDistanceKm <= 0.035 &&
+      distanceCoveredKm >= 0.5 &&
+      speedKmh === 0
   );
 
   return {

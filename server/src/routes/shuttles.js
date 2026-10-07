@@ -3,7 +3,22 @@ const router = express.Router();
 const db = require('../config/db');
 const { authenticate, optionalAuthenticate, authorize } = require('../middleware/auth');
 const { sendDriverCredentialsEmail } = require('../services/otpService');
-const { startAutonomousShuttle } = require('../sockets/trackingSocket');
+const {
+  startAutonomousShuttle,
+  processDriverLocationUpdate,
+  getLiveTelemetry,
+  getAllLiveTelemetry
+} = require('../sockets/trackingSocket');
+
+// GET /api/shuttles/live-telemetry - Fast API endpoint for instant memory-cached live locations (< 1ms)
+router.get('/live-telemetry', async (req, res) => {
+  try {
+    const liveMap = getAllLiveTelemetry();
+    res.json({ success: true, data: liveMap });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to retrieve live telemetry.' });
+  }
+});
 
 // GET /api/shuttles - List all shuttles (optionally scoped by ?organization_name= or active user's organization)
 router.get('/', optionalAuthenticate, async (req, res) => {
@@ -13,6 +28,38 @@ router.get('/', optionalAuthenticate, async (req, res) => {
     res.json({ success: true, count: shuttles.length, data: shuttles });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to retrieve shuttles.' });
+  }
+});
+
+// GET /api/shuttles/:id/live-telemetry - Fast API endpoint for single shuttle live telemetry (< 1ms)
+router.get('/:id/live-telemetry', async (req, res) => {
+  try {
+    const sId = Number(req.params.id);
+    const telemetry = getLiveTelemetry(sId);
+    if (!telemetry) {
+      return res.status(404).json({ success: false, message: 'No live telemetry found for this shuttle.' });
+    }
+    res.json({ success: true, data: telemetry });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to retrieve live telemetry.' });
+  }
+});
+
+// POST /api/shuttles/:id/telemetry - Fast API ingestion endpoint for second-by-second driver hardware GPS
+router.post('/:id/telemetry', async (req, res) => {
+  try {
+    const io = req.app.get('io');
+    const sId = Number(req.params.id || req.body?.shuttleId || req.body?.shuttle_id);
+    const result = await processDriverLocationUpdate(io, {
+      ...req.body,
+      shuttleId: sId
+    });
+    if (!result) {
+      return res.status(400).json({ success: false, message: 'Invalid GPS coordinates or inactive shuttle.' });
+    }
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message || 'Failed to ingest telemetry.' });
   }
 });
 

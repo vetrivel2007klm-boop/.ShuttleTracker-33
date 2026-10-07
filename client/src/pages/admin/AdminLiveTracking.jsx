@@ -107,6 +107,44 @@ export const AdminLiveTracking = () => {
     };
   }, [socket]);
 
+  // Fast API Telemetry Sync (1.5s interval) guarantees second-by-second auto-update for admin map
+  useEffect(() => {
+    const fetchFastTelemetry = async () => {
+      try {
+        const res = await api.get('/shuttles/live-telemetry');
+        if (res.data?.success && res.data.data) {
+          const telemetryMap = res.data.data;
+          setShuttles((prev) =>
+            prev.map((s) => {
+              const live = telemetryMap[s.id];
+              if (live) {
+                return {
+                  ...s,
+                  current_lat: live.latitude,
+                  current_lng: live.longitude,
+                  speed: live.speed,
+                  heading: live.heading,
+                  status: live.status || s.status,
+                  eta_minutes: live.eta_minutes !== undefined ? live.eta_minutes : s.eta_minutes,
+                  next_stop_name: live.next_stop_name || s.next_stop_name,
+                  distance_km: live.distance_km !== undefined ? live.distance_km : s.distance_km,
+                  distance_covered_km:
+                    live.distance_covered_km !== undefined
+                      ? live.distance_covered_km
+                      : s.distance_covered_km
+                };
+              }
+              return s;
+            })
+          );
+        }
+      } catch (_) {}
+    };
+
+    const timer = setInterval(fetchFastTelemetry, 1500);
+    return () => clearInterval(timer);
+  }, []);
+
   // Merge live socket locations ONLY for shuttles where the driver has pressed Start Trip (status === 'on_trip')
   const mergedShuttles = shuttles.map((s) => {
     const live = liveLocations[s.id];

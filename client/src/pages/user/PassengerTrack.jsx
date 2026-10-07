@@ -9,7 +9,7 @@ export const PassengerTrack = () => {
   const [routes, setRoutes] = useState([]);
   const [selectedShuttleId, setSelectedShuttleId] = useState(1);
   const [focusTrigger, setFocusTrigger] = useState(0);
-  const { liveLocations, socket } = useSocket();
+  const { liveLocations, socket, joinShuttle, leaveShuttle } = useSocket();
 
   const fetchAll = async () => {
     try {
@@ -32,10 +32,59 @@ export const PassengerTrack = () => {
     fetchAll();
   }, []);
 
+  // Join selected shuttle room for targeted high-speed socket stream
+  useEffect(() => {
+    if (selectedShuttleId) {
+      joinShuttle(selectedShuttleId);
+      return () => leaveShuttle(selectedShuttleId);
+    }
+  }, [selectedShuttleId, socket]);
+
+  // Fast API Telemetry Sync (1.5s interval) guarantees resilient second-by-second auto-update
+  useEffect(() => {
+    const fetchFastTelemetry = async () => {
+      try {
+        const res = await api.get('/shuttles/live-telemetry');
+        if (res.data?.success && res.data.data) {
+          const telemetryMap = res.data.data;
+          setShuttles((prev) =>
+            prev.map((s) => {
+              const live = telemetryMap[s.id];
+              if (live) {
+                return {
+                  ...s,
+                  current_lat: live.latitude,
+                  current_lng: live.longitude,
+                  speed: live.speed,
+                  heading: live.heading,
+                  status: live.status || s.status,
+                  eta_minutes: live.eta_minutes !== undefined ? live.eta_minutes : s.eta_minutes,
+                  next_stop_name: live.next_stop_name || s.next_stop_name,
+                  distance_km: live.distance_km !== undefined ? live.distance_km : s.distance_km
+                };
+              }
+              return s;
+            })
+          );
+        }
+      } catch (_) {}
+    };
+
+    const timer = setInterval(fetchFastTelemetry, 1500);
+    return () => clearInterval(timer);
+  }, []);
+
   useEffect(() => {
     if (!socket) return;
-    socket.on('route:updated', fetchAll);
-    return () => socket.off('route:updated', fetchAll);
+    const handleSync = () => fetchAll();
+    socket.on('route:updated', handleSync);
+    socket.on('shuttle:updated', handleSync);
+    socket.on('trip:status_change', handleSync);
+    return () => {
+      socket.off('route:updated', handleSync);
+      socket.off('shuttle:updated', handleSync);
+      socket.off('trip:status_change', handleSync);
+    };
   }, [socket]);
 
   const mergedShuttles = shuttles.map((s) => {

@@ -77,7 +77,7 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute sliding window
 const RATE_LIMIT_TIERS = {
   auth: { limit: 60, windowMs: RATE_LIMIT_WINDOW_MS },           // 60 req/min per user for Auth/OTP
   mutation: { limit: 300, windowMs: RATE_LIMIT_WINDOW_MS },      // 300 req/min per user for Button Mutations
-  telemetry_read: { limit: 1200, windowMs: RATE_LIMIT_WINDOW_MS } // 1,200 req/min per user for Live GPS & Reads
+  telemetry_read: { limit: 3600, windowMs: RATE_LIMIT_WINDOW_MS } // 3,600 req/min per user for Live GPS & Fast API
 };
 
 // Periodic cleanup of expired rate-limit buckets every 60 seconds
@@ -113,7 +113,8 @@ app.use((req, res, next) => {
     tierName = 'auth';
   } else if (
     ['POST', 'PUT', 'DELETE'].includes(req.method) &&
-    !req.path.endsWith('/location')
+    !req.path.endsWith('/location') &&
+    !req.path.includes('/telemetry')
   ) {
     tierName = 'mutation';
   }

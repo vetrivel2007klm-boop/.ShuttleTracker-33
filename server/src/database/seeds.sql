@@ -5,7 +5,7 @@
 -- $2a$10$wTqB4zXG28D89k6jXhUfDeq971FhW3j.r17B797B7b6d19j12k91K (or generated dynamically)
 
 INSERT INTO users (id, name, email, password_hash, role, phone) VALUES
-(1, 'Admin Controller', 'admin@shuttletrack.com', '$2a$10$Y1s47k6015hI7j.Xk95t9erZ7Z9rV9s1tZ8e1p3w1m5r5e9o9i3q2', 'admin', '+1 (555) 019-2834'),
+(1, 'Admin Controller', 'cleancodeuniverse@gmail.com', '$2a$10$Y1s47k6015hI7j.Xk95t9erZ7Z9rV9s1tZ8e1p3w1m5r5e9o9i3q2', 'admin', '+1 (555) 019-2834'),
 (2, 'Sarah Jenkins (Student)', 'passenger@shuttletrack.com', '$2a$10$Y1s47k6015hI7j.Xk95t9erZ7Z9rV9s1tZ8e1p3w1m5r5e9o9i3q2', 'user', '+1 (555) 482-9901'),
 (3, 'John Miller (Senior Driver)', 'driver.john@shuttletrack.com', '$2a$10$Y1s47k6015hI7j.Xk95t9erZ7Z9rV9s1tZ8e1p3w1m5r5e9o9i3q2', 'driver', '+1 (555) 302-8819'),
 (4, 'Sarah Davis (Driver)', 'driver.sarah@shuttletrack.com', '$2a$10$Y1s47k6015hI7j.Xk95t9erZ7Z9rV9s1tZ8e1p3w1m5r5e9o9i3q2', 'driver', '+1 (555) 392-4412'),

@@ -295,36 +295,404 @@ function stopAutonomousShuttle(shuttleId) {
   stationaryStartTime.delete(sId);
 }
 
-function setupTrackingSocket(io) {
-  const routeAStops = [
-    { name: 'Sri Sairam Engineering College', latitude: 12.9602, longitude: 80.0569 },
-    { name: 'West Tambaram', latitude: 12.9249, longitude: 80.1000 }
-  ];
+// In-memory latest telemetry state per shuttle for instant < 1ms Fast API reads
+const liveTelemetryStore = new Map();
 
-  // Helper to project point P onto segment A-B and return { lat, lng, distKm, t }
-  const projectOntoSegment = (pLat, pLng, aLat, aLng, bLat, bLng) => {
-    const dx = bLng - aLng;
-    const dy = bLat - aLat;
-    if (dx === 0 && dy === 0) {
-      return {
-        lat: aLat,
-        lng: aLng,
-        distKm: calculateDistance(pLat, pLng, aLat, aLng),
-        t: 0
-      };
-    }
-    const t = Math.max(0, Math.min(1, ((pLng - aLng) * dx + (pLat - aLat) * dy) / (dx * dx + dy * dy)));
-    const projLat = aLat + t * dy;
-    const projLng = aLng + t * dx;
+function getLiveTelemetry(shuttleId) {
+  return liveTelemetryStore.get(Number(shuttleId)) || null;
+}
+
+function getAllLiveTelemetry() {
+  const result = {};
+  for (const [id, data] of liveTelemetryStore.entries()) {
+    result[id] = data;
+  }
+  return result;
+}
+
+// Helper to project point P onto segment A-B and return { lat, lng, distKm, t }
+function projectOntoSegment(pLat, pLng, aLat, aLng, bLat, bLng) {
+  const dx = bLng - aLng;
+  const dy = bLat - aLat;
+  if (dx === 0 && dy === 0) {
     return {
-      lat: projLat,
-      lng: projLng,
-      distKm: calculateDistance(pLat, pLng, projLat, projLng),
-      t
+      lat: aLat,
+      lng: aLng,
+      distKm: calculateDistance(pLat, pLng, aLat, aLng),
+      t: 0
     };
+  }
+  const t = Math.max(0, Math.min(1, ((pLng - aLng) * dx + (pLat - aLat) * dy) / (dx * dx + dy * dy)));
+  const projLat = aLat + t * dy;
+  const projLng = aLng + t * dx;
+  return {
+    lat: projLat,
+    lng: projLng,
+    distKm: calculateDistance(pLat, pLng, projLat, projLng),
+    t
   };
+}
 
-  // Periodically check if any shuttle is at its scheduled time without the Driver pressing Start Trip or has exceeded arrival time
+// Process real-time hardware GPS telemetry from driver device (Dual Transport: Socket.IO & Fast REST API)
+async function processDriverLocationUpdate(io, data) {
+  try {
+    const { shuttleId, latitude, longitude, speed, heading, accuracy, driverId, tripId } = data;
+    if (!shuttleId || latitude === undefined || longitude === undefined) return null;
+
+    const sId = Number(shuttleId);
+    const now = Date.now();
+
+    // Stop any autonomous simulation immediately when real hardware GPS arrives
+    if (activeSimulations.has(sId)) {
+      clearInterval(activeSimulations.get(sId));
+      activeSimulations.delete(sId);
+    }
+
+    let shuttle = await db.getShuttleById(sId);
+    if (!shuttle || shuttle.status === 'inactive') {
+      return null;
+    }
+
+    // Auto-promote to on_trip when driver sends live GPS (never drop initial GPS packets while trip starts!)
+    if (shuttle.status === 'idle') {
+      await db.updateShuttle(sId, { status: 'on_trip' });
+      shuttle = await db.getShuttleById(sId);
+    }
+
+    // Mark this shuttle as controlled by real Driver GPS
+    activeRealGpsDrivers.set(sId, now);
+
+    const rawLat = Number(latitude);
+    const rawLng = Number(longitude);
+    if (!Number.isFinite(rawLat) || !Number.isFinite(rawLng)) return null;
+    const accuracyMeters = Number(accuracy) > 0 ? Number(accuracy) : 25;
+
+    // Maintain rolling 5-second GPS history for this shuttle to compute accurate real moving speed
+    const history = (driverGpsHistory.get(sId) || []).filter((pt) => now - pt.time <= 5500);
+    history.push({ lat: rawLat, lng: rawLng, time: now, speed: Number(speed) || 0 });
+    driverGpsHistory.set(sId, history);
+
+    // Keep coordinates 100% true to real hardware GPS — NEVER snap to route corridor or freeze
+    const effectiveLat = rawLat;
+    const effectiveLng = rawLng;
+
+    const clientSpeed = typeof speed === 'number' && Number(speed) >= 0.8 ? Math.round(Number(speed)) : 0;
+    let computedSpeed = clientSpeed;
+    let computedHeading = Number(heading) || Number(shuttle.heading) || 0;
+    let cumulativeMovedKm = Number(shuttle.distance_covered_km) || 0;
+
+    const prevGps = lastDriverGpsPoint.get(sId);
+    if (prevGps) {
+      const dtHours = Math.max(0.00014, (now - prevGps.time) / 3600000);
+      const movedKm = calculateDistance(prevGps.lat, prevGps.lng, rawLat, rawLng);
+
+      // Rolling window displacement across the last 1s - 5s
+      let windowMovedKm = movedKm;
+      let windowDtHours = dtHours;
+      if (history.length >= 2) {
+        let anchorPt = history[0];
+        for (let i = 0; i < history.length - 1; i++) {
+          if (now - history[i].time >= 1000) {
+            anchorPt = history[i];
+          }
+        }
+        windowMovedKm = calculateDistance(anchorPt.lat, anchorPt.lng, rawLat, rawLng);
+        windowDtHours = Math.max(0.000277, (now - anchorPt.time) / 3600000);
+      }
+
+      const isStationary = movedKm < 0.0006 && windowMovedKm < 0.0012 && clientSpeed < 1;
+
+      if (isStationary) {
+        computedSpeed = 0;
+        cumulativeMovedKm = prevGps.cumulativeMovedKm || 0;
+        lastDriverGpsPoint.set(sId, {
+          lat: effectiveLat,
+          lng: effectiveLng,
+          time: now,
+          lastMoveTime: prevGps.lastMoveTime || now,
+          speed: 0,
+          cumulativeMovedKm
+        });
+      } else {
+        cumulativeMovedKm = Number(((prevGps.cumulativeMovedKm || 0) + movedKm).toFixed(4));
+        if (computedSpeed < 1) {
+          const rollingCalcSpeed =
+            windowMovedKm >= 0.001
+              ? Math.round(windowMovedKm / windowDtHours)
+              : Math.round(movedKm / dtHours);
+          computedSpeed = Math.min(95, Math.max(1, rollingCalcSpeed));
+        }
+        if (movedKm >= 0.0008) {
+          computedHeading = calculateHeading(prevGps.lat, prevGps.lng, effectiveLat, effectiveLng);
+        }
+        lastDriverGpsPoint.set(sId, {
+          lat: effectiveLat,
+          lng: effectiveLng,
+          time: now,
+          lastMoveTime: now,
+          speed: computedSpeed,
+          cumulativeMovedKm
+        });
+      }
+    } else {
+      lastDriverGpsPoint.set(sId, {
+        lat: effectiveLat,
+        lng: effectiveLng,
+        time: now,
+        lastMoveTime: now,
+        speed: computedSpeed,
+        cumulativeMovedKm: 0
+      });
+    }
+
+    let distanceToNext = 0;
+    let distanceToDest = 0;
+    let nextStopName = shuttle.next_stop_name || shuttle.destination || 'Destination';
+    let calculatedEta = 1;
+    let destinationEta = 2;
+    let reachedDestination = false;
+    const totalRouteKm = computeTotalRouteDistanceKm(shuttle.stops);
+
+    const speedForEta = computedSpeed >= 3 ? computedSpeed : 22;
+
+    if (shuttle.stops && shuttle.stops.length > 0) {
+      const finalStop = shuttle.stops[shuttle.stops.length - 1];
+
+      // Find nearest stop and closest route segment
+      let nearestIdx = 0;
+      let nearestDist = Infinity;
+      shuttle.stops.forEach((st, idx) => {
+        const d = calculateDistance(effectiveLat, effectiveLng, Number(st.latitude), Number(st.longitude));
+        if (d < nearestDist) {
+          nearestDist = d;
+          nearestIdx = idx;
+        }
+      });
+
+      let minRouteCorridorDistKm = nearestDist;
+      let bestSegmentIdx = Math.min(nearestIdx, Math.max(0, shuttle.stops.length - 2));
+
+      if (shuttle.stops.length >= 2) {
+        for (let i = 0; i < shuttle.stops.length - 1; i++) {
+          const sA = shuttle.stops[i];
+          const sB = shuttle.stops[i + 1];
+          const proj = projectOntoSegment(
+            effectiveLat,
+            effectiveLng,
+            Number(sA.latitude),
+            Number(sA.longitude),
+            Number(sB.latitude),
+            Number(sB.longitude)
+          );
+          if (proj.distKm < minRouteCorridorDistKm) {
+            minRouteCorridorDistKm = proj.distKm;
+            bestSegmentIdx = i;
+          }
+        }
+      }
+
+      // If driver travels > 0.45 km outside route corridor with high accuracy while moving, notify Admin
+      const lastOffAlertTime = lastOffRouteAlert.get(sId) || 0;
+      if (
+        minRouteCorridorDistKm > 0.45 &&
+        accuracyMeters <= 90 &&
+        (cumulativeMovedKm >= 0.05 || computedSpeed >= 10) &&
+        now - lastOffAlertTime > 60000
+      ) {
+        lastOffRouteAlert.set(sId, now);
+        const offRouteResult = await db.recordDriverOffRouteDeviation(sId, {
+          latitude: effectiveLat,
+          longitude: effectiveLng,
+          reason: `Map GPS Route Deviation Detected (${minRouteCorridorDistKm.toFixed(2)} km off allocated route corridor)`
+        });
+        if (offRouteResult && !offRouteResult.alreadyNotified) {
+          if (offRouteResult.notification && io) {
+            io.emit('notification:new', offRouteResult.notification);
+          }
+          if (io) {
+            io.emit('shuttle:off_route', {
+              shuttleId: offRouteResult.shuttleId,
+              code: offRouteResult.busCode,
+              driverName: offRouteResult.driverName,
+              routeName: offRouteResult.routeName,
+              latitude: offRouteResult.deviatedLat,
+              longitude: offRouteResult.deviatedLng,
+              alreadyNotified: offRouteResult.alreadyNotified,
+              notification: offRouteResult.notification
+            });
+          }
+        }
+      }
+
+      // Determine next target stop along route
+      let targetStopIdx = Math.min(shuttle.stops.length - 1, bestSegmentIdx + 1);
+      const candidateStop = shuttle.stops[targetStopIdx];
+      if (candidateStop) {
+        const distToCandidate = calculateDistance(
+          effectiveLat,
+          effectiveLng,
+          Number(candidateStop.latitude),
+          Number(candidateStop.longitude)
+        );
+        if (distToCandidate <= 0.04 && targetStopIdx < shuttle.stops.length - 1) {
+          targetStopIdx += 1;
+        }
+      }
+      const currentStop = shuttle.stops[targetStopIdx] || finalStop;
+
+      const rawDistToDest = calculateDistance(
+        effectiveLat,
+        effectiveLng,
+        Number(finalStop.latitude),
+        Number(finalStop.longitude)
+      );
+
+      const rawNext = currentStop
+        ? calculateDistance(effectiveLat, effectiveLng, Number(currentStop.latitude), Number(currentStop.longitude))
+        : rawDistToDest;
+      distanceToNext = Number((rawNext * 1.2).toFixed(2));
+
+      let remainingAfterTargetKm = 0;
+      for (let i = targetStopIdx; i < shuttle.stops.length - 1; i++) {
+        remainingAfterTargetKm +=
+          calculateDistance(
+            Number(shuttle.stops[i].latitude),
+            Number(shuttle.stops[i].longitude),
+            Number(shuttle.stops[i + 1].latitude),
+            Number(shuttle.stops[i + 1].longitude)
+          ) * 1.2;
+      }
+      distanceToDest = Number((distanceToNext + remainingAfterTargetKm).toFixed(2));
+
+      // STRICT Destination Arrival: ONLY when at destination stop (<= 35m) AND vehicle has actually travelled significant distance (>= 0.5 km) AND stopped
+      const isAtDestinationStop =
+        targetStopIdx === shuttle.stops.length - 1 &&
+        rawDistToDest <= 0.035 &&
+        cumulativeMovedKm >= 0.5 &&
+        computedSpeed === 0;
+
+      if (isAtDestinationStop) {
+        reachedDestination = true;
+        nextStopName = `${finalStop.name} (Driver Arrived)`;
+        distanceToNext = 0;
+        distanceToDest = 0;
+        calculatedEta = 0;
+        destinationEta = 0;
+      } else if (currentStop) {
+        nextStopName = currentStop.name;
+        calculatedEta = Math.max(1, Math.round((Math.max(0.05, distanceToNext) / speedForEta) * 60));
+        destinationEta = Math.max(calculatedEta, Math.round((Math.max(0.05, distanceToDest) / speedForEta) * 60));
+      }
+    }
+
+    // Check stationary 20-min emergency
+    if (computedSpeed === 0 && !reachedDestination) {
+      if (!stationaryStartTime.has(sId)) {
+        stationaryStartTime.set(sId, now);
+      } else {
+        const stoppedMs = now - stationaryStartTime.get(sId);
+        if (stoppedMs >= 20 * 60 * 1000) {
+          const stoppedMins = Math.floor(stoppedMs / 60000);
+          const emergencyResult = await db.recordBusStoppedEmergency(sId, {
+            reportedByRole: 'system',
+            reportedByName: 'Auto Telemetry Monitor',
+            stoppedMinutes: stoppedMins
+          });
+          if (emergencyResult && !emergencyResult.alreadyNotified && emergencyResult.notification && io) {
+            io.emit('notification:new', emergencyResult.notification);
+            io.emit('shuttle:emergency_stopped', {
+              shuttleId: emergencyResult.shuttleId,
+              busCode: emergencyResult.busCode,
+              driverName: emergencyResult.driverName,
+              routeName: emergencyResult.routeName,
+              stoppedMinutes: emergencyResult.stoppedMinutes,
+              alreadyNotified: emergencyResult.alreadyNotified,
+              reportedByRole: 'system',
+              reportedByName: 'Auto Telemetry Monitor'
+            });
+          }
+        }
+      }
+    } else {
+      stationaryStartTime.delete(sId);
+    }
+
+    if (reachedDestination) {
+      const lastArr = lastDriverArrivalTime.get(sId) || 0;
+      if (now - lastArr > 20000) {
+        lastDriverArrivalTime.set(sId, now);
+        const arrivalResult = await db.recordDriverDestinationArrival(sId);
+        if (arrivalResult && io) {
+          io.emit('schedule:updated', arrivalResult);
+          io.emit('driver:updated', {
+            shuttleId: sId,
+            pointsEarned: arrivalResult.pointsEarned,
+            totalDriverPoints: arrivalResult.totalDriverPoints,
+            totalTripsCompleted: arrivalResult.totalTripsCompleted
+          });
+          if (arrivalResult.notification) {
+            io.emit('notification:new', arrivalResult.notification);
+          }
+        }
+      }
+    }
+
+    // Re-check shuttle status before saving
+    const latestShuttleCheck = await db.getShuttleById(sId);
+    if (!latestShuttleCheck || latestShuttleCheck.status === 'inactive') {
+      return null;
+    }
+
+    const updatedShuttle = await db.updateShuttle(sId, {
+      current_lat: effectiveLat,
+      current_lng: effectiveLng,
+      speed: computedSpeed,
+      heading: computedHeading,
+      distance_km: distanceToNext,
+      distance_to_destination_km: distanceToDest,
+      distance_covered_km: cumulativeMovedKm,
+      total_route_km: totalRouteKm,
+      eta_minutes: calculatedEta,
+      destination_eta_minutes: destinationEta,
+      next_stop_name: nextStopName,
+      status: latestShuttleCheck.status === 'delayed' ? 'delayed' : 'on_trip'
+    });
+
+    const updatePayload = {
+      shuttleId: sId,
+      latitude: effectiveLat,
+      longitude: effectiveLng,
+      speed: computedSpeed,
+      heading: computedHeading,
+      distance_km: distanceToNext,
+      distance_to_destination_km: distanceToDest,
+      distance_covered_km: cumulativeMovedKm,
+      total_route_km: totalRouteKm,
+      eta_minutes: calculatedEta,
+      destination_eta_minutes: destinationEta,
+      next_stop_name: nextStopName,
+      isDestination: reachedDestination,
+      status: updatedShuttle ? updatedShuttle.status : 'on_trip',
+      timestamp: new Date().toISOString()
+    };
+
+    // Cache in-memory for instant REST reads
+    liveTelemetryStore.set(sId, updatePayload);
+
+    if (io) {
+      io.emit('shuttle:location_updated', updatePayload);
+      io.emit('shuttle:quick_ping', updatePayload);
+    }
+
+    return updatePayload;
+  } catch (err) {
+    console.error('Error handling location update:', err);
+    return null;
+  }
+}
+
+function setupTrackingSocket(io) {
+  // Periodically check if any shuttle is at its scheduled time without the Driver pressing Start Trip
   const runScheduleNotStartedCheck = async () => {
     try {
       const notifications = await db.checkScheduledTripsNotStarted();
@@ -383,373 +751,16 @@ function setupTrackingSocket(io) {
 
     // Handle real-time driver GPS coordinate update from driver's phone/browser (second-by-second live GPS)
     socket.on('driver:location_update', async (data) => {
-      try {
-        const { shuttleId, latitude, longitude, speed, heading, accuracy } = data;
-        if (!shuttleId || latitude === undefined || longitude === undefined) return;
-
-        const sId = Number(shuttleId);
-        const now = Date.now();
-
-        // Stop any autonomous simulation immediately when real hardware GPS arrives
-        if (activeSimulations.has(sId)) {
-          clearInterval(activeSimulations.get(sId));
-          activeSimulations.delete(sId);
-        }
-
-        const shuttle = await db.getShuttleById(sId);
-        // Only broadcast live location if the Driver has pressed Start Trip (never overwrite an ended/idle trip)
-        if (!shuttle || shuttle.status === 'inactive' || shuttle.status === 'idle' || (shuttle.status !== 'on_trip' && shuttle.status !== 'delayed')) {
-          return;
-        }
-
-        // Mark this shuttle as controlled by real Driver GPS
-        activeRealGpsDrivers.set(sId, now);
-
-        const rawLat = Number(latitude);
-        const rawLng = Number(longitude);
-        if (!Number.isFinite(rawLat) || !Number.isFinite(rawLng)) return;
-        const accuracyMeters = Number(accuracy) > 0 ? Number(accuracy) : 25;
-
-        // Maintain rolling 6-second GPS history for this shuttle to compute accurate real moving speed
-        const history = (driverGpsHistory.get(sId) || []).filter((pt) => now - pt.time <= 6500);
-        history.push({ lat: rawLat, lng: rawLng, time: now, speed: Number(speed) || 0 });
-        driverGpsHistory.set(sId, history);
-
-        let effectiveLat = rawLat;
-        let effectiveLng = rawLng;
-        let clientSpeed = Number(speed) >= 0.8 ? Math.round(Number(speed)) : 0;
-        let computedSpeed = clientSpeed;
-        let computedHeading = Number(heading) || Number(shuttle.heading) || 0;
-        let cumulativeMovedKm = Number(shuttle.distance_covered_km) || 0;
-
-        const prevGps = lastDriverGpsPoint.get(sId);
-        if (prevGps) {
-          const dtHours = Math.max(0.00014, (now - prevGps.time) / 3600000);
-          const movedKm = calculateDistance(prevGps.lat, prevGps.lng, rawLat, rawLng);
-
-          // Rolling window displacement across the last 1s - 6s
-          let windowMovedKm = movedKm;
-          let windowDtHours = dtHours;
-          if (history.length >= 2) {
-            let anchorPt = history[0];
-            for (let i = 0; i < history.length - 1; i++) {
-              if (now - history[i].time >= 1000) {
-                anchorPt = history[i];
-              }
-            }
-            windowMovedKm = calculateDistance(anchorPt.lat, anchorPt.lng, rawLat, rawLng);
-            windowDtHours = Math.max(0.000277, (now - anchorPt.time) / 3600000);
-          }
-
-          const isStationary = movedKm < 0.0006 && windowMovedKm < 0.0015 && clientSpeed < 1;
-
-          if (isStationary) {
-            effectiveLat = prevGps.lat;
-            effectiveLng = prevGps.lng;
-            const idleMs = now - (prevGps.lastMoveTime || prevGps.time || now);
-            // Hold last moving speed for up to 5 seconds between GPS hardware ticks before decaying to 0
-            computedSpeed = idleMs <= 5000 ? (prevGps.speed || 0) : 0;
-            cumulativeMovedKm = prevGps.cumulativeMovedKm || 0;
-            lastDriverGpsPoint.set(sId, {
-              ...prevGps,
-              speed: computedSpeed,
-              time: now
-            });
-          } else {
-            effectiveLat = rawLat;
-            effectiveLng = rawLng;
-            cumulativeMovedKm = Number(((prevGps.cumulativeMovedKm || 0) + movedKm).toFixed(4));
-            if (computedSpeed < 1) {
-              const rollingCalcSpeed =
-                windowMovedKm >= 0.001
-                  ? Math.round(windowMovedKm / windowDtHours)
-                  : Math.round(movedKm / dtHours);
-              computedSpeed = Math.min(95, Math.max(1, rollingCalcSpeed));
-            }
-            if (movedKm >= 0.0008) {
-              computedHeading = calculateHeading(prevGps.lat, prevGps.lng, effectiveLat, effectiveLng);
-            }
-            lastDriverGpsPoint.set(sId, {
-              lat: effectiveLat,
-              lng: effectiveLng,
-              time: now,
-              lastMoveTime: now,
-              speed: computedSpeed,
-              cumulativeMovedKm
-            });
-          }
-        } else {
-          lastDriverGpsPoint.set(sId, {
-            lat: effectiveLat,
-            lng: effectiveLng,
-            time: now,
-            lastMoveTime: now,
-            speed: computedSpeed,
-            cumulativeMovedKm: 0
-          });
-        }
-
-        let distanceToNext = 0;
-        let distanceToDest = 0;
-        let nextStopName = shuttle.next_stop_name || shuttle.destination || 'Destination';
-        let calculatedEta = 1;
-        let destinationEta = 2;
-        let reachedDestination = false;
-        const totalRouteKm = computeTotalRouteDistanceKm(shuttle.stops);
-
-        // Speed used for ETA analysis: use real live GPS speed when moving (>= 3 km/h), or recent moving speed / 25 km/h reference
-        const speedForEta =
-          computedSpeed >= 3
-            ? computedSpeed
-            : prevGps?.speed >= 3
-            ? prevGps.speed
-            : 25;
-
-        if (shuttle.stops && shuttle.stops.length > 0) {
-          // Find nearest stop and closest route segment on the Admin-allocated route
-          let nearestIdx = 0;
-          let nearestDist = Infinity;
-          shuttle.stops.forEach((st, idx) => {
-            const d = calculateDistance(
-              effectiveLat,
-              effectiveLng,
-              Number(st.latitude),
-              Number(st.longitude)
-            );
-            if (d < nearestDist) {
-              nearestDist = d;
-              nearestIdx = idx;
-            }
-          });
-
-          let minRouteCorridorDistKm = nearestDist;
-          let bestSegmentIdx = Math.min(nearestIdx, Math.max(0, shuttle.stops.length - 2));
-          let bestProjLat = effectiveLat;
-          let bestProjLng = effectiveLng;
-
-          if (shuttle.stops.length >= 2) {
-            for (let i = 0; i < shuttle.stops.length - 1; i++) {
-              const sA = shuttle.stops[i];
-              const sB = shuttle.stops[i + 1];
-              const proj = projectOntoSegment(
-                effectiveLat,
-                effectiveLng,
-                Number(sA.latitude),
-                Number(sA.longitude),
-                Number(sB.latitude),
-                Number(sB.longitude)
-              );
-              if (proj.distKm < minRouteCorridorDistKm) {
-                minRouteCorridorDistKm = proj.distKm;
-                bestSegmentIdx = i;
-                bestProjLat = proj.lat;
-                bestProjLng = proj.lng;
-              }
-            }
-          }
-
-          // Keep effective coordinates 100% true to the Driver's real physical GPS location
-          // DO NOT snap or warp the bus to route waypoints so the map marker reflects exact physical vehicle movement.
-          effectiveLat = rawLat;
-          effectiveLng = rawLng;
-
-          // If driver travels > 0.45 km outside allocated route corridor with high-accuracy GPS while moving on trip, notify Admin & send Admin Email
-          const lastOffAlertTime = lastOffRouteAlert.get(sId) || 0;
-          if (
-            minRouteCorridorDistKm > 0.45 &&
-            accuracyMeters <= 90 &&
-            (cumulativeMovedKm >= 0.05 || computedSpeed >= 10) &&
-            now - lastOffAlertTime > 60000
-          ) {
-            lastOffRouteAlert.set(sId, now);
-            const offRouteResult = await db.recordDriverOffRouteDeviation(sId, {
-              latitude: effectiveLat,
-              longitude: effectiveLng,
-              reason: `Map GPS Route Deviation Detected (${minRouteCorridorDistKm.toFixed(2)} km off allocated route corridor)`
-            });
-            if (offRouteResult && !offRouteResult.alreadyNotified) {
-              if (offRouteResult.notification) {
-                io.emit('notification:new', offRouteResult.notification);
-              }
-              io.emit('shuttle:off_route', {
-                shuttleId: offRouteResult.shuttleId,
-                code: offRouteResult.busCode,
-                driverName: offRouteResult.driverName,
-                routeName: offRouteResult.routeName,
-                latitude: offRouteResult.deviatedLat,
-                longitude: offRouteResult.deviatedLng,
-                alreadyNotified: offRouteResult.alreadyNotified,
-                notification: offRouteResult.notification
-              });
-            }
-          }
-
-          // Determine next target stop along the route sequence
-          let targetStopIdx = Math.min(shuttle.stops.length - 1, bestSegmentIdx + 1);
-          const candidateStop = shuttle.stops[targetStopIdx];
-          if (candidateStop) {
-            const distToCandidate = calculateDistance(
-              effectiveLat,
-              effectiveLng,
-              Number(candidateStop.latitude),
-              Number(candidateStop.longitude)
-            );
-            if (distToCandidate <= 0.08 && targetStopIdx < shuttle.stops.length - 1) {
-              targetStopIdx += 1;
-            }
-          }
-          const currentStop = shuttle.stops[targetStopIdx] || shuttle.stops[shuttle.stops.length - 1];
-          const finalStop = shuttle.stops[shuttle.stops.length - 1];
-
-          const rawDistToDest = calculateDistance(
-            effectiveLat,
-            effectiveLng,
-            Number(finalStop.latitude),
-            Number(finalStop.longitude)
-          );
-
-          // Compute exact remaining route distance along remaining stops (current -> targetStop -> ... -> finalStop)
-          const rawNext = currentStop
-            ? calculateDistance(
-                effectiveLat,
-                effectiveLng,
-                Number(currentStop.latitude),
-                Number(currentStop.longitude)
-              )
-            : rawDistToDest;
-          distanceToNext = Number((rawNext * 1.22).toFixed(2));
-
-          let remainingAfterTargetKm = 0;
-          for (let i = targetStopIdx; i < shuttle.stops.length - 1; i++) {
-            remainingAfterTargetKm +=
-              calculateDistance(
-                Number(shuttle.stops[i].latitude),
-                Number(shuttle.stops[i].longitude),
-                Number(shuttle.stops[i + 1].latitude),
-                Number(shuttle.stops[i + 1].longitude)
-              ) * 1.22;
-          }
-          distanceToDest = Number((distanceToNext + remainingAfterTargetKm).toFixed(2));
-
-          // Only mark destination reached when driver is physically at the destination stop (<= 40m) and completed the trip
-          const isAtDestinationStop =
-            targetStopIdx === shuttle.stops.length - 1 &&
-            rawDistToDest <= 0.04 &&
-            cumulativeMovedKm >= 0.15 &&
-            computedSpeed === 0;
-
-          if (isAtDestinationStop) {
-            reachedDestination = true;
-            nextStopName = `${finalStop.name} (Driver Arrived)`;
-            distanceToNext = 0;
-            distanceToDest = 0;
-            calculatedEta = 0;
-            destinationEta = 0;
-          } else if (currentStop) {
-            nextStopName = currentStop.name;
-            calculatedEta = Math.max(1, Math.round((Math.max(0.05, distanceToNext) / speedForEta) * 60));
-            destinationEta = Math.max(calculatedEta, Math.round((Math.max(0.05, distanceToDest) / speedForEta) * 60));
-          }
-        }
-
-        // Check if bus has been stopped (speed === 0) for 20 minutes or more while not yet at destination
-        if (computedSpeed === 0 && !reachedDestination) {
-          if (!stationaryStartTime.has(sId)) {
-            stationaryStartTime.set(sId, now);
-          } else {
-            const stoppedMs = now - stationaryStartTime.get(sId);
-            if (stoppedMs >= 20 * 60 * 1000) {
-              const stoppedMins = Math.floor(stoppedMs / 60000);
-              const emergencyResult = await db.recordBusStoppedEmergency(sId, {
-                reportedByRole: 'system',
-                reportedByName: 'Auto Telemetry Monitor',
-                stoppedMinutes: stoppedMins
-              });
-              if (emergencyResult && !emergencyResult.alreadyNotified && emergencyResult.notification) {
-                io.emit('notification:new', emergencyResult.notification);
-                io.emit('shuttle:emergency_stopped', {
-                  shuttleId: emergencyResult.shuttleId,
-                  busCode: emergencyResult.busCode,
-                  driverName: emergencyResult.driverName,
-                  routeName: emergencyResult.routeName,
-                  stoppedMinutes: emergencyResult.stoppedMinutes,
-                  alreadyNotified: emergencyResult.alreadyNotified,
-                  reportedByRole: 'system',
-                  reportedByName: 'Auto Telemetry Monitor'
-                });
-              }
-            }
-          }
-        } else {
-          stationaryStartTime.delete(sId);
-        }
-
-        if (reachedDestination) {
-          const lastArr = lastDriverArrivalTime.get(sId) || 0;
-          if (now - lastArr > 20000) {
-            lastDriverArrivalTime.set(sId, now);
-            const arrivalResult = await db.recordDriverDestinationArrival(sId);
-            if (arrivalResult) {
-              io.emit('schedule:updated', arrivalResult);
-              io.emit('driver:updated', {
-                shuttleId: sId,
-                pointsEarned: arrivalResult.pointsEarned,
-                totalDriverPoints: arrivalResult.totalDriverPoints,
-                totalTripsCompleted: arrivalResult.totalTripsCompleted
-              });
-              if (arrivalResult.notification) {
-                io.emit('notification:new', arrivalResult.notification);
-              }
-            }
-          }
-        }
-
-        // Re-check shuttle status before saving so an in-flight GPS packet never overwrites an ended ('idle') trip
-        const latestShuttleCheck = await db.getShuttleById(sId);
-        if (!latestShuttleCheck || latestShuttleCheck.status === 'idle' || latestShuttleCheck.status === 'inactive') {
-          return;
-        }
-
-        const updatedShuttle = await db.updateShuttle(sId, {
-          current_lat: effectiveLat,
-          current_lng: effectiveLng,
-          speed: computedSpeed,
-          heading: computedHeading,
-          distance_km: distanceToNext,
-          distance_to_destination_km: distanceToDest,
-          distance_covered_km: cumulativeMovedKm,
-          total_route_km: totalRouteKm,
-          eta_minutes: calculatedEta,
-          destination_eta_minutes: destinationEta,
-          next_stop_name: nextStopName,
-          status: latestShuttleCheck.status === 'delayed' ? 'delayed' : 'on_trip'
-        });
-
-        const updatePayload = {
-          shuttleId: sId,
-          latitude: effectiveLat,
-          longitude: effectiveLng,
-          speed: computedSpeed,
-          heading: computedHeading,
-          distance_km: distanceToNext,
-          distance_to_destination_km: distanceToDest,
-          distance_covered_km: cumulativeMovedKm,
-          total_route_km: totalRouteKm,
-          eta_minutes: calculatedEta,
-          destination_eta_minutes: destinationEta,
-          next_stop_name: nextStopName,
-          isDestination: reachedDestination,
-          status: updatedShuttle ? updatedShuttle.status : 'on_trip',
-          timestamp: new Date().toISOString()
-        };
-
-        io.emit('shuttle:location_updated', updatePayload);
-        io.emit('shuttle:quick_ping', updatePayload);
-      } catch (err) {
-        console.error('Error handling location update:', err);
-      }
+      await processDriverLocationUpdate(io, data);
     });
   });
 }
 
-module.exports = { setupTrackingSocket, startAutonomousShuttle, stopAutonomousShuttle };
+module.exports = {
+  setupTrackingSocket,
+  startAutonomousShuttle,
+  stopAutonomousShuttle,
+  processDriverLocationUpdate,
+  getLiveTelemetry,
+  getAllLiveTelemetry
+};
