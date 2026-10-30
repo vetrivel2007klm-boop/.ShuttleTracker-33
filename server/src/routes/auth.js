@@ -547,10 +547,10 @@ router.post('/send-otp', async (req, res) => {
   }
 });
 
-// GET /api/auth/check-email - Pre-check if email is already registered before user completes signup
+// GET /api/auth/check-email - Pre-check if email is already registered before user completes signup or forgot-password
 router.get('/check-email', async (req, res) => {
   try {
-    const { email } = req.query;
+    const { email, role } = req.query;
     if (!email || !String(email).trim()) {
       return res.status(400).json({ success: false, message: 'Email query parameter is required.' });
     }
@@ -564,17 +564,20 @@ router.get('/check-email', async (req, res) => {
           : existing.role === 'admin'
           ? 'Administrator'
           : 'Passenger';
+      const roleMatches = role ? existing.role === role : true;
       return res.status(200).json({
         success: true,
         exists: true,
         role: existing.role,
-        message: `This email address is already registered as a ${roleLabel} account. Please login instead.`
+        roleMatches,
+        roleLabel,
+        message: `This email address is registered as a ${roleLabel} account.`
       });
     }
     return res.status(200).json({
       success: true,
       exists: false,
-      message: 'Email is available for registration.'
+      message: 'No registered account found with this email address.'
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: 'Failed to verify email availability.' });
@@ -843,7 +846,35 @@ router.post('/forgot-password/send-otp', async (req, res) => {
 
     const normalizedEmail = emailValidation.normalizedEmail;
     const existingUser = await db.findUserByEmail(normalizedEmail);
-    const resolvedRole = existingUser?.role || (role && ['admin', 'user', 'driver'].includes(role) ? role : 'user');
+    if (!existingUser) {
+      return res.status(404).json({
+        success: false,
+        notFound: true,
+        message: `No registered account found with email address (${normalizedEmail}). Please verify your email or register first.`
+      });
+    }
+
+    // Role verification: If user is performing Forgot Password on the Passenger page,
+    // but the email belongs to a Driver or Admin, DO NOT send OTP!
+    // Reject immediately with roleMismatch: true.
+    if (role && ['admin', 'user', 'driver'].includes(role) && existingUser.role !== role) {
+      const expectedRoleLabel =
+        role === 'driver' ? 'Driver' : role === 'admin' ? 'Administrator' : 'Passenger';
+      const actualRoleLabel =
+        existingUser.role === 'driver'
+          ? 'Driver'
+          : existingUser.role === 'admin'
+          ? 'Administrator'
+          : 'Passenger';
+
+      return res.status(400).json({
+        success: false,
+        roleMismatch: true,
+        expectedRole: role,
+        actualRole: existingUser.role,
+        message: `This email address (${normalizedEmail}) is registered as a ${actualRoleLabel} account, not a ${expectedRoleLabel} account. Please switch to the ${actualRoleLabel} tab to reset your password.`
+      });
+    }
 
     const result = await sendBrevoOTP(normalizedEmail, 'reset');
     if (!result.success) {
@@ -856,7 +887,7 @@ router.post('/forgot-password/send-otp', async (req, res) => {
     return res.status(200).json({
       success: true,
       message: `Password reset OTP sent to ${normalizedEmail}.`,
-      role: resolvedRole,
+      role: existingUser.role,
       deliveredVia: result.deliveredVia
     });
   } catch (err) {
@@ -895,25 +926,29 @@ router.post('/forgot-password/reset', async (req, res) => {
 
     const normalizedEmail = email.trim().toLowerCase();
     let user = await db.findUserByEmail(normalizedEmail);
-    const password_hash = await bcrypt.hash(newPassword, 10);
-
     if (!user) {
-      const localName = normalizedEmail.split('@')[0];
-      const formattedName = localName.charAt(0).toUpperCase() + localName.slice(1);
-      user = await db.createUser({
-        name: formattedName,
-        email: normalizedEmail,
-        password_hash,
-        plain_password: newPassword,
-        role: role || 'user',
-        organization_name: 'Sairam Engineering College',
-        bus_number: 'S01'
+      return res.status(404).json({
+        success: false,
+        notFound: true,
+        message: 'No registered account found with this email address.'
       });
-      console.log(`🎉 Account auto-provisioned via verified recovery for ${user.email} (${user.role})`);
-    } else {
-      await db.updateUserPassword(normalizedEmail, password_hash, newPassword);
-      console.log(`🔐 Password successfully reset for ${user.email} (${user.role})`);
     }
+
+    if (role && ['admin', 'user', 'driver'].includes(role) && user.role !== role) {
+      const expectedRoleLabel =
+        role === 'driver' ? 'Driver' : role === 'admin' ? 'Administrator' : 'Passenger';
+      const actualRoleLabel =
+        user.role === 'driver' ? 'Driver' : user.role === 'admin' ? 'Administrator' : 'Passenger';
+      return res.status(400).json({
+        success: false,
+        roleMismatch: true,
+        message: `This account is a ${actualRoleLabel} account, not a ${expectedRoleLabel} account.`
+      });
+    }
+
+    const password_hash = await bcrypt.hash(newPassword, 10);
+    await db.updateUserPassword(normalizedEmail, password_hash, newPassword);
+    console.log(`🔐 Password successfully reset for ${user.email} (${user.role})`);
 
     return res.status(200).json({
       success: true,

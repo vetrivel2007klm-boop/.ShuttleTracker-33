@@ -206,6 +206,13 @@ export const LoginPage = () => {
   const handleRoleSelect = (role) => {
     setSelectedRole(role);
     setSearchParams({ role });
+    setErrorMessage('');
+    setSuccessMessage('');
+    if (otpSent || otpVerified) {
+      setOtpSent(false);
+      setOtpVerified(false);
+      setOtp('');
+    }
     if ((role === 'admin' || role === 'driver') && authMode === 'signup') {
       setAuthMode('login');
     }
@@ -493,7 +500,13 @@ export const LoginPage = () => {
 
   const handleEmailChange = (e) => {
     setEmail(e.target.value);
-    if (errorMessage && errorMessage.toLowerCase().includes('already registered')) {
+    if (
+      errorMessage &&
+      (errorMessage.toLowerCase().includes('already registered') ||
+        errorMessage.toLowerCase().includes('account, not a') ||
+        errorMessage.toLowerCase().includes('no registered account') ||
+        errorMessage.toLowerCase().includes('mismatch'))
+    ) {
       setErrorMessage('');
     }
     if (otpSent || otpVerified) {
@@ -504,21 +517,56 @@ export const LoginPage = () => {
   };
 
   const handleEmailBlur = async () => {
-    if (authMode !== 'signup') return;
     const clean = email.trim().toLowerCase();
     if (!clean || !clean.includes('@') || !clean.includes('.')) return;
-    try {
-      const res = await api.get('/auth/check-email', { params: { email: clean } });
-      if (res.data?.exists) {
-        setErrorMessage(res.data.message || 'This email address is already registered. Please login instead.');
-        addToast({
-          title: 'Email Already Registered',
-          message: res.data.message || 'This email is already registered. Please login instead or use a different email.',
-          type: 'warning'
-        });
+
+    if (authMode === 'signup') {
+      try {
+        const res = await api.get('/auth/check-email', { params: { email: clean } });
+        if (res.data?.exists) {
+          setErrorMessage(res.data.message || 'This email address is already registered. Please login instead.');
+          addToast({
+            title: 'Email Already Registered',
+            message: res.data.message || 'This email is already registered. Please login instead or use a different email.',
+            type: 'warning'
+          });
+        }
+      } catch (_) {
+        // Ignore background pre-check errors
       }
-    } catch (_) {
-      // Ignore background pre-check errors
+    } else if (authMode === 'forgot') {
+      try {
+        const res = await api.get('/auth/check-email', { params: { email: clean, role: selectedRole } });
+        if (res.data?.exists) {
+          if (res.data.role !== selectedRole) {
+            const expectedRoleLabel =
+              selectedRole === 'driver' ? 'Driver' : selectedRole === 'admin' ? 'Administrator' : 'Passenger';
+            const actualRoleLabel =
+              res.data.role === 'driver'
+                ? 'Driver'
+                : res.data.role === 'admin'
+                ? 'Administrator'
+                : 'Passenger';
+            const mismatchMsg = `This email address is registered as a ${actualRoleLabel} account, not a ${expectedRoleLabel} account. Please switch to the ${actualRoleLabel} tab to reset your password.`;
+            setErrorMessage(mismatchMsg);
+            addToast({
+              title: 'Account Type Mismatch',
+              message: mismatchMsg,
+              type: 'warning'
+            });
+          }
+        } else if (res.data?.exists === false) {
+          const notFoundMsg = `No registered account found with email (${clean}). Please verify your email address or register first.`;
+          setErrorMessage(notFoundMsg);
+          addToast({
+            title: 'Account Not Found',
+            message: notFoundMsg,
+            type: 'warning'
+          });
+        }
+      } catch (_) {
+        // Ignore background pre-check errors
+      }
     }
   };
 
@@ -632,9 +680,6 @@ export const LoginPage = () => {
 
       setOtpSending(false);
       if (res.data.success) {
-        if (authMode === 'forgot' && res.data.role && ['admin', 'user', 'driver'].includes(res.data.role)) {
-          setSelectedRole(res.data.role);
-        }
         if (res.data.emailRelayPayload) {
           relayCloudEmail(res.data.emailRelayPayload);
         }
@@ -658,7 +703,13 @@ export const LoginPage = () => {
         const msg = res.data.message || 'Could not send verification OTP. Please try again.';
         setErrorMessage(msg);
         addToast({
-          title: res.data.alreadyExists ? 'Email Already Registered' : 'Notice',
+          title: res.data.roleMismatch
+            ? 'Account Type Mismatch'
+            : res.data.notFound
+            ? 'Account Not Found'
+            : res.data.alreadyExists
+            ? 'Email Already Registered'
+            : 'Notice',
           message: msg,
           type: 'error'
         });
@@ -666,12 +717,20 @@ export const LoginPage = () => {
     } catch (err) {
       setOtpSending(false);
       setOtpSent(false);
+      const isRoleMismatch = !!err.response?.data?.roleMismatch;
+      const isNotFound = !!err.response?.data?.notFound;
       const isAlreadyExists = !!err.response?.data?.alreadyExists;
       const errMsg =
         err.response?.data?.message || 'Failed to dispatch OTP. Please check your email or network connection.';
       setErrorMessage(errMsg);
       addToast({
-        title: isAlreadyExists ? 'Email Already Registered' : 'Notice',
+        title: isRoleMismatch
+          ? 'Account Type Mismatch'
+          : isNotFound
+          ? 'Account Not Found'
+          : isAlreadyExists
+          ? 'Email Already Registered'
+          : 'Notice',
         message: errMsg,
         type: 'error'
       });
@@ -821,9 +880,6 @@ export const LoginPage = () => {
         setLoading(false);
 
         if (res.data.success) {
-          if (res.data.role && ['admin', 'user', 'driver'].includes(res.data.role)) {
-            setSelectedRole(res.data.role);
-          }
           addToast({
             title: 'Password Updated',
             message: 'Your password has been successfully updated. You may now sign in.',
