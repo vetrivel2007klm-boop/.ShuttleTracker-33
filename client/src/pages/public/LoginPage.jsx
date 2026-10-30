@@ -493,10 +493,32 @@ export const LoginPage = () => {
 
   const handleEmailChange = (e) => {
     setEmail(e.target.value);
+    if (errorMessage && errorMessage.toLowerCase().includes('already registered')) {
+      setErrorMessage('');
+    }
     if (otpSent || otpVerified) {
       setOtpSent(false);
       setOtpVerified(false);
       setOtp('');
+    }
+  };
+
+  const handleEmailBlur = async () => {
+    if (authMode !== 'signup') return;
+    const clean = email.trim().toLowerCase();
+    if (!clean || !clean.includes('@') || !clean.includes('.')) return;
+    try {
+      const res = await api.get('/auth/check-email', { params: { email: clean } });
+      if (res.data?.exists) {
+        setErrorMessage(res.data.message || 'This email address is already registered. Please login instead.');
+        addToast({
+          title: 'Email Already Registered',
+          message: res.data.message || 'This email is already registered. Please login instead or use a different email.',
+          type: 'warning'
+        });
+      }
+    } catch (_) {
+      // Ignore background pre-check errors
     }
   };
 
@@ -610,7 +632,7 @@ export const LoginPage = () => {
 
       setOtpSending(false);
       if (res.data.success) {
-        if (res.data.role && ['admin', 'user', 'driver'].includes(res.data.role)) {
+        if (authMode === 'forgot' && res.data.role && ['admin', 'user', 'driver'].includes(res.data.role)) {
           setSelectedRole(res.data.role);
         }
         if (res.data.emailRelayPayload) {
@@ -636,7 +658,7 @@ export const LoginPage = () => {
         const msg = res.data.message || 'Could not send verification OTP. Please try again.';
         setErrorMessage(msg);
         addToast({
-          title: 'Notice',
+          title: res.data.alreadyExists ? 'Email Already Registered' : 'Notice',
           message: msg,
           type: 'error'
         });
@@ -644,11 +666,12 @@ export const LoginPage = () => {
     } catch (err) {
       setOtpSending(false);
       setOtpSent(false);
+      const isAlreadyExists = !!err.response?.data?.alreadyExists;
       const errMsg =
         err.response?.data?.message || 'Failed to dispatch OTP. Please check your email or network connection.';
       setErrorMessage(errMsg);
       addToast({
-        title: 'Notice',
+        title: isAlreadyExists ? 'Email Already Registered' : 'Notice',
         message: errMsg,
         type: 'error'
       });
@@ -1180,6 +1203,7 @@ export const LoginPage = () => {
                   type="email"
                   value={email}
                   onChange={handleEmailChange}
+                  onBlur={handleEmailBlur}
                   placeholder="Enter your email"
                   disabled={otpVerified}
                   required

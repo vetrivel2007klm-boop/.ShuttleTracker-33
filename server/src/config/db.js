@@ -1990,9 +1990,26 @@ const db = {
       normalized = 'cleancodeuniverse@gmail.com';
     }
     const memMatch = store.users.find((u) => u.email && u.email.toLowerCase() === normalized);
-    if (options.memoryOnly || memMatch) {
+    if (memMatch) {
       return memMatch;
     }
+
+    const memDriver = store.drivers?.find((d) => d.email && d.email.toLowerCase() === normalized);
+    if (memDriver) {
+      return {
+        id: memDriver.user_id || memDriver.id,
+        name: memDriver.name,
+        email: memDriver.email,
+        role: 'driver',
+        organization_name: memDriver.organization_name,
+        phone: memDriver.phone || ''
+      };
+    }
+
+    if (options.memoryOnly) {
+      return null;
+    }
+
     if (isPostgresConnected && pool) {
       try {
         const { rows } = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1', [normalized]);
@@ -2020,19 +2037,7 @@ const db = {
       } catch (_) {}
     }
 
-    const memDriver = store.drivers?.find((d) => d.email && d.email.toLowerCase() === normalized);
-    if (memDriver) {
-      return {
-        id: memDriver.user_id || memDriver.id,
-        name: memDriver.name,
-        email: memDriver.email,
-        role: 'driver',
-        organization_name: memDriver.organization_name,
-        phone: memDriver.phone || ''
-      };
-    }
-
-    return memMatch;
+    return null;
   },
 
   findUserById: async (id) => {

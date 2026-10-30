@@ -501,34 +501,38 @@ router.post('/send-otp', async (req, res) => {
       });
     }
 
-    // Strictly enforce: Admin accounts are provisioned via system administrator!
-    if (role === 'admin') {
+    // Strictly enforce: Admin & Driver accounts are provisioned via system administrator!
+    if (role === 'admin' || role === 'driver') {
       return res.status(403).json({
         success: false,
-        message: 'Administrator self-registration is disabled. Please contact system administrator.'
+        message: `${role === 'admin' ? 'Administrator' : 'Driver'} self-registration is disabled. Please contact system administrator.`
       });
     }
 
     const enteredOrg = String(organization_name || 'Sairam Engineering College').trim();
 
-    // Check if account already exists
-    const existing = await db.findUserByEmail(emailValidation.normalizedEmail, { memoryOnly: true });
+    // Check if account already exists across any passenger, driver, or admin account
+    const existing = await db.findUserByEmail(emailValidation.normalizedEmail);
+    if (existing) {
+      const roleLabel =
+        existing.role === 'driver'
+          ? 'Driver'
+          : existing.role === 'admin'
+          ? 'Administrator'
+          : 'Passenger';
+      return res.status(400).json({
+        success: false,
+        alreadyExists: true,
+        role: existing.role,
+        message: `This email address (${emailValidation.normalizedEmail}) is already registered as a ${roleLabel} account. Please login instead or use a different email.`
+      });
+    }
 
     const result = await sendBrevoOTP(emailValidation.normalizedEmail, 'signup');
     if (!result.success) {
       return res.status(400).json({
         success: false,
         message: result.message || 'Could not send verification OTP.'
-      });
-    }
-
-    if (existing) {
-      return res.status(200).json({
-        success: true,
-        alreadyExists: true,
-        role: existing.role,
-        message: `Verification OTP sent to ${emailValidation.normalizedEmail}. You have an existing account (${existing.role}).`,
-        deliveredVia: result.deliveredVia
       });
     }
 
@@ -540,6 +544,40 @@ router.post('/send-otp', async (req, res) => {
   } catch (err) {
     console.error('OTP Send Error:', err);
     return res.status(500).json({ success: false, message: 'Failed to dispatch verification OTP.' });
+  }
+});
+
+// GET /api/auth/check-email - Pre-check if email is already registered before user completes signup
+router.get('/check-email', async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({ success: false, message: 'Email query parameter is required.' });
+    }
+    const emailValidation = await validateEmailAddress(email);
+    const targetEmail = emailValidation.valid ? emailValidation.normalizedEmail : String(email).trim().toLowerCase();
+    const existing = await db.findUserByEmail(targetEmail);
+    if (existing) {
+      const roleLabel =
+        existing.role === 'driver'
+          ? 'Driver'
+          : existing.role === 'admin'
+          ? 'Administrator'
+          : 'Passenger';
+      return res.status(200).json({
+        success: true,
+        exists: true,
+        role: existing.role,
+        message: `This email address is already registered as a ${roleLabel} account. Please login instead.`
+      });
+    }
+    return res.status(200).json({
+      success: true,
+      exists: false,
+      message: 'Email is available for registration.'
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'Failed to verify email availability.' });
   }
 });
 
@@ -648,6 +686,22 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Please provide full name, email, and password.'
+      });
+    }
+
+    const normalizedTargetEmail = String(email).trim().toLowerCase();
+    const existingUserEarly = await db.findUserByEmail(normalizedTargetEmail);
+    if (existingUserEarly) {
+      const roleLabel =
+        existingUserEarly.role === 'driver'
+          ? 'Driver'
+          : existingUserEarly.role === 'admin'
+          ? 'Administrator'
+          : 'Passenger';
+      return res.status(400).json({
+        success: false,
+        alreadyExists: true,
+        message: `This email address (${normalizedTargetEmail}) is already registered as a ${roleLabel} account. Please login instead.`
       });
     }
 
